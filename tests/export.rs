@@ -31,6 +31,18 @@ fn official_exporter_smoke() {
 }
 
 #[test]
+fn official_ordinary_inductive_export() {
+    let report = check(include_str!("fixtures/ordinary.ndjson")).unwrap();
+    assert_eq!(report.declarations, 4);
+}
+
+#[test]
+fn official_mutual_inductive_export() {
+    let report = check(include_str!("fixtures/mutual.ndjson")).unwrap();
+    assert_eq!(report.declarations, 7);
+}
+
+#[test]
 fn malformed_entries_and_bad_terms_are_rejected() {
     let meta = "{\"meta\":{\"format\":{\"version\":\"3.1.0\"}}}\n";
     for body in [

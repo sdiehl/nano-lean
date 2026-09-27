@@ -1,7 +1,7 @@
 # TODO
 
-- [ ] Export an ordinary inductive regression fixture
-- [ ] Export a mutual inductive regression fixture
+- [x] Export an ordinary inductive regression fixture
+- [x] Export a mutual inductive regression fixture
 - [ ] Test higher-order recursive field reduction
 - [ ] Test indexed recursor computation
 - [ ] Test rejection of negative recursive occurrences
