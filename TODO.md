@@ -3,7 +3,7 @@
 - [x] Export an ordinary inductive regression fixture
 - [x] Export a mutual inductive regression fixture
 - [ ] Test higher-order recursive field reduction
-- [ ] Test indexed recursor computation
+- [x] Test indexed recursor computation
 - [x] Test rejection of negative recursive occurrences
 - [x] Test rejection of forged recursor rules
 - [x] Test rejection of incorrect constructor metadata
@@ -12,7 +12,7 @@
 - [x] Test dependent projection type inference
 - [x] Test forbidden data projections from Prop
 - [x] Test structure eta on neutral terms
-- [ ] Test proof recursor K reduction
+- [x] Test proof recursor K reduction
 - [ ] Export a minimal nested inductive fixture
 - [ ] Separate recursor generation from export validation
 - [ ] Detect nested recursive type applications

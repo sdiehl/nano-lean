@@ -310,3 +310,92 @@ fn structure_eta_on_neutral_terms() {
     assert!(!env.def_eq(&expr("q"), &expanded).unwrap());
     assert!(!env.def_eq(&neutral, &expr("mk a b")).unwrap());
 }
+
+fn indexed(prop: bool) -> Environment {
+    let mut env = Environment::new();
+    env.axiom("A", expr("Type")).unwrap();
+    env.axiom("a", expr("A")).unwrap();
+    env.axiom("b", expr("A")).unwrap();
+    env.declare_inductive(InductiveBlock {
+        types: vec![InductiveType {
+            name: "Indexed".into(),
+            params: vec![],
+            ty: expr(if prop { "A -> Prop" } else { "A -> Type" }),
+            all: vec!["Indexed".into()],
+            constructors: vec!["tag".into()],
+            num_params: 0,
+            num_indices: 1,
+            num_nested: 0,
+            recursive: false,
+            reflexive: false,
+        }],
+        constructors: vec![Constructor {
+            name: "tag".into(),
+            params: vec![],
+            ty: expr("Indexed a"),
+            inductive: "Indexed".into(),
+            index: 0,
+            num_params: 0,
+            num_fields: 0,
+        }],
+        recursors: vec![Recursor {
+            name: "Indexed.rec".into(),
+            params: vec!["u".into()],
+            ty: poly("forall (m : forall (i : A), Indexed i -> U), m a tag -> forall (i : A) (h : Indexed i), m i h"),
+            all: vec!["Indexed".into()],
+            num_params: 0,
+            num_indices: 1,
+            num_motives: 1,
+            num_minors: 1,
+            k: prop,
+            rules: vec![RecursorRule {
+                constructor: "tag".into(),
+                num_fields: 0,
+                rhs: poly("fun (m : forall (i : A), Indexed i -> U) (base : m a tag) => base"),
+            }],
+        }],
+    }).unwrap();
+    env.axiom("p", expr("Indexed a")).unwrap();
+    env.axiom("q", expr("Indexed b")).unwrap();
+    env
+}
+
+fn indexed_call(index: &str, major: &str) -> Expr {
+    Expr::Const("Indexed.rec".into(), vec![Level::Nat(1)])
+        .app(expr("fun (i : A) (h : Indexed i) => A -> A"))
+        .app(expr("fun (x : A) => x"))
+        .app(expr(index))
+        .app(expr(major))
+        .app(expr("b"))
+}
+
+#[test]
+fn indexed_recursor_computation() {
+    let env = indexed(false);
+    let term = indexed_call("a", "tag");
+    env.check(&term, &expr("A")).unwrap();
+    assert!(env.normalize(&term).unwrap().aeq(&expr("b")));
+    assert!(env.infer(&indexed_call("b", "tag")).is_err());
+    let neutral = indexed_call("a", "p");
+    assert!(env.normalize(&neutral).unwrap().aeq(&neutral));
+    assert!(!env.def_eq(&neutral, &expr("b")).unwrap());
+}
+
+#[test]
+fn proof_recursor_k_reduction() {
+    let mut env = indexed(true);
+    for major in ["tag", "p"] {
+        let term = indexed_call("a", major);
+        env.check(&term, &expr("A")).unwrap();
+        assert!(env.normalize(&term).unwrap().aeq(&expr("b")));
+    }
+    env.define("alias", expr("A"), expr("a")).unwrap();
+    assert!(
+        env.normalize(&indexed_call("alias", "p"))
+            .unwrap()
+            .aeq(&expr("b"))
+    );
+    let neutral = indexed_call("b", "q");
+    assert!(env.normalize(&neutral).unwrap().aeq(&neutral));
+    assert!(!env.def_eq(&neutral, &expr("b")).unwrap());
+}
