@@ -4,9 +4,9 @@
 - [x] Export a mutual inductive regression fixture
 - [ ] Test higher-order recursive field reduction
 - [ ] Test indexed recursor computation
-- [ ] Test rejection of negative recursive occurrences
-- [ ] Test rejection of forged recursor rules
-- [ ] Test rejection of incorrect constructor metadata
+- [x] Test rejection of negative recursive occurrences
+- [x] Test rejection of forged recursor rules
+- [x] Test rejection of incorrect constructor metadata
 - [ ] Test forbidden large elimination from Prop
 - [ ] Test rollback after rejected inductive blocks
 - [ ] Test dependent projection type inference
