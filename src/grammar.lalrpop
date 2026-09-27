@@ -1,0 +1,76 @@
+use crate::parser::{Term, Command, Binding, LocalDef};
+use crate::lexer::Token;
+use crate::Error;
+
+grammar;
+
+pub Program: Vec<Command> = {
+    => Vec::new(),
+    "v{" <commands:Commands> "v}" => commands,
+};
+
+Commands: Vec<Command> = {
+    <head:Command> <tail:(Separators Command)*> <_trailing:Separators?> => {
+        let mut commands = vec![head];
+        commands.extend(tail.into_iter().map(|(_, c)| c));
+        commands
+    },
+};
+Separators: () = <Separator+> => ();
+Separator: () = { ";" => (), "v;" => () };
+
+Command: Command = {
+    "axiom" <n:"ident"> ":" <ty:Expr> => Command::Axiom(n, ty),
+    "def" <n:"ident"> ":" <ty:Expr> ":=" <value:Expr> => Command::Define(n, ty, value),
+    "infer" <e:Expr> => Command::Infer(e),
+    "check" <e:Expr> ":" <ty:Expr> => Command::Check(e, ty),
+    "eval" <e:Expr> => Command::Eval(e),
+    "equal" <a:Expr> "==" <b:Expr> => Command::Equal(a, b),
+};
+
+pub Expr: Term = {
+    "fun" <params:Binder+> "=>" <body:Expr> => Term::binders(params, body, false),
+    "forall" <params:Binder+> "," <body:Expr> => Term::binders(params, body, true),
+    "let" <binding:LocalDef> "in" <body:Expr> => Term::lets(vec![binding], body),
+    "let" "v{" <head:LocalDef> <tail:("v;" LocalDef)*> "v}" <_sep:"v;"?> "in" <body:Expr> => {
+        let mut defs = vec![head];
+        defs.extend(tail.into_iter().map(|(_, d)| d));
+        Term::lets(defs, body)
+    },
+    <a:App> "->" <b:Expr> => Term::Pi(String::new(), Box::new(a), Box::new(b)),
+    App,
+};
+Binder: Binding = "(" <n:"ident"> ":" <ty:Expr> ")" => (n, ty);
+LocalDef: LocalDef = <n:"ident"> ":" <ty:Expr> ":=" <value:Expr> => (n, ty, value);
+
+App: Term = {
+    <f:App> <a:Atom> => Term::App(Box::new(f), Box::new(a)),
+    Atom,
+};
+Atom: Term = {
+    "Prop" => Term::Sort(0),
+    "Type" => Term::Sort(1),
+    "Sort" <u:"num"> => Term::Sort(u),
+    <n:"ident"> => Term::Name(n),
+    "@" <n:"ident"> => Term::Global(n),
+    "(" <e:Expr> ")" => e,
+};
+
+extern {
+    type Location = usize;
+    type Error = Error;
+    enum Token {
+        "axiom" => Token::Axiom, "def" => Token::Def,
+        "infer" => Token::Infer, "check" => Token::Check,
+        "eval" => Token::Eval, "equal" => Token::Equal,
+        "fun" => Token::Fun, "forall" => Token::Forall,
+        "let" => Token::Let, "in" => Token::In,
+        "Prop" => Token::Prop, "Type" => Token::Type, "Sort" => Token::Sort,
+        "->" => Token::Arrow, "=>" => Token::FatArrow,
+        ":=" => Token::Assign, "==" => Token::EqEq,
+        ":" => Token::Colon, "," => Token::Comma, ";" => Token::Semi,
+        "@" => Token::At, "(" => Token::LParen, ")" => Token::RParen,
+        "num" => Token::Num(<u32>), "ident" => Token::Ident(<String>),
+        "v{" => Token::VOpen, "v}" => Token::VClose, "v;" => Token::VSep,
+    }
+}

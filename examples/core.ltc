@@ -1,0 +1,29 @@
+def id : forall (A : Type), A -> A :=
+  fun (A : Type) (x : A) => x
+
+axiom A : Type
+axiom a : A
+check id A a : A
+eval id A a
+equal id A a == a
+
+axiom B : A -> Type
+axiom section : forall (x : A), B x
+check section a : B a
+
+def impliesSelf : forall (P : Prop), P -> P :=
+  fun (P : Prop) (p : P) => p
+check (forall (P : Prop), P -> P) : Prop
+
+axiom P : Prop
+axiom p : P
+axiom q : P
+axiom F : P -> Type
+equal p == q
+equal F p == F q
+equal section == (fun (x : A) => section x)
+
+eval let
+  T : Type := A
+  x : T := a
+in id T x
