@@ -6,10 +6,11 @@ description = "A small dependent type checker built with unbound"
 license = "MIT"
 
 [dependencies]
-unbound = "0.3.0"
+unbound = { git = "https://github.com/sdiehl/unbound", rev = "eb566e0a51756752f676bf5578652f5920fa913a" }
 logos = "0.16"
 lalrpop-util = "0.23.1"
 offsides = "0.2.1"
+serde_json = "1"
 
 [build-dependencies]
 lalrpop = "0.23.1"

@@ -28,7 +28,7 @@ fn universes_are_stratified_and_not_cumulative() {
     assert!(env.infer(&expr("Prop")).unwrap().aeq(&expr("Type")));
     assert!(env.check(&expr("Type"), &expr("Type")).is_err());
     assert!(env.check(&expr("A"), &expr("(Sort 2)")).is_err());
-    assert!(env.infer(&Expr::Sort(u32::MAX)).is_err());
+    assert!(env.infer(&Expr::Sort(u32::MAX.into())).is_err());
     assert!(
         env.check(
             &expr("(forall (T : (Sort 3)), (forall (p : Prop), p))"),

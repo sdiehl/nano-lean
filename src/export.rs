@@ -1,0 +1,374 @@
+use crate::{Environment, Error, Expr, Level};
+use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader, Seek},
+    path::Path,
+};
+use unbound::{Name, Shared, bind};
+
+#[derive(Debug)]
+pub enum ExportError {
+    Invalid(String),
+    Unsupported(String),
+}
+impl std::fmt::Display for ExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(s) => write!(f, "invalid export: {s}"),
+            Self::Unsupported(s) => write!(f, "unsupported: {s}"),
+        }
+    }
+}
+impl std::error::Error for ExportError {}
+impl From<Error> for ExportError {
+    fn from(e: Error) -> Self {
+        if e.0.contains("budget exhausted") {
+            Self::Unsupported(e.0)
+        } else {
+            Self::Invalid(e.0)
+        }
+    }
+}
+type Result<T> = std::result::Result<T, ExportError>;
+fn invalid(s: impl Into<String>) -> ExportError {
+    ExportError::Invalid(s.into())
+}
+fn index(v: &Value) -> Result<usize> {
+    v.as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| invalid("expected nonnegative index"))
+}
+fn array(v: &Value) -> Result<&[Value]> {
+    v.as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| invalid("expected array"))
+}
+fn string(v: &Value) -> Result<&str> {
+    v.as_str().ok_or_else(|| invalid("expected string"))
+}
+fn get<T: Clone>(items: &HashMap<usize, T>, v: &Value) -> Result<T> {
+    items
+        .get(&index(v)?)
+        .cloned()
+        .ok_or_else(|| invalid("unknown or forward reference"))
+}
+fn append<T>(items: &mut HashMap<usize, T>, id: &Value, value: T) -> Result<()> {
+    let id = index(id)?;
+    if items.contains_key(&id) {
+        return Err(invalid("duplicate index"));
+    }
+    items.insert(id, value);
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct ExportReport {
+    pub declarations: usize,
+    pub expressions: usize,
+    pub names: usize,
+    pub levels: usize,
+}
+impl ExportReport {
+    pub fn json(&self) -> Value {
+        json!({"status":"checked", "declarations":self.declarations,"expressions":self.expressions,"names":self.names,"levels":self.levels})
+    }
+}
+
+pub fn check_export(reader: impl BufRead) -> Result<ExportReport> {
+    check_with_counts(reader, None)
+}
+
+pub fn check_export_file(path: impl AsRef<Path>) -> Result<ExportReport> {
+    let file = File::open(path).map_err(|e| invalid(e.to_string()))?;
+    let mut reader = BufReader::new(file);
+    let counts = count_uses(&mut reader)?;
+    reader.rewind().map_err(|e| invalid(e.to_string()))?;
+    check_with_counts(reader, counts)
+}
+
+fn references(item: &Value) -> Result<Vec<usize>> {
+    let mut refs = Vec::new();
+    let mut add = |v: &Value| -> Result<()> {
+        refs.push(index(v)?);
+        Ok(())
+    };
+    if item.get("ie").is_some() {
+        if let Some(a) = item.get("app") {
+            add(&a["fn"])?;
+            add(&a["arg"])?;
+        } else if let Some(b) = item.get("lam").or_else(|| item.get("forallE")) {
+            add(&b["type"])?;
+            add(&b["body"])?;
+        } else if let Some(b) = item.get("letE") {
+            add(&b["type"])?;
+            add(&b["value"])?;
+            add(&b["body"])?;
+        } else if let Some(m) = item.get("mdata") {
+            add(&m["expr"])?;
+        }
+    } else {
+        for kind in ["axiom", "def", "thm", "opaque"] {
+            if let Some(d) = item.get(kind) {
+                add(&d["type"])?;
+                if kind != "axiom" {
+                    add(&d["value"])?;
+                }
+            }
+        }
+    }
+    Ok(refs)
+}
+
+fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
+    let mut counts = Vec::<u32>::new();
+    for (line, text) in reader.lines().enumerate() {
+        let text = text.map_err(|e| invalid(e.to_string()))?;
+        let item: Value =
+            serde_json::from_str(&text).map_err(|e| invalid(format!("line {}: {e}", line + 1)))?;
+        let Some(obj) = item.as_object() else {
+            return Ok(None);
+        };
+        if line == 0 && item["meta"]["format"]["version"] != "3.1.0" {
+            return Ok(None);
+        }
+        if item.get("ie").is_some() {
+            if index(&item["ie"])? != counts.len()
+                || ![
+                    "bvar", "sort", "const", "app", "lam", "forallE", "letE", "mdata",
+                ]
+                .iter()
+                .any(|k| obj.contains_key(*k))
+            {
+                return Ok(None);
+            }
+        } else if !["meta", "in", "il", "axiom", "def", "thm", "opaque"]
+            .iter()
+            .any(|k| obj.contains_key(*k))
+        {
+            return Ok(None);
+        }
+        for id in references(&item)? {
+            let n = counts
+                .get_mut(id)
+                .ok_or_else(|| invalid("unknown or forward expression reference"))?;
+            *n = n
+                .checked_add(1)
+                .ok_or_else(|| ExportError::Unsupported("reference count overflow".into()))?;
+        }
+        if item.get("ie").is_some() {
+            counts.push(0);
+        }
+    }
+    Ok(Some(counts))
+}
+
+fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Result<ExportReport> {
+    let mut names = HashMap::from([(0, Vec::<Value>::new())]);
+    let mut levels = HashMap::from([(0, Level::Nat(0))]);
+    let mut expressions = HashMap::<usize, Shared<Expr>>::new();
+    let mut env = Environment::new();
+    let mut count = 0;
+    let mut expression_count = 0;
+    let mut metadata = false;
+    for (line, text) in reader.lines().enumerate() {
+        let text = text.map_err(|e| invalid(e.to_string()))?;
+        let item: Value =
+            serde_json::from_str(&text).map_err(|e| invalid(format!("line {}: {e}", line + 1)))?;
+        let result = (|| -> Result<()> {
+            let object = item.as_object().ok_or_else(|| invalid("expected object"))?;
+            if !metadata {
+                if line != 0 || object.len() != 1 || item.get("meta").is_none() {
+                    return Err(invalid("missing export metadata"));
+                }
+                if item["meta"]["format"]["version"] != "3.1.0" {
+                    return Err(ExportError::Unsupported("export format version".into()));
+                }
+                metadata = true;
+                return Ok(());
+            }
+            let name = |v: &Value| -> Result<String> {
+                Ok(serde_json::to_string(&get(&names, v)?).unwrap())
+            };
+            if let Some(id) = item.get("in") {
+                if object.len() != 2 {
+                    return Err(invalid("malformed name entry"));
+                }
+                let mut segments;
+                if let Some(n) = item.get("str") {
+                    segments = get(&names, &n["pre"])?;
+                    segments.push(Value::String(string(&n["str"])?.to_owned()));
+                } else if let Some(n) = item.get("num") {
+                    segments = get(&names, &n["pre"])?;
+                    n["i"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("invalid numeric name"))?;
+                    segments.push(n["i"].clone());
+                } else {
+                    return Err(invalid("unknown name entry"));
+                }
+                return append(&mut names, id, segments);
+            }
+            if let Some(id) = item.get("il") {
+                if object.len() != 2 {
+                    return Err(invalid("malformed level entry"));
+                }
+                let level = if let Some(p) = item.get("param") {
+                    Level::Param(name(p)?)
+                } else if let Some(s) = item.get("succ") {
+                    get(&levels, s)?.succ()?
+                } else {
+                    let (args, imax) = if let Some(a) = item.get("max") {
+                        (a, false)
+                    } else if let Some(a) = item.get("imax") {
+                        (a, true)
+                    } else {
+                        return Err(invalid("unknown level entry"));
+                    };
+                    let [a, b] = array(args)? else {
+                        return Err(invalid("level operator arity"));
+                    };
+                    if imax {
+                        Level::imax(get(&levels, a)?, get(&levels, b)?)
+                    } else {
+                        Level::max(get(&levels, a)?, get(&levels, b)?)
+                    }
+                };
+                return append(&mut levels, id, level);
+            }
+            if let Some(id) = item.get("ie") {
+                if counts.is_some() && index(id)? != expression_count {
+                    return Err(invalid("expression indices changed between passes"));
+                }
+                if object.len() != 2 {
+                    return Err(invalid("malformed expression entry"));
+                }
+                let e = |v| get(&expressions, v);
+                let expr = if let Some(v) = item.get("bvar") {
+                    Expr::Var(Name::bound(index(v)?, 0))
+                } else if let Some(u) = item.get("sort") {
+                    Expr::Sort(get(&levels, u)?)
+                } else if let Some(c) = item.get("const") {
+                    Expr::Const(
+                        name(&c["name"])?,
+                        array(&c["us"])?
+                            .iter()
+                            .map(|u| get(&levels, u))
+                            .collect::<Result<_>>()?,
+                    )
+                } else if let Some(a) = item.get("app") {
+                    Expr::App(e(&a["fn"])?, e(&a["arg"])?)
+                } else if let Some(b) = item.get("lam").or_else(|| item.get("forallE")) {
+                    let ty = e(&b["type"])?;
+                    let body = bind(Name::new(name(&b["name"])?), e(&b["body"])?);
+                    if item.get("lam").is_some() {
+                        Expr::Lam(ty, body)
+                    } else {
+                        Expr::Pi(ty, body)
+                    }
+                } else if let Some(b) = item.get("letE") {
+                    Expr::Let(
+                        e(&b["type"])?,
+                        e(&b["value"])?,
+                        bind(Name::new(name(&b["name"])?), e(&b["body"])?),
+                    )
+                } else if let Some(m) = item.get("mdata") {
+                    let value = e(&m["expr"])?;
+                    return append(&mut expressions, id, value);
+                } else {
+                    return Err(ExportError::Unsupported(format!(
+                        "expression {}",
+                        object.keys().find(|k| *k != "ie").unwrap()
+                    )));
+                };
+                return append(&mut expressions, id, Shared::new(expr));
+            }
+            if object.len() != 1 {
+                return Err(invalid("malformed declaration entry"));
+            }
+            let (kind, d) = object.iter().next().unwrap();
+            if !matches!(kind.as_str(), "axiom" | "def" | "thm" | "opaque") {
+                return Err(ExportError::Unsupported(format!("declaration kind {kind}")));
+            }
+            if kind == "def" {
+                if d["safety"] != "safe" {
+                    return Err(ExportError::Unsupported(
+                        "unsafe or partial definition".into(),
+                    ));
+                }
+            } else if kind != "thm" && d["isUnsafe"] != false {
+                return Err(ExportError::Unsupported("unsafe declaration".into()));
+            }
+            if let Some(all) = d.get("all") {
+                let all = array(all)?;
+                if all.len() != 1 || all[0] != d["name"] {
+                    return Err(ExportError::Unsupported("mutual declaration block".into()));
+                }
+            }
+            let n = name(&d["name"])?;
+            let params = array(&d["levelParams"])?
+                .iter()
+                .map(name)
+                .collect::<Result<_>>()?;
+            let ty = (*get(&expressions, &d["type"])?).clone();
+            let value = if kind == "axiom" {
+                None
+            } else {
+                Some((*get(&expressions, &d["value"])?).clone())
+            };
+            if kind == "thm" {
+                env.declare_theorem(n, params, ty, value.unwrap())?;
+            } else {
+                env.declare(n, params, ty, value, kind == "def")?;
+            }
+            count += 1;
+            Ok(())
+        })();
+        result.map_err(|e| match e {
+            ExportError::Invalid(s) => invalid(format!("line {}: {s}", line + 1)),
+            ExportError::Unsupported(s) => {
+                ExportError::Unsupported(format!("line {}: {s}", line + 1))
+            }
+        })?;
+        if item.get("ie").is_some() {
+            expression_count += 1;
+        }
+        if let Some(counts) = &mut counts {
+            for id in references(&item)? {
+                let n = counts
+                    .get_mut(id)
+                    .ok_or_else(|| invalid("expression references changed between passes"))?;
+                *n = n
+                    .checked_sub(1)
+                    .ok_or_else(|| invalid("expression references changed between passes"))?;
+                if *n == 0 {
+                    expressions.remove(&id);
+                }
+            }
+            if let Some(id) = item.get("ie") {
+                let id = index(id)?;
+                let n = counts
+                    .get(id)
+                    .ok_or_else(|| invalid("expression indices changed between passes"))?;
+                if *n == 0 {
+                    expressions.remove(&id);
+                }
+            }
+        }
+    }
+    if !metadata {
+        return Err(invalid("empty export"));
+    }
+    if let Some(counts) = counts
+        && (counts.len() != expression_count || counts.iter().any(|&n| n != 0))
+    {
+        return Err(invalid("expression references changed between passes"));
+    }
+    Ok(ExportReport {
+        declarations: count,
+        expressions: expression_count,
+        names: names.len(),
+        levels: levels.len(),
+    })
+}

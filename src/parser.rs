@@ -44,7 +44,7 @@ impl Term {
                 .find(|(s, _)| s == &n)
                 .map_or_else(|| Expr::constant(&n), |(_, n)| Expr::Var(n.clone())),
             Self::Global(n) => Expr::constant(n),
-            Self::Sort(u) => Expr::Sort(u),
+            Self::Sort(u) => Expr::Sort(u.into()),
             Self::App(f, a) => f.resolve(locals).app(a.resolve(locals)),
             Self::Pi(n, ty, body) | Self::Lam(n, ty, body) => {
                 let ty = ty.resolve(locals);

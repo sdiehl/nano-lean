@@ -8,4 +8,6 @@ cargo run -- examples/core.ltc
 cargo test
 ```
 
-MIT License — see [LICENSE](LICENSE).
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE) for details.

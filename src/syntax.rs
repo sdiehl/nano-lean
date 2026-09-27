@@ -1,34 +1,92 @@
-use std::fmt;
+use crate::{Error, Level};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+};
 use unbound::prelude::*;
 
-pub type Binder = Bind<Name<Expr>, Box<Expr>>;
+pub type Binder = Bind<Name<Expr>, Shared<Expr>>;
 
 #[derive(Clone, Debug, Alpha, Subst)]
 pub enum Expr {
     Var(Name<Expr>),
-    Sort(u32),
-    Const(String),
-    App(Box<Expr>, Box<Expr>),
-    Pi(Box<Expr>, Binder),
-    Lam(Box<Expr>, Binder),
-    Let(Box<Expr>, Box<Expr>, Binder),
+    Sort(Level),
+    Const(String, Vec<Level>),
+    App(Shared<Expr>, Shared<Expr>),
+    Pi(Shared<Expr>, Binder),
+    Lam(Shared<Expr>, Binder),
+    Let(Shared<Expr>, Shared<Expr>, Binder),
 }
 
 impl Expr {
+    pub fn substitute_levels(&self, levels: &BTreeMap<String, Level>) -> Result<Self, Error> {
+        if levels
+            .iter()
+            .all(|(name, value)| value == &Level::Param(name.clone()))
+        {
+            return Ok(self.clone());
+        }
+        fn shared(
+            e: &Shared<Expr>,
+            levels: &BTreeMap<String, Level>,
+            memo: &mut HashMap<usize, Shared<Expr>>,
+        ) -> Result<Shared<Expr>, Error> {
+            let key = e.as_ptr() as usize;
+            if let Some(e) = memo.get(&key) {
+                return Ok(e.clone());
+            }
+            let out = Shared::new(go(e, levels, memo)?);
+            memo.insert(key, out.clone());
+            Ok(out)
+        }
+        fn go(
+            e: &Expr,
+            levels: &BTreeMap<String, Level>,
+            memo: &mut HashMap<usize, Shared<Expr>>,
+        ) -> Result<Expr, Error> {
+            let binder =
+                |b: &Binder, memo: &mut HashMap<usize, Shared<Expr>>| -> Result<Binder, Error> {
+                    Ok(bind(b.pattern().clone(), shared(b.body(), levels, memo)?))
+                };
+            Ok(match e {
+                Expr::Var(n) => Expr::Var(n.clone()),
+                Expr::Sort(u) => Expr::Sort(u.substitute(levels)?),
+                Expr::Const(n, us) => Expr::Const(
+                    n.clone(),
+                    us.iter()
+                        .map(|u| u.substitute(levels))
+                        .collect::<Result<_, _>>()?,
+                ),
+                Expr::App(f, a) => Expr::App(shared(f, levels, memo)?, shared(a, levels, memo)?),
+                Expr::Pi(a, b) => Expr::Pi(shared(a, levels, memo)?, binder(b, memo)?),
+                Expr::Lam(a, b) => Expr::Lam(shared(a, levels, memo)?, binder(b, memo)?),
+                Expr::Let(a, v, b) => Expr::Let(
+                    shared(a, levels, memo)?,
+                    shared(v, levels, memo)?,
+                    binder(b, memo)?,
+                ),
+            })
+        }
+        go(self, levels, &mut HashMap::new())
+    }
     pub fn constant(name: impl Into<String>) -> Self {
-        Self::Const(name.into())
+        Self::Const(name.into(), Vec::new())
     }
     pub fn app(self, arg: Self) -> Self {
-        Self::App(Box::new(self), Box::new(arg))
+        Self::App(Shared::new(self), Shared::new(arg))
     }
     pub fn pi(name: Name<Self>, domain: Self, body: Self) -> Self {
-        Self::Pi(Box::new(domain), bind(name, Box::new(body)))
+        Self::Pi(Shared::new(domain), bind(name, Shared::new(body)))
     }
     pub fn lam(name: Name<Self>, domain: Self, body: Self) -> Self {
-        Self::Lam(Box::new(domain), bind(name, Box::new(body)))
+        Self::Lam(Shared::new(domain), bind(name, Shared::new(body)))
     }
     pub fn let_(name: Name<Self>, ty: Self, value: Self, body: Self) -> Self {
-        Self::Let(Box::new(ty), Box::new(value), bind(name, Box::new(body)))
+        Self::Let(
+            Shared::new(ty),
+            Shared::new(value),
+            bind(name, Shared::new(body)),
+        )
     }
 }
 
@@ -37,10 +95,23 @@ impl fmt::Display for Expr {
         fn go(e: &Expr, scope: &mut NameScope, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match e {
                 Expr::Var(n) => write!(f, "{}", scope.get(n)),
-                Expr::Sort(0) => write!(f, "Prop"),
-                Expr::Sort(1) => write!(f, "Type"),
+                Expr::Sort(Level::Nat(0)) => write!(f, "Prop"),
+                Expr::Sort(Level::Nat(1)) => write!(f, "Type"),
                 Expr::Sort(n) => write!(f, "(Sort {n})"),
-                Expr::Const(n) => write!(f, "@{n}"),
+                Expr::Const(n, us) => {
+                    write!(f, "@{n}")?;
+                    if !us.is_empty() {
+                        write!(
+                            f,
+                            ".{{{}}}",
+                            us.iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )?;
+                    }
+                    Ok(())
+                }
                 Expr::App(a, b) => {
                     write!(f, "(")?;
                     go(a, scope, f)?;
