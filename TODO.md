@@ -9,9 +9,9 @@
 - [x] Test rejection of incorrect constructor metadata
 - [x] Test forbidden large elimination from Prop
 - [x] Test rollback after rejected inductive blocks
-- [ ] Test dependent projection type inference
-- [ ] Test forbidden data projections from Prop
-- [ ] Test structure eta on neutral terms
+- [x] Test dependent projection type inference
+- [x] Test forbidden data projections from Prop
+- [x] Test structure eta on neutral terms
 - [ ] Test proof recursor K reduction
 - [ ] Export a minimal nested inductive fixture
 - [ ] Separate recursor generation from export validation

@@ -3,6 +3,7 @@ use nano_lean::{
     kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule},
     parser::parse_expr,
 };
+use unbound::{Alpha, Shared};
 
 fn expr(source: &str) -> Expr {
     parse_expr(source).unwrap()
@@ -188,4 +189,124 @@ fn rejected_inductive_blocks_roll_back() {
             .app(expr("left"));
         assert!(env.def_eq(&term, &expr("a")).unwrap());
     }
+}
+
+fn pack(prop: bool, proof_field: bool) -> Environment {
+    let mut env = Environment::new();
+    env.axiom("A", expr("Type")).unwrap();
+    env.axiom(
+        "B",
+        expr(if proof_field {
+            "A -> Prop"
+        } else {
+            "A -> Type"
+        }),
+    )
+    .unwrap();
+    env.axiom("a", expr("A")).unwrap();
+    env.axiom("b", expr("B a")).unwrap();
+    let rec_expr = |source: &str| {
+        if prop {
+            expr(&source.replace('U', "Prop"))
+        } else {
+            poly(source)
+        }
+    };
+    env.declare_inductive(InductiveBlock {
+        types: vec![InductiveType {
+            name: "Pack".into(),
+            params: vec![],
+            ty: expr(if prop { "Prop" } else { "Type" }),
+            all: vec!["Pack".into()],
+            constructors: vec!["mk".into()],
+            num_params: 0,
+            num_indices: 0,
+            num_nested: 0,
+            recursive: false,
+            reflexive: false,
+        }],
+        constructors: vec![Constructor {
+            name: "mk".into(),
+            params: vec![],
+            ty: expr("forall (a : A), B a -> Pack"),
+            inductive: "Pack".into(),
+            index: 0,
+            num_params: 0,
+            num_fields: 2,
+        }],
+        recursors: vec![Recursor {
+            name: "Pack.rec".into(),
+            params: if prop { vec![] } else { vec!["u".into()] },
+            ty: rec_expr("forall (m : Pack -> U), (forall (a : A) (b : B a), m (mk a b)) -> forall (p : Pack), m p"),
+            all: vec!["Pack".into()],
+            num_params: 0,
+            num_indices: 0,
+            num_motives: 1,
+            num_minors: 1,
+            k: false,
+            rules: vec![RecursorRule {
+                constructor: "mk".into(),
+                num_fields: 2,
+                rhs: rec_expr("fun (m : Pack -> U) (f : forall (a : A) (b : B a), m (mk a b)) (a : A) (b : B a) => f a b"),
+            }],
+        }],
+    }).unwrap();
+    env.axiom("p", expr("Pack")).unwrap();
+    env.axiom("q", expr("Pack")).unwrap();
+    env
+}
+
+fn project(index: usize, value: Expr) -> Expr {
+    Expr::Proj("Pack".into(), index, Shared::new(value))
+}
+
+#[test]
+fn dependent_projection_type_inference() {
+    let env = pack(false, false);
+    let first = project(0, expr("p"));
+    let second = project(1, expr("p"));
+    assert!(env.infer(&first).unwrap().aeq(&expr("A")));
+    let expected = expr("B").app(first);
+    assert!(env.infer(&second).unwrap().aeq(&expected));
+    env.check(&second, &expected).unwrap();
+    assert!(env.check(&second, &expr("B a")).is_err());
+    for (index, expected) in [(0, "a"), (1, "b")] {
+        assert!(
+            env.def_eq(&project(index, expr("mk a b")), &expr(expected))
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        env.infer(&project(2, expr("p"))).unwrap_err().0,
+        "projection field out of range"
+    );
+}
+
+#[test]
+fn data_projections_from_prop_are_rejected() {
+    for proof_field in [false, true] {
+        let env = pack(true, proof_field);
+        for value in ["p", "mk a b"] {
+            for index in [0, 1] {
+                let error = env.infer(&project(index, expr(value))).unwrap_err();
+                assert_eq!(error.0, "projection eliminates proposition into data");
+            }
+        }
+    }
+    let env = pack(false, true);
+    env.infer(&project(1, expr("p"))).unwrap();
+}
+
+#[test]
+fn structure_eta_on_neutral_terms() {
+    let env = pack(false, false);
+    let neutral = expr("p");
+    let expanded = expr("mk")
+        .app(project(0, neutral.clone()))
+        .app(project(1, neutral.clone()));
+    env.check(&expanded, &expr("Pack")).unwrap();
+    assert!(env.def_eq(&neutral, &expanded).unwrap());
+    assert!(env.def_eq(&expanded, &neutral).unwrap());
+    assert!(!env.def_eq(&expr("q"), &expanded).unwrap());
+    assert!(!env.def_eq(&neutral, &expr("mk a b")).unwrap());
 }
