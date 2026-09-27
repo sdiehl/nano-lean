@@ -111,6 +111,8 @@ fn references(item: &Value) -> Result<Vec<usize>> {
             add(&b["body"])?;
         } else if let Some(m) = item.get("mdata") {
             add(&m["expr"])?;
+        } else if let Some(p) = item.get("proj") {
+            add(&p["struct"])?;
         }
     } else {
         for kind in ["axiom", "def", "thm", "opaque"] {
@@ -118,6 +120,18 @@ fn references(item: &Value) -> Result<Vec<usize>> {
                 add(&d["type"])?;
                 if kind != "axiom" {
                     add(&d["value"])?;
+                }
+            }
+        }
+        if let Some(d) = item.get("inductive") {
+            for kind in ["types", "ctors", "recs"] {
+                for declaration in array(&d[kind])? {
+                    add(&declaration["type"])?;
+                    if kind == "recs" {
+                        for rule in array(&declaration["rules"])? {
+                            add(&rule["rhs"])?;
+                        }
+                    }
                 }
             }
         }
@@ -140,16 +154,25 @@ fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
         if item.get("ie").is_some() {
             if index(&item["ie"])? != counts.len()
                 || ![
-                    "bvar", "sort", "const", "app", "lam", "forallE", "letE", "mdata",
+                    "bvar", "sort", "const", "app", "lam", "forallE", "letE", "mdata", "proj",
                 ]
                 .iter()
                 .any(|k| obj.contains_key(*k))
             {
                 return Ok(None);
             }
-        } else if !["meta", "in", "il", "axiom", "def", "thm", "opaque"]
-            .iter()
-            .any(|k| obj.contains_key(*k))
+        } else if ![
+            "meta",
+            "in",
+            "il",
+            "axiom",
+            "def",
+            "thm",
+            "opaque",
+            "inductive",
+        ]
+        .iter()
+        .any(|k| obj.contains_key(*k))
         {
             return Ok(None);
         }
@@ -458,4 +481,42 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
         names: names.len(),
         levels: levels.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn projection_prepass_counts_only_the_structure_expression() {
+        let input = concat!(
+            "{\"meta\":{\"format\":{\"version\":\"3.1.0\"}}}\n",
+            "{\"in\":100,\"str\":{\"pre\":0,\"str\":\"S\"}}\n",
+            "{\"ie\":0,\"bvar\":0}\n",
+            "{\"ie\":1,\"proj\":{\"typeName\":100,\"idx\":2,\"struct\":0}}\n",
+            "{\"ie\":2,\"proj\":{\"typeName\":100,\"idx\":3,\"struct\":0}}\n",
+        );
+        let counts = count_uses(Cursor::new(input)).unwrap().unwrap();
+        assert_eq!(counts, [2, 0, 0]);
+        let reclaimed = check_with_counts(Cursor::new(input), Some(counts)).unwrap();
+        let stream = check_export(Cursor::new(input)).unwrap();
+        assert_eq!(reclaimed.json(), stream.json());
+    }
+
+    #[test]
+    fn inductive_prepass_keeps_declaration_roots_alive() {
+        let input = include_str!("../tests/fixtures/inductive-boundaries.ndjson");
+        let counts = count_uses(Cursor::new(input)).unwrap().unwrap();
+        assert_eq!(counts.len(), 67);
+        for root in [6, 17, 36, 45, 46, 50, 62, 66] {
+            assert_eq!(counts[root], 1, "declaration root {root}");
+        }
+        let reclaimed = check_with_counts(Cursor::new(input), Some(counts)).unwrap();
+        assert_eq!(reclaimed.declarations, 6);
+        assert_eq!(
+            reclaimed.json(),
+            check_export(Cursor::new(input)).unwrap().json()
+        );
+    }
 }

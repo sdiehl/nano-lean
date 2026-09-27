@@ -43,9 +43,9 @@
 - [ ] Profile and fix folded-constant-lastndjson exhaustion
 - [ ] Profile and fix irrelevance-before-evaluationndjson exhaustion
 - [ ] Profile and fix shared-subtermndjson exhaustion
-- [ ] Count projection references during importer prepass
-- [ ] Count inductive references during importer prepass
-- [ ] Test reclamation across inductive declaration boundaries
+- [x] Count projection references during importer prepass
+- [x] Count inductive references during importer prepass
+- [x] Test reclamation across inductive declaration boundaries
 - [ ] Compare streaming and reclaimed import results
 - [ ] Rerun all 193 export fixtures
 - [ ] Split remaining failures into individual tasks
