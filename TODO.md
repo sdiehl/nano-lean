@@ -7,8 +7,8 @@
 - [x] Test rejection of negative recursive occurrences
 - [x] Test rejection of forged recursor rules
 - [x] Test rejection of incorrect constructor metadata
-- [ ] Test forbidden large elimination from Prop
-- [ ] Test rollback after rejected inductive blocks
+- [x] Test forbidden large elimination from Prop
+- [x] Test rollback after rejected inductive blocks
 - [ ] Test dependent projection type inference
 - [ ] Test forbidden data projections from Prop
 - [ ] Test structure eta on neutral terms

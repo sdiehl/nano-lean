@@ -129,3 +129,63 @@ fn incorrect_constructor_metadata_is_rejected() {
         );
     }
 }
+
+#[test]
+fn large_elimination_from_prop_is_rejected() {
+    let mut block = switch();
+    block.types[0].ty = expr("Prop");
+    let error = Environment::new()
+        .declare_inductive(block.clone())
+        .unwrap_err();
+    assert_eq!(error.0, "invalid large elimination from proposition");
+
+    let levels = [("u".into(), Level::Nat(0))].into_iter().collect();
+    let recursor = &mut block.recursors[0];
+    recursor.params.clear();
+    recursor.ty = recursor.ty.substitute_levels(&levels).unwrap();
+    for rule in &mut recursor.rules {
+        rule.rhs = rule.rhs.substitute_levels(&levels).unwrap();
+    }
+    Environment::new().declare_inductive(block).unwrap();
+}
+
+#[test]
+fn rejected_inductive_blocks_roll_back() {
+    for late_failure in [false, true] {
+        let mut env = Environment::new();
+        env.axiom("A", expr("Type")).unwrap();
+        env.axiom("a", expr("A")).unwrap();
+        let mut block = switch();
+        if late_failure {
+            block.recursors[0].rules[0].rhs = expr("Type");
+        } else {
+            block.constructors[0].num_fields = 1;
+        }
+        let error = env.declare_inductive(block).unwrap_err();
+        assert!(
+            error.0.contains(if late_failure {
+                "type mismatch"
+            } else {
+                "incorrect constructor field count"
+            }),
+            "{error}"
+        );
+        for name in ["Switch", "left", "right"] {
+            assert!(env.infer(&Expr::constant(name)).is_err());
+        }
+        assert!(
+            env.infer(&Expr::Const("Switch.rec".into(), vec![Level::Nat(1)]))
+                .is_err()
+        );
+        env.check(&expr("a"), &expr("A")).unwrap();
+        env.declare_inductive(switch()).unwrap();
+        env.check(&expr("left"), &expr("Switch")).unwrap();
+        env.check(&expr("right"), &expr("Switch")).unwrap();
+        let term = Expr::Const("Switch.rec".into(), vec![Level::Nat(1)])
+            .app(expr("fun (s : Switch) => A"))
+            .app(expr("a"))
+            .app(expr("a"))
+            .app(expr("left"));
+        assert!(env.def_eq(&term, &expr("a")).unwrap());
+    }
+}
