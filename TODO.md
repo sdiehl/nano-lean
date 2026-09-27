@@ -1,0 +1,54 @@
+# TODO
+
+- [ ] Export an ordinary inductive regression fixture
+- [ ] Export a mutual inductive regression fixture
+- [ ] Test higher-order recursive field reduction
+- [ ] Test indexed recursor computation
+- [ ] Test rejection of negative recursive occurrences
+- [ ] Test rejection of forged recursor rules
+- [ ] Test rejection of incorrect constructor metadata
+- [ ] Test forbidden large elimination from Prop
+- [ ] Test rollback after rejected inductive blocks
+- [ ] Test dependent projection type inference
+- [ ] Test forbidden data projections from Prop
+- [ ] Test structure eta on neutral terms
+- [ ] Test proof recursor K reduction
+- [ ] Export a minimal nested inductive fixture
+- [ ] Separate recursor generation from export validation
+- [ ] Detect nested recursive type applications
+- [ ] Generate auxiliary mutual types for nesting
+- [ ] Specialize auxiliary constructors with nested parameters
+- [ ] Restore nested types in generated recursors
+- [ ] Validate exported nested recursor signatures
+- [ ] Validate exported nested computation rules
+- [ ] Handle differing nested recursor parameter counts
+- [ ] Test rejection of invalid nested parameters
+- [ ] Import arbitrary-size natural number literals
+- [ ] Infer natural number literal types
+- [ ] Compare natural literals with constructor forms
+- [ ] Reduce natural recursors over literals
+- [ ] Implement Lean's primitive natural number operations
+- [ ] Import string literals with Unicode preserved
+- [ ] Infer string literal types
+- [ ] Compare string literals with constructor forms
+- [ ] Validate quotient primitive declaration signatures
+- [ ] Implement quotient lift reduction
+- [ ] Implement quotient induction reduction
+- [ ] Test malformed quotient declarations are rejected
+- [ ] Audit unsafe declaration handling against Lean
+- [ ] Audit partial declaration handling against Lean
+- [ ] Profile and fix refute-cheap-lastndjson exhaustion
+- [ ] Profile and fix church-numeralsndjson exhaustion
+- [ ] Profile and fix folded-constant-firstndjson exhaustion
+- [ ] Profile and fix folded-constant-lastndjson exhaustion
+- [ ] Profile and fix irrelevance-before-evaluationndjson exhaustion
+- [ ] Profile and fix shared-subtermndjson exhaustion
+- [ ] Count projection references during importer prepass
+- [ ] Count inductive references during importer prepass
+- [ ] Test reclamation across inductive declaration boundaries
+- [ ] Compare streaming and reclaimed import results
+- [ ] Rerun all 193 export fixtures
+- [ ] Split remaining failures into individual tasks
+- [ ] Check all 670,630 Mathlib declarations locally
+- [ ] Record checking time and peak memory
+- [ ] Confirm zero Mathlib errors and timeouts

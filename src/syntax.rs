@@ -13,6 +13,7 @@ pub enum Expr {
     Sort(Level),
     Const(String, Vec<Level>),
     App(Shared<Expr>, Shared<Expr>),
+    Proj(String, usize, Shared<Expr>),
     Pi(Shared<Expr>, Binder),
     Lam(Shared<Expr>, Binder),
     Let(Shared<Expr>, Shared<Expr>, Binder),
@@ -58,6 +59,7 @@ impl Expr {
                         .collect::<Result<_, _>>()?,
                 ),
                 Expr::App(f, a) => Expr::App(shared(f, levels, memo)?, shared(a, levels, memo)?),
+                Expr::Proj(n, i, e) => Expr::Proj(n.clone(), *i, shared(e, levels, memo)?),
                 Expr::Pi(a, b) => Expr::Pi(shared(a, levels, memo)?, binder(b, memo)?),
                 Expr::Lam(a, b) => Expr::Lam(shared(a, levels, memo)?, binder(b, memo)?),
                 Expr::Let(a, v, b) => Expr::Let(
@@ -117,6 +119,11 @@ impl fmt::Display for Expr {
                     go(a, scope, f)?;
                     write!(f, " ")?;
                     go(b, scope, f)?;
+                    write!(f, ")")
+                }
+                Expr::Proj(n, i, e) => {
+                    write!(f, "(proj {n} {i} ")?;
+                    go(e, scope, f)?;
                     write!(f, ")")
                 }
                 Expr::Pi(ty, b) | Expr::Lam(ty, b) | Expr::Let(ty, _, b) => {

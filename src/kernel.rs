@@ -4,6 +4,8 @@ use std::{
     fmt,
 };
 use unbound::prelude::*;
+mod inductive;
+pub use inductive::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error(pub String);
@@ -25,6 +27,9 @@ struct Declaration {
 #[derive(Default, Clone, Debug)]
 pub struct Environment {
     declarations: BTreeMap<String, Declaration>,
+    inductives: BTreeMap<String, InductiveType>,
+    constructors: BTreeMap<String, Constructor>,
+    recursors: BTreeMap<String, Recursor>,
 }
 
 impl Environment {
@@ -233,6 +238,7 @@ impl<'a> Checker<'a> {
                 let subst = self.level_arguments(&d.params, us)?;
                 d.ty.substitute_levels(&subst)
             }
+            Expr::Proj(n, i, e) => self.infer_projection(n, *i, e),
             Expr::Pi(domain, binder) => {
                 let u = self.sort_shared(domain)?;
                 let (n, body) = binder.unbind_ref();
@@ -278,10 +284,34 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Expr::Let(_, value, body) => e = (*body.instantiate(&*value)).clone(),
-                Expr::App(fun, arg) => match self.whnf(&fun)? {
-                    Expr::Lam(_, body) => e = (*body.instantiate(&*arg)).clone(),
-                    fun => return Ok(fun.app((*arg).clone())),
-                },
+                Expr::Proj(ref name, index, ref value) => {
+                    let value = self.whnf(value)?;
+                    let (head, args) = inductive::spine(&value);
+                    if let Expr::Const(c, _) = head
+                        && let Some(info) = self.env.constructors.get(&c)
+                        && info.inductive == *name
+                        && index < info.num_fields
+                        && args.len() == info.num_params + info.num_fields
+                    {
+                        e = args[info.num_params + index].clone();
+                    } else {
+                        return Ok(Expr::Proj(name.clone(), index, Shared::new(value)));
+                    }
+                }
+                Expr::App(..) => {
+                    let (head, args) = inductive::spine(&e);
+                    let head = self.whnf(&head)?;
+                    if let Expr::Lam(_, body) = &head {
+                        e = (*body.instantiate(&args[0])).clone();
+                        for arg in args.into_iter().skip(1) {
+                            e = e.app(arg);
+                        }
+                    } else if let Some(reduced) = self.reduce_recursor(&head, &args)? {
+                        e = reduced;
+                    } else {
+                        return Ok(args.into_iter().fold(head, Expr::app));
+                    }
+                }
                 _ => return Ok(e),
             }
         }
@@ -301,6 +331,7 @@ impl<'a> Checker<'a> {
                 })
             }
             Expr::App(f, a) => Ok(self.nf(&f)?.app(self.nf(&a)?)),
+            Expr::Proj(n, i, e) => Ok(Expr::Proj(n, i, Shared::new(self.nf(&e)?))),
             other => Ok(other),
         }
     }
@@ -319,7 +350,17 @@ impl<'a> Checker<'a> {
             let tb = self.infer(&b)?;
             return self.conv(&ta, &tb);
         }
+        if self.unit_like(&ta)? {
+            let tb = self.infer(&b)?;
+            return self.conv(&ta, &tb);
+        }
+        if self.structure_eta(&a, &b)? || self.structure_eta(&b, &a)? {
+            return Ok(true);
+        }
         match (&a, &b) {
+            (Expr::Proj(an, ai, ae), Expr::Proj(bn, bi, be)) if an == bn && ai == bi => {
+                self.conv(ae, be)
+            }
             (Expr::Sort(a), Expr::Sort(b)) => a.equivalent(b),
             (Expr::Const(a, aus), Expr::Const(b, bus)) if a == b && aus.len() == bus.len() => {
                 for (a, b) in aus.iter().zip(bus) {

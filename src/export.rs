@@ -1,3 +1,4 @@
+use crate::kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 use crate::{Environment, Error, Expr, Level};
 use serde_json::{Value, json};
 use std::{
@@ -24,7 +25,7 @@ impl std::fmt::Display for ExportError {
 impl std::error::Error for ExportError {}
 impl From<Error> for ExportError {
     fn from(e: Error) -> Self {
-        if e.0.contains("budget exhausted") {
+        if e.0.contains("budget exhausted") || e.0.starts_with("unsupported:") {
             Self::Unsupported(e.0)
         } else {
             Self::Invalid(e.0)
@@ -47,6 +48,9 @@ fn array(v: &Value) -> Result<&[Value]> {
 }
 fn string(v: &Value) -> Result<&str> {
     v.as_str().ok_or_else(|| invalid("expected string"))
+}
+fn boolean(v: &Value) -> Result<bool> {
+    v.as_bool().ok_or_else(|| invalid("expected boolean"))
 }
 fn get<T: Clone>(items: &HashMap<usize, T>, v: &Value) -> Result<T> {
     items
@@ -259,6 +263,8 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                     )
                 } else if let Some(a) = item.get("app") {
                     Expr::App(e(&a["fn"])?, e(&a["arg"])?)
+                } else if let Some(p) = item.get("proj") {
+                    Expr::Proj(name(&p["typeName"])?, index(&p["idx"])?, e(&p["struct"])?)
                 } else if let Some(b) = item.get("lam").or_else(|| item.get("forallE")) {
                     let ty = e(&b["type"])?;
                     let body = bind(Name::new(name(&b["name"])?), e(&b["body"])?);
@@ -288,6 +294,87 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                 return Err(invalid("malformed declaration entry"));
             }
             let (kind, d) = object.iter().next().unwrap();
+            if kind == "inductive" {
+                let names_of =
+                    |v: &Value| -> Result<Vec<String>> { array(v)?.iter().map(name).collect() };
+                let expr = |v: &Value| -> Result<Expr> { Ok((*get(&expressions, v)?).clone()) };
+                let safe = |v: &Value| -> Result<()> {
+                    if boolean(&v["isUnsafe"])? {
+                        return Err(ExportError::Unsupported(
+                            "unsafe inductive declaration".into(),
+                        ));
+                    }
+                    Ok(())
+                };
+                let types = array(&d["types"])?
+                    .iter()
+                    .map(|t| -> Result<_> {
+                        safe(t)?;
+                        Ok(InductiveType {
+                            name: name(&t["name"])?,
+                            params: names_of(&t["levelParams"])?,
+                            ty: expr(&t["type"])?,
+                            all: names_of(&t["all"])?,
+                            constructors: names_of(&t["ctors"])?,
+                            num_params: index(&t["numParams"])?,
+                            num_indices: index(&t["numIndices"])?,
+                            num_nested: index(&t["numNested"])?,
+                            recursive: boolean(&t["isRec"])?,
+                            reflexive: boolean(&t["isReflexive"])?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let constructors = array(&d["ctors"])?
+                    .iter()
+                    .map(|c| -> Result<_> {
+                        safe(c)?;
+                        Ok(Constructor {
+                            name: name(&c["name"])?,
+                            params: names_of(&c["levelParams"])?,
+                            ty: expr(&c["type"])?,
+                            inductive: name(&c["induct"])?,
+                            index: index(&c["cidx"])?,
+                            num_params: index(&c["numParams"])?,
+                            num_fields: index(&c["numFields"])?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let recursors = array(&d["recs"])?
+                    .iter()
+                    .map(|r| -> Result<_> {
+                        safe(r)?;
+                        Ok(Recursor {
+                            name: name(&r["name"])?,
+                            params: names_of(&r["levelParams"])?,
+                            ty: expr(&r["type"])?,
+                            all: names_of(&r["all"])?,
+                            num_params: index(&r["numParams"])?,
+                            num_indices: index(&r["numIndices"])?,
+                            num_motives: index(&r["numMotives"])?,
+                            num_minors: index(&r["numMinors"])?,
+                            k: boolean(&r["k"])?,
+                            rules: array(&r["rules"])?
+                                .iter()
+                                .map(|rule| -> Result<_> {
+                                    Ok(RecursorRule {
+                                        constructor: name(&rule["ctor"])?,
+                                        num_fields: index(&rule["nfields"])?,
+                                        rhs: expr(&rule["rhs"])?,
+                                    })
+                                })
+                                .collect::<Result<_>>()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let declarations = types.len() + constructors.len() + recursors.len();
+                env.declare_inductive(InductiveBlock {
+                    types,
+                    constructors,
+                    recursors,
+                })?;
+                count += declarations;
+                return Ok(());
+            }
             if !matches!(kind.as_str(), "axiom" | "def" | "thm" | "opaque") {
                 return Err(ExportError::Unsupported(format!("declaration kind {kind}")));
             }

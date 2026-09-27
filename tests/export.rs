@@ -34,6 +34,7 @@ fn official_exporter_smoke() {
 fn malformed_entries_and_bad_terms_are_rejected() {
     let meta = "{\"meta\":{\"format\":{\"version\":\"3.1.0\"}}}\n";
     for body in [
+        "{\"inductive\":{}}\n",
         "{\"ie\":0,\"sort\":23}\n",
         "{\"ie\":0,\"sort\":0}\n{\"ie\":0,\"sort\":0}\n",
         "{\"in\":0,\"str\":{\"pre\":0,\"str\":\"x\"}}\n",
@@ -50,7 +51,7 @@ fn malformed_entries_and_bad_terms_are_rejected() {
 
 #[test]
 fn unsupported_is_not_reported_as_checked() {
-    let input = "{\"meta\":{\"format\":{\"version\":\"3.1.0\"}}}\n{\"inductive\":{}}\n";
+    let input = "{\"meta\":{\"format\":{\"version\":\"3.1.0\"}}}\n{\"quot\":{}}\n";
     assert!(matches!(check(input), Err(ExportError::Unsupported(_))));
 }
 
