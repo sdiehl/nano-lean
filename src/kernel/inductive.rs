@@ -629,6 +629,14 @@ impl Checker<'_> {
         }
         let subst = self.level_arguments(&rec.params, levels)?;
         let major = self.whnf(&args[major_pos])?;
+        let major = match major {
+            Expr::Nat(n) => self.nat_constructor(&n.0),
+            Expr::Str(s) => {
+                let expanded = self.string_constructor(&s)?;
+                self.whnf(&expanded)?
+            }
+            other => other,
+        };
         let (mut ctor, mut fields) = spine(&major);
         if !matches!(&ctor, Expr::Const(n, _) if self.env.constructors.contains_key(n))
             && let Some(rule) = rec.rules.first()

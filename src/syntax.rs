@@ -5,10 +5,39 @@ use std::{
 };
 use unbound::prelude::*;
 
+/// An atomic, arbitrary-precision natural number (it contains no binders).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Natural(pub num_bigint::BigUint);
+
+impl Alpha for Natural {
+    fn support(&self) -> unbound::Support {
+        unbound::Support::default()
+    }
+    fn aeq(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn close(&mut self, _: usize, _: &[AnyName]) {}
+    fn open(&mut self, _: usize, _: &[AnyName]) {}
+    fn fv_in(&self, _: &mut Vec<AnyName>) {}
+}
+impl<V> Subst<V> for Natural {
+    fn instantiate_with(&self, _: usize, _: &mut unbound::InstantiateCtx<'_, V>) -> Option<Self> {
+        Some(self.clone())
+    }
+    fn is_var(&self) -> Option<SubstName<V>> {
+        None
+    }
+    fn subst(&self, _: &Name<V>, _: &V) -> Self {
+        self.clone()
+    }
+}
+
 pub type Binder = Bind<Name<Expr>, Shared<Expr>>;
 
 #[derive(Clone, Debug, Alpha, Subst)]
 pub enum Expr {
+    Nat(Natural),
+    Str(String),
     Var(Name<Expr>),
     Sort(Level),
     Const(String, Vec<Level>),
@@ -20,6 +49,9 @@ pub enum Expr {
 }
 
 impl Expr {
+    pub fn nat(value: impl Into<num_bigint::BigUint>) -> Self {
+        Self::Nat(Natural(value.into()))
+    }
     pub fn substitute_levels(&self, levels: &BTreeMap<String, Level>) -> Result<Self, Error> {
         if levels
             .iter()
@@ -50,6 +82,7 @@ impl Expr {
                     Ok(bind(b.pattern().clone(), shared(b.body(), levels, memo)?))
                 };
             Ok(match e {
+                Expr::Nat(_) | Expr::Str(_) => e.clone(),
                 Expr::Var(n) => Expr::Var(n.clone()),
                 Expr::Sort(u) => Expr::Sort(u.substitute(levels)?),
                 Expr::Const(n, us) => Expr::Const(
@@ -96,6 +129,8 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn go(e: &Expr, scope: &mut NameScope, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match e {
+                Expr::Nat(n) => write!(f, "{}", n.0),
+                Expr::Str(s) => write!(f, "{s:?}"),
                 Expr::Var(n) => write!(f, "{}", scope.get(n)),
                 Expr::Sort(Level::Nat(0)) => write!(f, "Prop"),
                 Expr::Sort(Level::Nat(1)) => write!(f, "Type"),

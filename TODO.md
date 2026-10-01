@@ -1,5 +1,23 @@
 # TODO
 
+- [x] Pin comparison revision, Lean/exporter versions, Mathlib input, and all fixtures
+- [x] Record the baseline and add reproducible fixture comparison with regression detection
+- [x] Import arbitrary-size natural number literals
+- [x] Infer natural number literal types
+- [x] Compare natural literals with constructor forms
+- [x] Reduce natural recursors over literals
+- [x] Implement Lean's primitive natural number operations
+- [x] Import string literals with Unicode preserved
+- [x] Infer string literal types
+- [x] Compare string literals with constructor forms
+- [x] Validate quotient primitive declaration signatures
+- [x] Implement quotient lift reduction
+- [x] Implement quotient induction reduction
+- [x] Test malformed quotient declarations are rejected
+- [x] Audit unsafe declaration handling against Lean
+- [x] Audit partial declaration handling against Lean
+- [x] Export and check a primitive regression fixture with large literals, Nat recursion, and quotient lifting
+- [x] Test Unicode import, natural arithmetic edge cases, and literal/quotient reclamation
 - [x] Export an ordinary inductive regression fixture
 - [x] Export a mutual inductive regression fixture
 - [ ] Test higher-order recursive field reduction
@@ -23,32 +41,30 @@
 - [ ] Validate exported nested computation rules
 - [ ] Handle differing nested recursor parameter counts
 - [ ] Test rejection of invalid nested parameters
-- [ ] Import arbitrary-size natural number literals
-- [ ] Infer natural number literal types
-- [ ] Compare natural literals with constructor forms
-- [ ] Reduce natural recursors over literals
-- [ ] Implement Lean's primitive natural number operations
-- [ ] Import string literals with Unicode preserved
-- [ ] Infer string literal types
-- [ ] Compare string literals with constructor forms
-- [ ] Validate quotient primitive declaration signatures
-- [ ] Implement quotient lift reduction
-- [ ] Implement quotient induction reduction
-- [ ] Test malformed quotient declarations are rejected
-- [ ] Audit unsafe declaration handling against Lean
-- [ ] Audit partial declaration handling against Lean
-- [ ] Profile and fix refute-cheap-lastndjson exhaustion
-- [ ] Profile and fix church-numeralsndjson exhaustion
-- [ ] Profile and fix folded-constant-firstndjson exhaustion
-- [ ] Profile and fix folded-constant-lastndjson exhaustion
-- [ ] Profile and fix irrelevance-before-evaluationndjson exhaustion
-- [ ] Profile and fix shared-subtermndjson exhaustion
+- [ ] Resolve nested-unused-param.ndjson rejection through nested-parameter validation
+- [ ] Check init-prelude.ndjson beyond its nested-inductive block
+- [ ] Check grind-ring-5.ndjson beyond its nested-inductive block
+- [ ] Profile and fix refute-cheap-last.ndjson exhaustion
+- [ ] Profile and fix church-numerals.ndjson exhaustion
+- [ ] Profile and fix folded-constant-first.ndjson exhaustion
+- [ ] Profile and fix folded-constant-last.ndjson exhaustion
+- [ ] Profile and fix irrelevance-before-evaluation.ndjson exhaustion
+- [ ] Profile and fix shared-subterm.ndjson exhaustion
+- [ ] Fix app-lam.ndjson stack overflow
+- [ ] Profile and fix beta-ladder.ndjson timeout
+- [ ] Profile and fix let-ladder.ndjson timeout
+- [ ] Profile and fix fueled-chain.ndjson exhaustion
+- [ ] Profile and fix magma-list-deep-n21.ndjson exhaustion
+- [ ] Profile and fix magma-list-deep-n36.ndjson exhaustion
+- [ ] Profile and fix magma-list-pair-n21.ndjson exhaustion
+- [ ] Profile and fix magma-list-pair-n7.ndjson exhaustion
+- [ ] Profile and fix shift-cascade.ndjson exhaustion
 - [x] Count projection references during importer prepass
 - [x] Count inductive references during importer prepass
 - [x] Test reclamation across inductive declaration boundaries
 - [ ] Compare streaming and reclaimed import results
-- [ ] Rerun all 193 export fixtures
-- [ ] Split remaining failures into individual tasks
+- [x] Rerun all 193 export fixtures
+- [x] Split remaining failures into individual tasks
 - [ ] Check all 670,630 Mathlib declarations locally
 - [ ] Record checking time and peak memory
 - [ ] Confirm zero Mathlib errors and timeouts

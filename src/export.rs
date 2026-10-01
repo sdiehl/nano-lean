@@ -115,10 +115,10 @@ fn references(item: &Value) -> Result<Vec<usize>> {
             add(&p["struct"])?;
         }
     } else {
-        for kind in ["axiom", "def", "thm", "opaque"] {
+        for kind in ["axiom", "def", "thm", "opaque", "quot"] {
             if let Some(d) = item.get(kind) {
                 add(&d["type"])?;
-                if kind != "axiom" {
+                if kind != "axiom" && kind != "quot" {
                     add(&d["value"])?;
                 }
             }
@@ -155,6 +155,7 @@ fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
             if index(&item["ie"])? != counts.len()
                 || ![
                     "bvar", "sort", "const", "app", "lam", "forallE", "letE", "mdata", "proj",
+                    "natVal", "strVal",
                 ]
                 .iter()
                 .any(|k| obj.contains_key(*k))
@@ -170,6 +171,7 @@ fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
             "thm",
             "opaque",
             "inductive",
+            "quot",
         ]
         .iter()
         .any(|k| obj.contains_key(*k))
@@ -274,6 +276,17 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                 let e = |v| get(&expressions, v);
                 let expr = if let Some(v) = item.get("bvar") {
                     Expr::Var(Name::bound(index(v)?, 0))
+                } else if let Some(v) = item.get("natVal") {
+                    let digits = string(v)?;
+                    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+                        return Err(invalid("invalid natural literal"));
+                    }
+                    Expr::nat(
+                        num_bigint::BigUint::parse_bytes(digits.as_bytes(), 10)
+                            .ok_or_else(|| invalid("invalid natural literal"))?,
+                    )
+                } else if let Some(v) = item.get("strVal") {
+                    Expr::Str(string(v)?.to_owned())
                 } else if let Some(u) = item.get("sort") {
                     Expr::Sort(get(&levels, u)?)
                 } else if let Some(c) = item.get("const") {
@@ -317,14 +330,24 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                 return Err(invalid("malformed declaration entry"));
             }
             let (kind, d) = object.iter().next().unwrap();
+            if kind == "quot" {
+                let params = array(&d["levelParams"])?
+                    .iter()
+                    .map(name)
+                    .collect::<Result<_>>()?;
+                let ty = (*get(&expressions, &d["type"])?).clone();
+                env.declare_quotient(name(&d["name"])?, params, ty, string(&d["kind"])?)?;
+                count += 1;
+                return Ok(());
+            }
             if kind == "inductive" {
                 let names_of =
                     |v: &Value| -> Result<Vec<String>> { array(v)?.iter().map(name).collect() };
                 let expr = |v: &Value| -> Result<Expr> { Ok((*get(&expressions, v)?).clone()) };
                 let safe = |v: &Value| -> Result<()> {
                     if boolean(&v["isUnsafe"])? {
-                        return Err(ExportError::Unsupported(
-                            "unsafe inductive declaration".into(),
+                        return Err(invalid(
+                            "unsafe inductive declaration is not permitted in a safe proof export",
                         ));
                     }
                     Ok(())
@@ -402,13 +425,19 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                 return Err(ExportError::Unsupported(format!("declaration kind {kind}")));
             }
             if kind == "def" {
-                if d["safety"] != "safe" {
-                    return Err(ExportError::Unsupported(
-                        "unsafe or partial definition".into(),
-                    ));
+                match string(&d["safety"])? {
+                    "safe" => {}
+                    "unsafe" | "partial" => {
+                        return Err(invalid(
+                            "unsafe or partial definition is not permitted in a safe proof export",
+                        ));
+                    }
+                    _ => return Err(invalid("invalid definition safety")),
                 }
-            } else if kind != "thm" && d["isUnsafe"] != false {
-                return Err(ExportError::Unsupported("unsafe declaration".into()));
+            } else if kind != "thm" && boolean(&d["isUnsafe"])? {
+                return Err(invalid(
+                    "unsafe declaration is not permitted in a safe proof export",
+                ));
             }
             if let Some(all) = d.get("all") {
                 let all = array(all)?;
@@ -514,6 +543,20 @@ mod tests {
         }
         let reclaimed = check_with_counts(Cursor::new(input), Some(counts)).unwrap();
         assert_eq!(reclaimed.declarations, 6);
+        assert_eq!(
+            reclaimed.json(),
+            check_export(Cursor::new(input)).unwrap().json()
+        );
+    }
+
+    #[test]
+    fn primitive_prepass_handles_literals_and_quotient_signature_roots() {
+        let input = include_str!("../tests/fixtures/primitives.ndjson");
+        let input = format!("{input}{{\"ie\":460,\"strVal\":\"水🦀\"}}\n");
+        let counts = count_uses(Cursor::new(&input)).unwrap().unwrap();
+        assert_eq!(counts.len(), 461);
+        let reclaimed = check_with_counts(Cursor::new(&input), Some(counts)).unwrap();
+        assert_eq!(reclaimed.declarations, 35);
         assert_eq!(
             reclaimed.json(),
             check_export(Cursor::new(input)).unwrap().json()

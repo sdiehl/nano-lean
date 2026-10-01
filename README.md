@@ -1,12 +1,17 @@
 # nano-lean
 
 A minimal Lean-style type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for bound variables and fresh names when opening binders.
-Lean's kernel uses the same locally nameless approach, but supports the full theory, including universe polymorphism, inductive types, and quotients.
+
+Aims to support the full Lean kernel with the full theory, including universe polymorphism, inductive types, and quotients.
 
 ```sh
 cargo run -- examples/core.ltc
 cargo test
 ```
+
+Lean NDJSON exports can be checked with `cargo run --release -- --export FILE.ndjson`.
+The importer accepts safe proof exports and rejects unsafe or partial declarations.
+Natural/string literals and quotient primitives are supported
 
 ## License
 

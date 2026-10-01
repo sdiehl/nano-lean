@@ -5,6 +5,8 @@ use std::{
 };
 use unbound::prelude::*;
 mod inductive;
+mod primitive;
+mod quotient;
 pub use inductive::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub struct Environment {
     inductives: BTreeMap<String, InductiveType>,
     constructors: BTreeMap<String, Constructor>,
     recursors: BTreeMap<String, Recursor>,
+    quotients: BTreeSet<String>,
 }
 
 impl Environment {
@@ -222,6 +225,8 @@ impl<'a> Checker<'a> {
     fn infer(&mut self, e: &Expr) -> Result<Expr> {
         self.tick()?;
         match e {
+            Expr::Nat(_) => self.literal_type("Nat"),
+            Expr::Str(_) => self.literal_type("String"),
             Expr::Var(n) => self
                 .locals
                 .iter()
@@ -286,6 +291,12 @@ impl<'a> Checker<'a> {
                 Expr::Let(_, value, body) => e = (*body.instantiate(&*value)).clone(),
                 Expr::Proj(ref name, index, ref value) => {
                     let value = self.whnf(value)?;
+                    let value = if let Expr::Str(s) = &value {
+                        let expanded = self.string_constructor(s)?;
+                        self.whnf(&expanded)?
+                    } else {
+                        value
+                    };
                     let (head, args) = inductive::spine(&value);
                     if let Expr::Const(c, _) = head
                         && let Some(info) = self.env.constructors.get(&c)
@@ -300,6 +311,10 @@ impl<'a> Checker<'a> {
                 }
                 Expr::App(..) => {
                     let (head, args) = inductive::spine(&e);
+                    if let Some(reduced) = self.reduce_primitive(&head, &args)? {
+                        e = reduced;
+                        continue;
+                    }
                     let head = self.whnf(&head)?;
                     if let Expr::Lam(_, body) = &head {
                         e = (*body.instantiate(&args[0])).clone();
@@ -307,6 +322,8 @@ impl<'a> Checker<'a> {
                             e = e.app(arg);
                         }
                     } else if let Some(reduced) = self.reduce_recursor(&head, &args)? {
+                        e = reduced;
+                    } else if let Some(reduced) = self.reduce_quotient(&head, &args)? {
                         e = reduced;
                     } else {
                         return Ok(args.into_iter().fold(head, Expr::app));
@@ -344,6 +361,25 @@ impl<'a> Checker<'a> {
         let b = self.whnf(b)?;
         if a.aeq(&b) {
             return Ok(true);
+        }
+        match (&a, &b) {
+            (Expr::Nat(x), Expr::Nat(y)) => return Ok(x == y),
+            (Expr::Str(x), Expr::Str(y)) => return Ok(x == y),
+            (Expr::Nat(n), _) => {
+                return self.nat_literal_eq(&n.0, &b);
+            }
+            (_, Expr::Nat(n)) => {
+                return self.nat_literal_eq(&n.0, &a);
+            }
+            (Expr::Str(s), _) => {
+                let expanded = self.string_constructor(s)?;
+                return self.conv(&expanded, &b);
+            }
+            (_, Expr::Str(s)) => {
+                let expanded = self.string_constructor(s)?;
+                return self.conv(&a, &expanded);
+            }
+            _ => {}
         }
         let ta = self.infer(&a)?;
         if self.sort(&ta)?.equivalent(&Level::Nat(0))? {
