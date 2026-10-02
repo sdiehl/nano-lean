@@ -252,11 +252,12 @@ impl Environment {
         )?;
         self.declarations.insert(
             name.into(),
-            Declaration {
+            Rc::new(Declaration {
+                order: self.declarations.len(),
                 params: params.to_vec(),
                 ty,
                 value: None,
-            },
+            }),
         );
         added.push(name.into());
         Ok(())
@@ -614,13 +615,13 @@ impl Environment {
         }
         self.validate_inductive_export(actual, &expected)?;
         for t in expected.types {
-            self.inductives.insert(t.name.clone(), t);
+            self.inductives.insert(t.name.clone(), Rc::new(t));
         }
         for c in expected.constructors {
-            self.constructors.insert(c.name.clone(), c);
+            self.constructors.insert(c.name.clone(), Rc::new(c));
         }
         for r in expected.recursors {
-            self.recursors.insert(r.name.clone(), r);
+            self.recursors.insert(r.name.clone(), Rc::new(r));
         }
         Ok(())
     }
@@ -757,7 +758,7 @@ impl Checker<'_> {
         {
             let info = self.env.constructors[&rule.constructor].clone();
             if self.structure(&info.inductive).is_some() {
-                let ty = self.infer(&major)?;
+                let ty = self.type_of(&major)?;
                 let ty = self.whnf(&ty)?;
                 let (head, params) = spine(&ty);
                 if matches!(&head, Expr::Const(n, _) if *n == info.inductive)
@@ -794,8 +795,8 @@ impl Checker<'_> {
                 Expr::Const(rule.constructor.clone(), us.clone()),
                 args[..rec.num_params].iter().cloned(),
             );
-            let actual = self.infer(&major)?;
-            let expected = self.infer(&replacement)?;
+            let actual = self.type_of(&major)?;
+            let expected = self.type_of(&replacement)?;
             if !self.conv(&actual, &expected)? {
                 return Ok(None);
             }
@@ -817,7 +818,7 @@ impl Checker<'_> {
         if fields.len() != ctor_params + rule.num_fields {
             return Ok(None);
         }
-        let rhs = rule.rhs.substitute_levels(&subst)?;
+        let rhs = self.substitute_levels(&rule.rhs, &subst)?;
         let prefix = rec.num_params + rec.num_motives + rec.num_minors;
         Ok(Some(apply(
             rhs,
@@ -831,7 +832,7 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    fn structure(&self, name: &str) -> Option<Constructor> {
+    fn structure(&self, name: &str) -> Option<Rc<Constructor>> {
         let info = self.env.inductives.get(name)?;
         if info.recursive || info.num_indices != 0 || info.constructors.len() != 1 {
             return None;
@@ -853,7 +854,7 @@ impl Checker<'_> {
         index: usize,
         e: &Shared<Expr>,
     ) -> Result<Expr> {
-        let ty = self.infer_shared(e)?;
+        let ty = self.type_of(e)?;
         let ty = self.whnf(&ty)?;
         let (head, args) = spine(&ty);
         let Expr::Const(n, levels) = head else {
@@ -872,7 +873,7 @@ impl Checker<'_> {
         let ctor = self.env.constructors[&info.constructors[0]].clone();
         demand(index < ctor.num_fields, "projection field out of range")?;
         let subst = self.level_arguments(&ctor.params, &levels)?;
-        let mut field_ty = ctor.ty.substitute_levels(&subst)?;
+        let mut field_ty = self.substitute_levels(&ctor.ty, &subst)?;
         for arg in args.into_iter().take(ctor.num_params) {
             let Expr::Pi(_, body) = self.whnf(&field_ty)? else {
                 return Err(Error("invalid constructor telescope".into()));
@@ -919,8 +920,8 @@ impl Checker<'_> {
         {
             return Ok(false);
         }
-        let at = self.infer(a)?;
-        let bt = self.infer(b)?;
+        let at = self.type_of(a)?;
+        let bt = self.type_of(b)?;
         if !self.conv(&at, &bt)? {
             return Ok(false);
         }

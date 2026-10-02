@@ -1,20 +1,27 @@
 use nano_lean::{
     Environment,
-    export::{ExportError, check_export_file},
+    export::{ExportError, check_export, check_export_file},
     parser,
 };
 use std::{
     env, fs,
-    io::{self, Read},
+    io::{self, BufReader, Read},
     process::ExitCode,
 };
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args().skip(1).collect();
     if let [flag, path] = args.as_slice()
-        && flag == "--export"
+        && (flag == "--export" || flag == "--export-stream")
     {
-        let result = check_export_file(path);
+        let result = if flag == "--export-stream" {
+            match fs::File::open(path) {
+                Ok(file) => check_export(BufReader::new(file)),
+                Err(e) => Err(ExportError::Invalid(e.to_string())),
+            }
+        } else {
+            check_export_file(path)
+        };
         return match result {
             Ok(report) => {
                 println!("{}", report.json());
@@ -32,7 +39,7 @@ fn main() -> ExitCode {
     }
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "Usage: nano-lean [FILE|-]\n       nano-lean --export FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
+            "Usage: nano-lean [FILE|-]\n       nano-lean --export FILE.ndjson\n       nano-lean --export-stream FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
         );
         return ExitCode::SUCCESS;
     }

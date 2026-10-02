@@ -2,7 +2,7 @@ use crate::Error;
 use std::collections::{BTreeMap, BTreeSet};
 use unbound::{Alpha, AnyName, Name, Subst, SubstName};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     Nat(u32),
     Param(String),

@@ -160,3 +160,37 @@ fn constants_survive_printing_under_same_spelled_binders() {
     let original = expr("(fun (A : Type) => @A)");
     assert!(expr(&original.to_string()).aeq(&original));
 }
+
+#[test]
+fn lazy_conversion_can_discard_unequal_arguments() {
+    let mut env = env();
+    run("def erase : A -> A := fun (x : A) => a", &mut env).unwrap();
+    assert!(env.def_eq(&expr("erase a"), &expr("erase b")).unwrap());
+    assert!(!env.def_eq(&expr("a"), &expr("b")).unwrap());
+    assert!(env.infer(&expr("erase Type")).is_err());
+}
+
+#[test]
+fn suspended_arguments_keep_their_lexical_context() {
+    let env = env();
+    for (input, expected) in [
+        (
+            "(fun (x : A) => (fun (y : A) => fun (z : A) => x) b) a",
+            "fun (z : A) => a",
+        ),
+        (
+            "(fun (x : A) => (fun (y : A) => fun (z : A) => y) x) b",
+            "fun (z : A) => b",
+        ),
+        ("(fun (T : Type) => fun (x : T) => x) A", "fun (x : A) => x"),
+        (
+            "let T : Type := A in let x : T := a in (fun (y : T) => x) b",
+            "a",
+        ),
+    ] {
+        assert!(
+            env.normalize(&expr(input)).unwrap().aeq(&expr(expected)),
+            "{input}"
+        );
+    }
+}

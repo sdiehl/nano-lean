@@ -47,3 +47,21 @@ fn shared_closed_body_can_occur_in_different_local_contexts() {
     env.check(&Expr::constant("f").app(left).app(right), &a)
         .unwrap();
 }
+
+#[test]
+fn cached_open_terms_do_not_alias_different_let_values() {
+    let mut env = Environment::new();
+    nano_lean::parser::run(
+        "axiom A : Type; axiom a : A; axiom b : A; axiom P : A -> Type; axiom pa : P a; axiom pb : P b; axiom f : (P a) -> (P b) -> A",
+        &mut env,
+    ).unwrap();
+    let parse = |s| nano_lean::parser::parse_expr(s).unwrap();
+    env.check(&parse("f (let x : A := a in (fun (p : P x) => p) pa) (let x : A := b in (fun (p : P x) => p) pb)"), &parse("A")).unwrap();
+    assert!(env.infer(&parse("f (let x : A := a in (fun (p : P x) => p) pa) (let x : A := b in (fun (p : P x) => p) pa)")).is_err());
+}
+
+#[test]
+fn enormous_unbound_index_is_rejected_without_allocating_its_range() {
+    let env = Environment::new();
+    assert!(env.infer(&Expr::Var(Name::bound(usize::MAX, 0))).is_err());
+}

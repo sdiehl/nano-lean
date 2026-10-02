@@ -1,4 +1,6 @@
-use super::{Checker, Environment, Error, Result, inductive::spine};
+#[cfg(test)]
+use super::inductive::spine;
+use super::{Checker, Environment, Error, Result};
 use crate::{Expr, Level};
 use unbound::Name;
 
@@ -145,6 +147,7 @@ impl Environment {
                 .app(value.clone())
                 .app(value),
         );
+        let mut tc = Checker::new(self);
         tc.uparams = refl.params.iter().cloned().collect();
         if !tc.conv(&refl.ty, &expected)? {
             return Err(bad());
@@ -154,6 +157,7 @@ impl Environment {
 }
 
 impl Checker<'_> {
+    #[cfg(test)]
     pub(super) fn reduce_quotient(&mut self, head: &Expr, args: &[Expr]) -> Result<Option<Expr>> {
         let Expr::Const(name, levels) = head else {
             return Ok(None);
@@ -199,11 +203,12 @@ mod tests {
             // This isolates reduction; exported signatures are checked in integration tests.
             env.declarations.insert(
                 name.into(),
-                Declaration {
+                std::rc::Rc::new(Declaration {
+                    order: 0,
                     params: vec![],
                     ty: Expr::Sort(Level::Nat(0)),
                     value: None,
-                },
+                }),
             );
             let f = Expr::constant("minor");
             let value = Expr::constant("value");
@@ -225,11 +230,12 @@ mod tests {
             env.quotients.extend([name.into(), "Quot.mk".into()]);
             env.declarations.insert(
                 "Quot.mk".into(),
-                Declaration {
+                std::rc::Rc::new(Declaration {
+                    order: 0,
                     params: vec![],
                     ty: Expr::Sort(Level::Nat(0)),
                     value: None,
-                },
+                }),
             );
             let expected = f.app(value).app(Expr::constant("extra"));
             assert!(

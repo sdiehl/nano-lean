@@ -436,3 +436,62 @@ fn nested_parameters_reject_negative_occurrences_and_constructor_locals() {
         );
     }
 }
+
+#[test]
+fn source_groups_do_not_enable_forward_or_cyclic_references() {
+    let original = include_str!("fixtures/smoke.ndjson");
+    let mut records: Vec<serde_json::Value> = original
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let grouped: Vec<_> = records
+        .iter()
+        .filter_map(|r| {
+            r.get("def")
+                .or_else(|| r.get("thm"))
+                .map(|d| d["name"].clone())
+        })
+        .collect();
+    assert!(grouped.len() > 1);
+    for r in &mut records {
+        for k in ["def", "thm"] {
+            if let Some(d) = r.get_mut(k) {
+                d["all"] = serde_json::json!(grouped);
+            }
+        }
+    }
+    let encode = |rs: &[serde_json::Value]| {
+        rs.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    records.sort_by_key(|r| {
+        if r.get("meta").is_some() {
+            0
+        } else if r.get("in").is_some() {
+            1
+        } else {
+            2
+        }
+    });
+    check(&encode(&records)).unwrap();
+    // Listing a source group must not predeclare its members, including itself.
+    let declaration = records.iter().position(|r| r.get("def").is_some()).unwrap();
+    let next = records
+        .iter()
+        .filter_map(|r| r.get("ie").and_then(|v| v.as_u64()))
+        .max()
+        .unwrap()
+        + 1;
+    for target in [&grouped[0], grouped.last().unwrap()] {
+        let mut forged = records.clone();
+        forged[declaration]["def"]["value"] = serde_json::json!(next);
+        forged.insert(
+            declaration,
+            serde_json::json!({"ie": next, "const": {"name": target, "us": []}}),
+        );
+        let error = check(&encode(&forged)).unwrap_err();
+        assert!(error.to_string().contains("unknown constant"), "{error}");
+    }
+}

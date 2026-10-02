@@ -1,9 +1,13 @@
 use crate::{Expr, Level};
+use rustc_hash::FxHashMap as HashMap;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fmt,
+    rc::Rc,
 };
 use unbound::prelude::*;
+mod cache;
+mod eval;
 mod inductive;
 mod primitive;
 mod quotient;
@@ -24,14 +28,15 @@ struct Declaration {
     params: Vec<String>,
     ty: Expr,
     value: Option<Expr>,
+    order: usize,
 }
 
 #[derive(Default, Clone, Debug)]
 pub struct Environment {
-    declarations: BTreeMap<String, Declaration>,
-    inductives: BTreeMap<String, InductiveType>,
-    constructors: BTreeMap<String, Constructor>,
-    recursors: BTreeMap<String, Recursor>,
+    declarations: HashMap<String, Rc<Declaration>>,
+    inductives: HashMap<String, Rc<InductiveType>>,
+    constructors: HashMap<String, Rc<Constructor>>,
+    recursors: HashMap<String, Rc<Recursor>>,
     quotients: BTreeSet<String>,
 }
 
@@ -67,11 +72,12 @@ impl Environment {
         }
         self.declarations.insert(
             name,
-            Declaration {
+            Rc::new(Declaration {
                 params,
                 ty,
+                order: self.declarations.len(),
                 value: if transparent { value } else { None },
-            },
+            }),
         );
         Ok(())
     }
@@ -117,7 +123,9 @@ struct Checker<'a> {
     fuel: usize,
     scope: usize,
     next_scope: usize,
-    inferred: HashMap<(usize, usize), (Shared<Expr>, Expr)>,
+    cache: cache::Cache,
+    checking: bool,
+    definitions: HashMap<Name<Expr>, Expr>,
 }
 
 impl<'a> Checker<'a> {
@@ -126,10 +134,12 @@ impl<'a> Checker<'a> {
             env,
             uparams: BTreeSet::new(),
             locals: Vec::new(),
-            fuel: 100_000,
+            fuel: 100_000_000,
             scope: 0,
             next_scope: 1,
-            inferred: HashMap::new(),
+            cache: cache::Cache::default(),
+            checking: true,
+            definitions: HashMap::default(),
         }
     }
     fn tick(&mut self) -> Result<()> {
@@ -154,11 +164,27 @@ impl<'a> Checker<'a> {
         self.locals.pop();
         result
     }
-    fn decl(&self, name: &str) -> Result<&Declaration> {
+    fn decl(&self, name: &str) -> Result<Rc<Declaration>> {
         self.env
             .declarations
             .get(name)
+            .cloned()
             .ok_or_else(|| Error(format!("unknown constant: {name}")))
+    }
+    fn substitute_levels(&mut self, e: &Expr, subst: &BTreeMap<String, Level>) -> Result<Expr> {
+        if subst.is_empty() {
+            return Ok(e.clone());
+        }
+        let key = (
+            self.cache.id(e),
+            subst.iter().map(|(n, u)| (n.clone(), u.clone())).collect(),
+        );
+        if let Some(value) = self.cache.universes.get(&key) {
+            return Ok(value.clone());
+        }
+        let value = e.substitute_levels(subst)?;
+        self.cache.universes.insert(key, value.clone());
+        Ok(value)
     }
     fn valid_level(&self, level: &Level) -> Result<()> {
         let mut params = BTreeSet::new();
@@ -185,10 +211,6 @@ impl<'a> Checker<'a> {
         let ty = self.infer(e)?;
         self.sort_type(e, ty)
     }
-    fn sort_shared(&mut self, e: &Shared<Expr>) -> Result<Level> {
-        let ty = self.infer_shared(e)?;
-        self.sort_type(e, ty)
-    }
     fn sort_type(&mut self, e: &Expr, ty: Expr) -> Result<Level> {
         match self.whnf(&ty)? {
             Expr::Sort(u) => Ok(u),
@@ -197,10 +219,6 @@ impl<'a> Checker<'a> {
     }
     fn check(&mut self, e: &Expr, expected: &Expr) -> Result<()> {
         let actual = self.infer(e)?;
-        self.check_type(e, actual, expected)
-    }
-    fn check_shared(&mut self, e: &Shared<Expr>, expected: &Expr) -> Result<()> {
-        let actual = self.infer_shared(e)?;
         self.check_type(e, actual, expected)
     }
     fn check_type(&mut self, e: &Expr, actual: Expr, expected: &Expr) -> Result<()> {
@@ -212,56 +230,109 @@ impl<'a> Checker<'a> {
             )))
         }
     }
-    fn infer_shared(&mut self, e: &Shared<Expr>) -> Result<Expr> {
-        let key = (e.as_ptr() as usize, self.scope);
-        if let Some((_, ty)) = self.inferred.get(&key) {
-            return Ok(ty.clone());
-        }
-        let ty = self.infer(e)?;
-        // Keep the input alive so allocator address reuse cannot alias cache keys.
-        self.inferred.insert(key, (e.clone(), ty.clone()));
-        Ok(ty)
+    fn type_of(&mut self, e: &Expr) -> Result<Expr> {
+        let previous = self.checking;
+        self.checking = false;
+        let result = self.infer(e);
+        self.checking = previous;
+        result
     }
     fn infer(&mut self, e: &Expr) -> Result<Expr> {
+        self.infer_at(e, &mut Vec::new())
+    }
+    fn infer_at(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Expr> {
+        let id = self.cache.id(e);
+        let key = (
+            id,
+            self.cache.context_key(id, context, self.scope),
+            self.checking,
+        );
+        if let Some(ty) = self.cache.inferred.get(&key) {
+            return Ok(ty.clone());
+        }
+        let ty = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.infer_core(e, context))?;
+        self.cache.inferred.insert(key, ty.clone());
+        Ok(ty)
+    }
+    fn sort_at(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Level> {
+        let ty = self.infer_at(e, context)?;
+        self.sort_type(e, ty)
+    }
+    fn infer_core(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Expr> {
         self.tick()?;
         match e {
             Expr::Nat(_) => self.literal_type("Nat"),
             Expr::Str(_) => self.literal_type("String"),
-            Expr::Var(n) => self
-                .locals
-                .iter()
-                .rev()
-                .find(|(m, _)| n == m)
-                .map(|(_, ty)| ty.clone())
-                .ok_or_else(|| Error(format!("unbound variable: {n}"))),
+            Expr::Var(n) => {
+                let n = if let Some((depth, 0)) = n.coordinates() {
+                    depth
+                        .checked_add(1)
+                        .and_then(|d| context.len().checked_sub(d))
+                        .and_then(|i| context.get(i))
+                        .unwrap_or(n)
+                } else {
+                    n
+                };
+                self.locals
+                    .iter()
+                    .rev()
+                    .find(|(m, _)| n == m)
+                    .map(|(_, ty)| ty.clone())
+                    .ok_or_else(|| Error(format!("unbound variable: {n}")))
+            }
             Expr::Sort(u) => {
                 self.valid_level(u)?;
                 Ok(Expr::Sort(u.clone().succ()?))
             }
             Expr::Const(n, us) => {
-                let d = self.decl(n)?;
+                let d = self.decl(n)?.clone();
                 let subst = self.level_arguments(&d.params, us)?;
-                d.ty.substitute_levels(&subst)
+                self.substitute_levels(&d.ty, &subst)
             }
-            Expr::Proj(n, i, e) => self.infer_projection(n, *i, e),
-            Expr::Pi(domain, binder) => {
-                let u = self.sort_shared(domain)?;
-                let (n, body) = binder.unbind_ref();
-                let v = self.local(n, (**domain).clone(), |tc| tc.sort_shared(&body))?;
-                Ok(Expr::Sort(Level::imax(u, v)))
+            Expr::Proj(n, i, e) => {
+                // Checking the source before inference prevents a projection from hiding bad arguments.
+                if self.checking {
+                    self.infer_at(e, context)?;
+                }
+                let e = Shared::new(self.cache.open_at(e, context, 0, self.scope));
+                self.infer_projection(n, *i, &e)
             }
-            Expr::Lam(domain, binder) => {
-                self.sort_shared(domain)?;
-                let (n, body) = binder.unbind_ref();
-                let ty = self.local(n.clone(), (**domain).clone(), |tc| tc.infer_shared(&body))?;
-                Ok(Expr::pi(n, (**domain).clone(), ty))
+            Expr::Pi(domain, binder) | Expr::Lam(domain, binder) => {
+                let is_pi = matches!(e, Expr::Pi(..));
+                let u = if is_pi || self.checking {
+                    self.sort_at(domain, context)?
+                } else {
+                    Level::Nat(0)
+                };
+                let domain = self.cache.open_at(domain, context, 0, self.scope);
+                let n = Name::new(binder.pattern().string().unwrap_or("_"));
+                context.push(n.clone());
+                let result = self.local(n.clone(), domain.clone(), |tc| {
+                    if is_pi {
+                        tc.sort_at(binder.body(), context)
+                            .map(|v| Expr::Sort(Level::imax(u, v)))
+                    } else {
+                        tc.infer_at(binder.body(), context)
+                            .map(|ty| Expr::pi(n, domain, ty))
+                    }
+                });
+                context.pop();
+                result
             }
             Expr::App(fun, arg) => {
-                let ty = self.infer_shared(fun)?;
+                let ty = self.infer_at(fun, context)?;
                 match self.whnf(&ty)? {
                     Expr::Pi(domain, body) => {
-                        self.check_shared(arg, &domain)?;
-                        Ok((*body.instantiate(&**arg)).clone())
+                        if self.checking {
+                            let actual = self.infer_at(arg, context)?;
+                            self.check_type(arg, actual, &domain)?;
+                        }
+                        if self.cache.has_loose(body.body()) {
+                            let arg = self.cache.open_at(arg, context, 0, self.scope);
+                            Ok((*body.instantiate(&arg)).clone())
+                        } else {
+                            Ok((**body.body()).clone())
+                        }
                     }
                     other => Err(Error(format!(
                         "expected a function, but {fun} has type {other}"
@@ -269,69 +340,37 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Let(ty, value, body) => {
-                self.sort_shared(ty)?;
-                self.check_shared(value, ty)?;
-                self.infer_shared(&body.instantiate(&**value))
+                if self.checking {
+                    self.sort_at(ty, context)?;
+                    let actual = self.infer_at(value, context)?;
+                    let expected = self.cache.open_at(ty, context, 0, self.scope);
+                    self.check_type(value, actual, &expected)?;
+                }
+                let ty = self.cache.open_at(ty, context, 0, self.scope);
+                let value = self.cache.open_at(value, context, 0, self.scope);
+                let n = Name::new(body.pattern().string().unwrap_or("_"));
+                self.definitions.insert(n.clone(), value.clone());
+                context.push(n.clone());
+                let result = self.local(n.clone(), ty, |tc| tc.infer_at(body.body(), context));
+                context.pop();
+                self.definitions.remove(&n);
+                Ok(result?.subst(&n, &value))
             }
         }
     }
     fn whnf(&mut self, e: &Expr) -> Result<Expr> {
-        let mut e = e.clone();
-        loop {
-            self.tick()?;
-            match e {
-                Expr::Const(ref name, ref levels) => {
-                    let d = self.decl(name)?;
-                    let args = self.level_arguments(&d.params, levels)?;
-                    match &d.value {
-                        Some(value) => e = value.substitute_levels(&args)?,
-                        None => return Ok(e),
-                    }
-                }
-                Expr::Let(_, value, body) => e = (*body.instantiate(&*value)).clone(),
-                Expr::Proj(ref name, index, ref value) => {
-                    let value = self.whnf(value)?;
-                    let value = if let Expr::Str(s) = &value {
-                        let expanded = self.string_constructor(s)?;
-                        self.whnf(&expanded)?
-                    } else {
-                        value
-                    };
-                    let (head, args) = inductive::spine(&value);
-                    if let Expr::Const(c, _) = head
-                        && let Some(info) = self.env.constructors.get(&c)
-                        && info.inductive == *name
-                        && index < info.num_fields
-                        && args.len() == info.num_params + info.num_fields
-                    {
-                        e = args[info.num_params + index].clone();
-                    } else {
-                        return Ok(Expr::Proj(name.clone(), index, Shared::new(value)));
-                    }
-                }
-                Expr::App(..) => {
-                    let (head, args) = inductive::spine(&e);
-                    if let Some(reduced) = self.reduce_primitive(&head, &args)? {
-                        e = reduced;
-                        continue;
-                    }
-                    let head = self.whnf(&head)?;
-                    if let Expr::Lam(_, body) = &head {
-                        e = (*body.instantiate(&args[0])).clone();
-                        for arg in args.into_iter().skip(1) {
-                            e = e.app(arg);
-                        }
-                    } else if let Some(reduced) = self.reduce_recursor(&head, &args)? {
-                        e = reduced;
-                    } else if let Some(reduced) = self.reduce_quotient(&head, &args)? {
-                        e = reduced;
-                    } else {
-                        return Ok(args.into_iter().fold(head, Expr::app));
-                    }
-                }
-                _ => return Ok(e),
-            }
+        self.whnf_mode(e, true)
+    }
+    fn whnf_mode(&mut self, e: &Expr, unfold: bool) -> Result<Expr> {
+        let id = self.cache.id(e);
+        let key = (id, self.cache.scope(id, self.scope), unfold);
+        if let Some(value) = self.cache.reduced.get(&key) {
+            return Ok(value.clone());
         }
+        let value =
+            stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.whnf_core(e, unfold))?;
+        self.cache.reduced.insert(key, value.clone());
+        Ok(value)
     }
     fn nf(&mut self, e: &Expr) -> Result<Expr> {
         let head = self.whnf(e)?;
@@ -353,14 +392,102 @@ impl<'a> Checker<'a> {
         }
     }
     fn conv(&mut self, a: &Expr, b: &Expr) -> Result<bool> {
-        self.tick()?;
-        if a.aeq(b) {
+        let ai = self.cache.id(a);
+        let bi = self.cache.id(b);
+        if ai == bi {
             return Ok(true);
         }
-        let a = self.whnf(a)?;
-        let b = self.whnf(b)?;
-        if a.aeq(&b) {
+        let scope = self
+            .cache
+            .scope(ai, self.scope)
+            .max(self.cache.scope(bi, self.scope));
+        let key = (ai.min(bi), ai.max(bi), scope);
+        if let Some(result) = self.cache.equal.get(&key) {
+            return Ok(*result);
+        }
+        let result = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.conv_core(a, b))?;
+        self.cache.equal.insert(key, result);
+        Ok(result)
+    }
+    fn delta(&mut self, e: &Expr) -> Result<Option<(usize, Expr)>> {
+        let (head, args) = inductive::spine(e);
+        let Expr::Const(n, us) = head else {
+            return Ok(None);
+        };
+        let d = self.decl(&n)?.clone();
+        let Some(value) = &d.value else {
+            return Ok(None);
+        };
+        let subst = self.level_arguments(&d.params, &us)?;
+        let value = self.substitute_levels(value, &subst)?;
+        Ok(Some((d.order, args.into_iter().fold(value, Expr::app))))
+    }
+    fn conv_core(&mut self, a: &Expr, b: &Expr) -> Result<bool> {
+        self.tick()?;
+        if let (Expr::Sort(a), Expr::Sort(b)) = (a, b) {
+            return a.equivalent(b);
+        }
+        // Proofs must be identified before evaluating their potentially costly bodies.
+        let ta = self.type_of(a)?;
+        if {
+            let tty = self.type_of(&ta)?;
+            self.sort_type(&ta, tty)?
+        }
+        .equivalent(&Level::Nat(0))?
+        {
+            let tb = self.type_of(b)?;
+            return self.conv(&ta, &tb);
+        }
+        // Congruence can establish equality without exposing a definition's body.
+        match (a, b) {
+            (Expr::Sort(a), Expr::Sort(b)) => return a.equivalent(b),
+            (Expr::Pi(at, ab), Expr::Pi(bt, bb)) | (Expr::Lam(at, ab), Expr::Lam(bt, bb)) => {
+                if self.conv(at, bt)? {
+                    let (n, body) = ab.unbind_ref();
+                    let rhs = bb.instantiate(&Expr::Var(n.clone()));
+                    if self.local(n, (**at).clone(), |tc| tc.conv(&body, &rhs))? {
+                        return Ok(true);
+                    }
+                }
+            }
+            (Expr::App(..), Expr::App(..)) => {
+                let (ah, aa) = inductive::spine(a);
+                let (bh, ba) = inductive::spine(b);
+                if self.cache.id(&ah) == self.cache.id(&bh) && aa.len() == ba.len() {
+                    let mut equal = true;
+                    for (a, b) in aa.iter().zip(&ba) {
+                        if !self.conv(a, b)? {
+                            equal = false;
+                            break;
+                        }
+                    }
+                    if equal {
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let a = self.whnf_mode(a, false)?;
+        let b = self.whnf_mode(b, false)?;
+        if self.cache.id(&a) == self.cache.id(&b) {
             return Ok(true);
+        }
+        let da = self.delta(&a)?;
+        let db = self.delta(&b)?;
+        match (da, db) {
+            (Some((pa, va)), Some((pb, vb))) => {
+                return if pa > pb {
+                    self.conv(&va, &b)
+                } else if pb > pa {
+                    self.conv(&a, &vb)
+                } else {
+                    self.conv(&va, &vb)
+                };
+            }
+            (Some((_, va)), None) => return self.conv(&va, &b),
+            (None, Some((_, vb))) => return self.conv(&a, &vb),
+            _ => {}
         }
         match (&a, &b) {
             (Expr::Nat(x), Expr::Nat(y)) => return Ok(x == y),
@@ -381,13 +508,18 @@ impl<'a> Checker<'a> {
             }
             _ => {}
         }
-        let ta = self.infer(&a)?;
-        if self.sort(&ta)?.equivalent(&Level::Nat(0))? {
-            let tb = self.infer(&b)?;
+        let ta = self.type_of(&a)?;
+        if {
+            let tty = self.type_of(&ta)?;
+            self.sort_type(&ta, tty)?
+        }
+        .equivalent(&Level::Nat(0))?
+        {
+            let tb = self.type_of(&b)?;
             return self.conv(&ta, &tb);
         }
         if self.unit_like(&ta)? {
-            let tb = self.infer(&b)?;
+            let tb = self.type_of(&b)?;
             return self.conv(&ta, &tb);
         }
         if self.structure_eta(&a, &b)? || self.structure_eta(&b, &a)? {
@@ -418,7 +550,7 @@ impl<'a> Checker<'a> {
             (Expr::Lam(ty, body), _) => {
                 let (n, lhs) = body.unbind_ref();
                 let rhs = b.clone().app(Expr::Var(n.clone()));
-                let tb = self.infer(&b)?;
+                let tb = self.type_of(&b)?;
                 let Expr::Pi(bt, _) = self.whnf(&tb)? else {
                     return Ok(false);
                 };

@@ -44,31 +44,33 @@
 - [x] Resolve nested-unused-param.ndjson rejection through nested-parameter validation
 - [x] Check init-prelude.ndjson beyond its nested-inductive block
 - [x] Check grind-ring-5.ndjson beyond its nested-inductive block
-- [ ] Profile and fix Lean.ParserDescr checking exhaustion in init-prelude.ndjson
-- [ ] Profile and fix Lean.Grind.Semiring checking exhaustion in grind-ring-5.ndjson
-- [ ] Profile and fix List.zipWith.eq_def checking exhaustion in Init
-- [ ] Profile and fix List.perm_inv_core checking exhaustion in Mathlib
-- [ ] Profile and fix refute-cheap-last.ndjson exhaustion
-- [ ] Profile and fix church-numerals.ndjson exhaustion
-- [ ] Profile and fix folded-constant-first.ndjson exhaustion
-- [ ] Profile and fix folded-constant-last.ndjson exhaustion
-- [ ] Profile and fix irrelevance-before-evaluation.ndjson exhaustion
-- [ ] Profile and fix shared-subterm.ndjson exhaustion
-- [ ] Fix app-lam.ndjson stack overflow
-- [ ] Profile and fix beta-ladder.ndjson timeout
-- [ ] Profile and fix let-ladder.ndjson timeout
-- [ ] Profile and fix fueled-chain.ndjson exhaustion
-- [ ] Profile and fix magma-list-deep-n21.ndjson exhaustion
-- [ ] Profile and fix magma-list-deep-n36.ndjson exhaustion
-- [ ] Profile and fix magma-list-pair-n21.ndjson exhaustion
-- [ ] Profile and fix magma-list-pair-n7.ndjson exhaustion
-- [ ] Profile and fix shift-cascade.ndjson exhaustion
+- [x] Profile and fix Lean.ParserDescr checking exhaustion in init-prelude.ndjson
+- [x] Profile and fix Lean.Grind.Semiring checking exhaustion in grind-ring-5.ndjson
+- [x] Profile and fix List.zipWith.eq_def checking exhaustion in Init
+- [x] Profile and fix List.perm_inv_core checking exhaustion in Mathlib
+- [x] Profile and fix refute-cheap-last.ndjson exhaustion
+- [x] Profile and fix church-numerals.ndjson exhaustion
+- [x] Profile and fix folded-constant-first.ndjson exhaustion
+- [x] Profile and fix folded-constant-last.ndjson exhaustion
+- [x] Profile and fix irrelevance-before-evaluation.ndjson exhaustion
+- [x] Profile and fix shared-subterm.ndjson exhaustion
+- [x] Fix app-lam.ndjson stack overflow
+- [x] Profile and fix beta-ladder.ndjson timeout
+- [x] Profile and fix let-ladder.ndjson timeout
+- [x] Profile and fix fueled-chain.ndjson exhaustion
+- [x] Profile and fix magma-list-deep-n21.ndjson exhaustion
+- [x] Profile and fix magma-list-deep-n36.ndjson exhaustion
+- [x] Profile and fix magma-list-pair-n21.ndjson exhaustion
+- [x] Profile and fix magma-list-pair-n7.ndjson exhaustion
+- [x] Profile and fix shift-cascade.ndjson exhaustion
 - [x] Count projection references during importer prepass
 - [x] Count inductive references during importer prepass
 - [x] Test reclamation across inductive declaration boundaries
-- [ ] Compare streaming and reclaimed import results
+- [x] Compare streaming and reclaimed import results
 - [x] Rerun all 193 export fixtures
 - [x] Split remaining failures into individual tasks
+- [ ] Resolve checking exhaustion in Init `_private.Init.Data.Char.Ordinal.0.Char.succ?_eq._proof_1_10` at export line 3,681,944
+- [ ] Continue the full Mathlib check beyond the 120-second exploratory run
 - [ ] Check all 670,630 Mathlib declarations locally
 - [ ] Record checking time and peak memory
 - [ ] Confirm zero Mathlib errors and timeouts

@@ -193,7 +193,14 @@ fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
     Ok(Some(counts))
 }
 
-fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Result<ExportReport> {
+fn check_with_counts(reader: impl BufRead, counts: Option<Vec<u32>>) -> Result<ExportReport> {
+    stacker::grow(64 * 1024 * 1024, || check_with_counts_core(reader, counts))
+}
+
+fn check_with_counts_core(
+    reader: impl BufRead,
+    mut counts: Option<Vec<u32>>,
+) -> Result<ExportReport> {
     let mut names = HashMap::from([(0, Vec::<Value>::new())]);
     let mut levels = HashMap::from([(0, Level::Nat(0))]);
     let mut expressions = HashMap::<usize, Shared<Expr>>::new();
@@ -440,9 +447,18 @@ fn check_with_counts(reader: impl BufRead, mut counts: Option<Vec<u32>>) -> Resu
                 ));
             }
             if let Some(all) = d.get("all") {
-                let all = array(all)?;
-                if all.len() != 1 || all[0] != d["name"] {
-                    return Err(ExportError::Unsupported("mutual declaration block".into()));
+                // This is source-group metadata, not permission for forward references.
+                // Each safe declaration is still checked in dependency order.
+                let members = array(all)?.iter().map(name).collect::<Result<Vec<_>>>()?;
+                let own = name(&d["name"])?;
+                if !members.contains(&own)
+                    || members
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != members.len()
+                {
+                    return Err(invalid("invalid declaration group metadata"));
                 }
             }
             let n = name(&d["name"])?;

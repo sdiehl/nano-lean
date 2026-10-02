@@ -6,7 +6,7 @@ use std::{
 use unbound::prelude::*;
 
 /// An atomic, arbitrary-precision natural number (it contains no binders).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Natural(pub num_bigint::BigUint);
 
 impl Alpha for Natural {

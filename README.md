@@ -1,6 +1,6 @@
 # nano-lean
 
-A minimal Lean-style type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for bound variables and fresh names when opening binders.
+A minimalist (but complete) Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
 
 Aims to support the full Lean kernel with the full theory, including universe polymorphism, inductive types, and quotients.
 
