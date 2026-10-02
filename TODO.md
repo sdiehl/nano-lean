@@ -20,7 +20,7 @@
 - [x] Test Unicode import, natural arithmetic edge cases, and literal/quotient reclamation
 - [x] Export an ordinary inductive regression fixture
 - [x] Export a mutual inductive regression fixture
-- [ ] Test higher-order recursive field reduction
+- [x] Test higher-order recursive field reduction
 - [x] Test indexed recursor computation
 - [x] Test rejection of negative recursive occurrences
 - [x] Test rejection of forged recursor rules
@@ -31,19 +31,23 @@
 - [x] Test forbidden data projections from Prop
 - [x] Test structure eta on neutral terms
 - [x] Test proof recursor K reduction
-- [ ] Export a minimal nested inductive fixture
-- [ ] Separate recursor generation from export validation
-- [ ] Detect nested recursive type applications
-- [ ] Generate auxiliary mutual types for nesting
-- [ ] Specialize auxiliary constructors with nested parameters
-- [ ] Restore nested types in generated recursors
-- [ ] Validate exported nested recursor signatures
-- [ ] Validate exported nested computation rules
-- [ ] Handle differing nested recursor parameter counts
-- [ ] Test rejection of invalid nested parameters
-- [ ] Resolve nested-unused-param.ndjson rejection through nested-parameter validation
-- [ ] Check init-prelude.ndjson beyond its nested-inductive block
-- [ ] Check grind-ring-5.ndjson beyond its nested-inductive block
+- [x] Export a minimal nested inductive fixture
+- [x] Separate recursor generation from export validation
+- [x] Detect nested recursive type applications
+- [x] Generate auxiliary mutual types for nesting
+- [x] Specialize auxiliary constructors with nested parameters
+- [x] Restore nested types in generated recursors
+- [x] Validate exported nested recursor signatures
+- [x] Validate exported nested computation rules
+- [x] Handle differing nested recursor parameter counts
+- [x] Test rejection of invalid nested parameters
+- [x] Resolve nested-unused-param.ndjson rejection through nested-parameter validation
+- [x] Check init-prelude.ndjson beyond its nested-inductive block
+- [x] Check grind-ring-5.ndjson beyond its nested-inductive block
+- [ ] Profile and fix Lean.ParserDescr checking exhaustion in init-prelude.ndjson
+- [ ] Profile and fix Lean.Grind.Semiring checking exhaustion in grind-ring-5.ndjson
+- [ ] Profile and fix List.zipWith.eq_def checking exhaustion in Init
+- [ ] Profile and fix List.perm_inv_core checking exhaustion in Mathlib
 - [ ] Profile and fix refute-cheap-last.ndjson exhaustion
 - [ ] Profile and fix church-numerals.ndjson exhaustion
 - [ ] Profile and fix folded-constant-first.ndjson exhaustion

@@ -399,3 +399,63 @@ fn proof_recursor_k_reduction() {
     assert!(env.normalize(&neutral).unwrap().aeq(&neutral));
     assert!(!env.def_eq(&neutral, &expr("b")).unwrap());
 }
+
+#[test]
+fn higher_order_recursive_field_reduction() {
+    // A function-valued recursive field requires a function-valued induction hypothesis.
+    let mut block = switch();
+    block.types[0].name = "Tree".into();
+    block.types[0].all = vec!["Tree".into()];
+    block.types[0].constructors = vec!["leaf".into(), "branch".into()];
+    block.types[0].recursive = true;
+    block.types[0].reflexive = true;
+    block.constructors[0].name = "leaf".into();
+    block.constructors[0].inductive = "Tree".into();
+    block.constructors[0].ty = expr("Tree");
+    block.constructors[1].name = "branch".into();
+    block.constructors[1].inductive = "Tree".into();
+    block.constructors[1].ty = expr("(A -> Tree) -> Tree");
+    block.constructors[1].num_fields = 1;
+    let r = &mut block.recursors[0];
+    r.name = "Tree.rec".into();
+    r.all = vec!["Tree".into()];
+    r.ty = poly(
+        "forall (m : Tree -> U), m leaf -> (forall (f : A -> Tree), (forall (a : A), m (f a)) -> m (branch f)) -> forall (t : Tree), m t",
+    );
+    r.rules[0].constructor = "leaf".into();
+    r.rules[0].rhs = poly(
+        "fun (m : Tree -> U) (l : m leaf) (b : forall (f : A -> Tree), (forall (a : A), m (f a)) -> m (branch f)) => l",
+    );
+    r.rules[1].constructor = "branch".into();
+    r.rules[1].num_fields = 1;
+    let Expr::Lam(_, body) = poly(
+        "fun (rec : Type) (m : Tree -> U) (l : m leaf) (b : forall (f : A -> Tree), (forall (a : A), m (f a)) -> m (branch f)) (f : A -> Tree) => b f (fun (a : A) => rec m l b (f a))",
+    ) else {
+        unreachable!()
+    };
+    r.rules[1].rhs = (*body.instantiate(&Expr::Const(
+        "Tree.rec".into(),
+        vec![Level::Param("u".into())],
+    )))
+    .clone();
+    let mut env = Environment::new();
+    env.axiom("A", expr("Type")).unwrap();
+    env.axiom("a", expr("A")).unwrap();
+    env.declare_inductive(block).unwrap();
+    let rec = Expr::Const("Tree.rec".into(), vec![Level::Nat(1)]);
+    let prefix = rec
+        .app(expr("fun (t : Tree) => A"))
+        .app(expr("a"))
+        .app(expr("fun (f : A -> Tree) (ih : A -> A) => ih a"));
+    let tree = expr("branch (fun (x : A) => branch (fun (y : A) => leaf))");
+    assert!(
+        env.normalize(&prefix.clone().app(tree))
+            .unwrap()
+            .aeq(&expr("a"))
+    );
+    env.axiom("f", expr("A -> Tree")).unwrap();
+    let reduced = env
+        .normalize(&prefix.clone().app(expr("branch f")))
+        .unwrap();
+    assert!(env.def_eq(&reduced, &prefix.app(expr("f a"))).unwrap());
+}

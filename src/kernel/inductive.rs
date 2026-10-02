@@ -1,4 +1,6 @@
 use super::*;
+mod nested;
+use nested::NestedExpansion;
 
 #[derive(Clone, Debug)]
 pub struct InductiveType {
@@ -260,19 +262,16 @@ impl Environment {
         Ok(())
     }
 
-    fn build_inductive(&mut self, block: &InductiveBlock, added: &mut Vec<String>) -> Result<()> {
+    fn generate_inductive(
+        &mut self,
+        block: &InductiveBlock,
+        added: &mut Vec<String>,
+    ) -> Result<InductiveBlock> {
         demand(!block.types.is_empty(), "empty inductive block")?;
-        if block.types.iter().any(|t| t.num_nested != 0) {
-            return Err(Error("unsupported: nested inductive block".into()));
-        }
         let first = &block.types[0];
         let all: Vec<_> = block.types.iter().map(|t| t.name.clone()).collect();
         let mut reserved = BTreeSet::new();
-        for n in all
-            .iter()
-            .chain(block.constructors.iter().map(|c| &c.name))
-            .chain(block.recursors.iter().map(|r| &r.name))
-        {
+        for n in all.iter().chain(block.constructors.iter().map(|c| &c.name)) {
             demand(
                 reserved.insert(n.clone()) && !self.declarations.contains_key(n),
                 "duplicate inductive declaration name",
@@ -390,12 +389,6 @@ impl Environment {
             shapes.len() == block.constructors.len(),
             "extraneous constructor",
         )?;
-        for t in &block.types {
-            demand(
-                t.recursive == recursive && t.reflexive == reflexive,
-                "incorrect inductive recursion metadata",
-            )?;
-        }
         let zero = result_level.equivalent(&Level::Nat(0))?;
         let zeros = first
             .params
@@ -424,50 +417,33 @@ impl Environment {
             allowed
         };
         let k = zero && block.types.len() == 1 && shapes.len() == 1 && shapes[0].fields.is_empty();
-        demand(
-            block.recursors.len() == block.types.len(),
-            "incorrect recursor count",
-        )?;
-        let mut recs = Vec::new();
-        for t in &block.types {
-            let r = block
-                .recursors
-                .iter()
-                .find(|r| r.name == rec_name(&t.name))
-                .ok_or_else(|| Error("missing recursor".into()))?;
-            demand(
-                r.all == all
-                    && r.num_params == first.num_params
-                    && r.num_indices == t.num_indices
-                    && r.num_motives == block.types.len()
-                    && r.num_minors == shapes.len()
-                    && r.k == k,
-                "incorrect recursor metadata",
-            )?;
-            recs.push(r);
-        }
-        let rparams = &recs[0].params;
+        let mut rparams = first.params.clone();
         let elim = if large {
-            demand(
-                rparams.len() == first.params.len() + 1
-                    && rparams[1..] == first.params
-                    && !first.params.contains(&rparams[0]),
-                "incorrect recursor universe parameters",
-            )?;
-            Level::Param(rparams[0].clone())
+            let mut fresh = "_rec.u".to_string();
+            while first.params.contains(&fresh) {
+                fresh.push('_');
+            }
+            rparams.insert(0, fresh.clone());
+            Level::Param(fresh)
         } else {
-            demand(
-                *rparams == first.params,
-                "invalid large elimination from proposition",
-            )?;
             Level::Nat(0)
         };
-        for r in &recs {
-            demand(
-                r.params == *rparams,
-                "inconsistent recursor universe parameters",
-            )?;
-        }
+        let recs: Vec<_> = block
+            .types
+            .iter()
+            .map(|t| Recursor {
+                name: rec_name(&t.name),
+                params: rparams.clone(),
+                ty: Expr::Sort(Level::Nat(0)),
+                all: all.clone(),
+                num_params: first.num_params,
+                num_indices: t.num_indices,
+                num_motives: block.types.len(),
+                num_minors: shapes.len(),
+                k,
+                rules: Vec::new(),
+            })
+            .collect();
         tc.uparams.extend(rparams.iter().cloned());
         let mut motives = Vec::new();
         let mut majors = Vec::new();
@@ -565,7 +541,7 @@ impl Environment {
             generated.push(Recursor {
                 ty,
                 rules,
-                ..(*r).clone()
+                ..r.clone()
             });
         }
         drop(tc);
@@ -575,41 +551,179 @@ impl Environment {
         for r in &generated {
             self.insert_generated(&r.name, &r.params, r.ty.clone(), added)?;
         }
-        let mut tc = Checker::new(self);
-        tc.uparams = rparams.iter().cloned().collect();
-        for (actual, expected) in recs.iter().zip(&generated) {
-            tc.sort(&expected.ty)?;
-            tc.sort(&actual.ty)?;
+        let mut types = block.types.clone();
+        for t in &mut types {
+            t.recursive = recursive;
+            t.reflexive = reflexive;
+        }
+        Ok(InductiveBlock {
+            types,
+            constructors: block.constructors.clone(),
+            recursors: generated,
+        })
+    }
+
+    fn build_inductive(&mut self, actual: &InductiveBlock, added: &mut Vec<String>) -> Result<()> {
+        demand(!actual.types.is_empty(), "empty inductive block")?;
+        let mut reserved = BTreeSet::new();
+        for name in actual
+            .types
+            .iter()
+            .map(|t| &t.name)
+            .chain(actual.constructors.iter().map(|c| &c.name))
+            .chain(actual.recursors.iter().map(|r| &r.name))
+        {
             demand(
-                tc.conv(&actual.ty, &expected.ty)?,
-                "incorrect recursor type",
+                reserved.insert(name.clone()) && !self.declarations.contains_key(name),
+                "duplicate inductive declaration name",
+            )?;
+        }
+        let expansion = NestedExpansion::new(self, actual)?;
+        if expansion.is_nested() {
+            // Check before specialization: an unused container parameter must not erase an ill-typed argument.
+            for t in &actual.types {
+                let mut tc = Checker::new(self);
+                tc.uparams = t.params.iter().cloned().collect();
+                tc.sort(&t.ty)?;
+                self.insert_generated(&t.name, &t.params, t.ty.clone(), added)?;
+            }
+            for c in &actual.constructors {
+                let mut tc = Checker::new(self);
+                tc.uparams = c.params.iter().cloned().collect();
+                tc.sort(&c.ty)?;
+            }
+            for name in added.drain(..) {
+                self.declarations.remove(&name);
+            }
+        }
+        let generated = self.generate_inductive(&expansion.block, added)?;
+        let expected = expansion.restore(generated)?;
+        if expansion.is_nested() {
+            for name in added.drain(..) {
+                self.declarations.remove(&name);
+            }
+            for t in &expected.types {
+                self.insert_generated(&t.name, &t.params, t.ty.clone(), added)?;
+            }
+            for c in &expected.constructors {
+                self.insert_generated(&c.name, &c.params, c.ty.clone(), added)?;
+            }
+            for r in &expected.recursors {
+                self.insert_generated(&r.name, &r.params, r.ty.clone(), added)?;
+            }
+        }
+        self.validate_inductive_export(actual, &expected)?;
+        for t in expected.types {
+            self.inductives.insert(t.name.clone(), t);
+        }
+        for c in expected.constructors {
+            self.constructors.insert(c.name.clone(), c);
+        }
+        for r in expected.recursors {
+            self.recursors.insert(r.name.clone(), r);
+        }
+        Ok(())
+    }
+
+    fn validate_inductive_export(
+        &self,
+        actual: &InductiveBlock,
+        expected: &InductiveBlock,
+    ) -> Result<()> {
+        demand(
+            actual.types.len() == expected.types.len()
+                && actual.constructors.len() == expected.constructors.len(),
+            "incorrect inductive declaration count",
+        )?;
+        demand(
+            actual.recursors.len() == expected.recursors.len(),
+            "incorrect recursor count",
+        )?;
+        for (a, e) in actual.types.iter().zip(&expected.types) {
+            demand(
+                a.name == e.name
+                    && a.params == e.params
+                    && a.all == e.all
+                    && a.constructors == e.constructors
+                    && a.num_params == e.num_params
+                    && a.num_indices == e.num_indices
+                    && a.num_nested == e.num_nested,
+                "incorrect inductive metadata",
             )?;
             demand(
-                actual.rules.len() == expected.rules.len(),
+                a.recursive == e.recursive && a.reflexive == e.reflexive,
+                "incorrect inductive recursion metadata",
+            )?;
+        }
+        for e in &expected.constructors {
+            let a = actual
+                .constructors
+                .iter()
+                .find(|c| c.name == e.name)
+                .ok_or_else(|| Error("missing constructor".into()))?;
+            let mut tc = Checker::new(self);
+            tc.uparams = e.params.iter().cloned().collect();
+            tc.sort(&a.ty)?;
+            demand(tc.conv(&a.ty, &e.ty)?, "incorrect constructor type")?;
+        }
+        for e in &expected.recursors {
+            let a = actual
+                .recursors
+                .iter()
+                .find(|r| r.name == e.name)
+                .ok_or_else(|| Error("missing recursor".into()))?;
+            demand(
+                a.all == e.all
+                    && a.num_params == e.num_params
+                    && a.num_indices == e.num_indices
+                    && a.num_motives == e.num_motives
+                    && a.num_minors == e.num_minors
+                    && a.k == e.k,
+                "incorrect recursor metadata",
+            )?;
+            let type_params = &expected.types[0].params;
+            if e.params.len() == type_params.len() {
+                demand(
+                    a.params == *type_params,
+                    "invalid large elimination from proposition",
+                )?;
+            } else {
+                demand(
+                    a.params.len() == e.params.len()
+                        && a.params[1..] == *type_params
+                        && !type_params.contains(&a.params[0]),
+                    "incorrect recursor universe parameters",
+                )?;
+            }
+            let levels: BTreeMap<_, _> = a
+                .params
+                .iter()
+                .cloned()
+                .zip(e.params.iter().cloned().map(Level::Param))
+                .collect();
+            let mut tc = Checker::new(self);
+            tc.uparams = e.params.iter().cloned().collect();
+            let ty = a.ty.substitute_levels(&levels)?;
+            tc.sort(&e.ty)?;
+            tc.sort(&ty)?;
+            demand(tc.conv(&ty, &e.ty)?, "incorrect recursor type")?;
+            demand(
+                a.rules.len() == e.rules.len(),
                 "incorrect recursor rule count",
             )?;
-            for (a, e) in actual.rules.iter().zip(&expected.rules) {
+            for (ar, er) in a.rules.iter().zip(&e.rules) {
                 demand(
-                    a.constructor == e.constructor && a.num_fields == e.num_fields,
+                    ar.constructor == er.constructor && ar.num_fields == er.num_fields,
                     "incorrect recursor rule metadata",
                 )?;
-                let ty = tc.infer(&e.rhs)?;
-                tc.check(&a.rhs, &ty)?;
+                let rhs = ar.rhs.substitute_levels(&levels)?;
+                let ty = tc.infer(&er.rhs)?;
+                tc.check(&rhs, &ty)?;
                 demand(
-                    tc.conv(&a.rhs, &e.rhs)?,
+                    tc.conv(&rhs, &er.rhs)?,
                     "incorrect recursor computation rule",
                 )?;
             }
-        }
-        drop(tc);
-        for t in &block.types {
-            self.inductives.insert(t.name.clone(), t.clone());
-        }
-        for c in &block.constructors {
-            self.constructors.insert(c.name.clone(), c.clone());
-        }
-        for r in generated {
-            self.recursors.insert(r.name.clone(), r);
         }
         Ok(())
     }
@@ -694,7 +808,13 @@ impl Checker<'_> {
         let Some(rule) = rec.rules.iter().find(|r| r.constructor == name) else {
             return Ok(None);
         };
-        if fields.len() != rec.num_params + rule.num_fields {
+        let ctor_params = self
+            .env
+            .constructors
+            .get(&name)
+            .ok_or_else(|| Error("missing recursor constructor".into()))?
+            .num_params;
+        if fields.len() != ctor_params + rule.num_fields {
             return Ok(None);
         }
         let rhs = rule.rhs.substitute_levels(&subst)?;
@@ -703,7 +823,7 @@ impl Checker<'_> {
             rhs,
             args[..prefix]
                 .iter()
-                .chain(&fields[rec.num_params..])
+                .chain(&fields[ctor_params..])
                 .chain(&args[major_pos + 1..])
                 .cloned(),
         )))

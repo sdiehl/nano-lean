@@ -281,3 +281,158 @@ fn imported_unicode_is_preserved_through_escaped_json_and_equality() {
     let corrupted = escaped.replacen(&raw, &serde_json::to_string("Ae水🦀\0").unwrap(), 1);
     assert!(matches!(check(&corrupted), Err(ExportError::Invalid(_))));
 }
+
+#[test]
+fn official_nested_inductive_exports() {
+    let minimal = check(include_str!("fixtures/nested-minimal.ndjson")).unwrap();
+    assert_eq!(minimal.declarations, 8);
+    let expanded = check(include_str!("fixtures/nested.ndjson")).unwrap();
+    assert_eq!(expanded.declarations, 91);
+    let reordered: Vec<_> = include_str!("fixtures/nested.ndjson")
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(block) = value.get_mut("inductive") {
+                block["ctors"].as_array_mut().unwrap().reverse();
+                block["recs"].as_array_mut().unwrap().reverse();
+            }
+            value.to_string()
+        })
+        .collect();
+    assert_eq!(check(&reordered.join("\n")).unwrap().declarations, 91);
+}
+
+#[test]
+fn nested_unused_parameter_does_not_hide_an_ill_typed_argument() {
+    let error = check(include_str!("fixtures/invalid-nested-parameter.ndjson")).unwrap_err();
+    assert!(matches!(error, ExportError::Invalid(_)), "{error}");
+    assert!(
+        error.to_string().contains("projection type name mismatch"),
+        "{error}"
+    );
+}
+
+#[test]
+fn forged_nested_metadata_signatures_and_rules_are_rejected() {
+    use serde_json::{Value, json};
+    let original: Vec<Value> = include_str!("fixtures/nested-minimal.ndjson")
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let index = original
+        .iter()
+        .position(|v| v["inductive"]["types"][0]["numNested"] == 1)
+        .unwrap();
+    let serialize = |values: &[Value]| {
+        values
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for count in [0, 2] {
+        let mut values = original.clone();
+        values[index]["inductive"]["types"][0]["numNested"] = json!(count);
+        assert!(matches!(
+            check(&serialize(&values)),
+            Err(ExportError::Invalid(_))
+        ));
+    }
+    for rec in 0..2 {
+        for (field, value) in [
+            ("type", json!(0)),
+            ("numParams", json!(1)),
+            ("numMotives", json!(1)),
+            ("k", json!(true)),
+            ("levelParams", json!([])),
+            ("all", json!([])),
+        ] {
+            let mut values = original.clone();
+            values[index]["inductive"]["recs"][rec][field] = value;
+            assert!(
+                matches!(check(&serialize(&values)), Err(ExportError::Invalid(_))),
+                "rec {rec} {field}"
+            );
+        }
+        for field in ["rhs", "nfields", "ctor"] {
+            let mut values = original.clone();
+            values[index]["inductive"]["recs"][rec]["rules"][0][field] = json!(999);
+            assert!(matches!(
+                check(&serialize(&values)),
+                Err(ExportError::Invalid(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn nested_parameters_reject_negative_occurrences_and_constructor_locals() {
+    use serde_json::{Value, json};
+    let original: Vec<Value> = include_str!("fixtures/nested-minimal.ndjson")
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let block_index = original
+        .iter()
+        .position(|v| v["inductive"]["types"][0]["numNested"] == 1)
+        .unwrap();
+    let ctor_type = original[block_index]["inductive"]["ctors"][0]["type"]
+        .as_u64()
+        .unwrap();
+    let expression = |id: u64| original.iter().find(|v| v["ie"] == id).unwrap();
+    let list_tree_id = expression(ctor_type)["forallE"]["type"].as_u64().unwrap();
+    let list_tree = expression(list_tree_id);
+    let tree = list_tree["app"]["arg"].as_u64().unwrap();
+    let list = list_tree["app"]["fn"].as_u64().unwrap();
+    for local in [false, true] {
+        let mut values = original[..block_index].to_vec();
+        let mut next = values
+            .iter()
+            .filter_map(|v| v["ie"].as_u64())
+            .max()
+            .unwrap()
+            + 1;
+        let mut add = |mut v: Value| {
+            let id = next;
+            next += 1;
+            v["ie"] = json!(id);
+            values.push(v);
+            id
+        };
+        let pi = |domain, body| json!({"forallE":{"name":0,"binderInfo":"default","type":domain,"body":body}});
+        let argument = if local {
+            let x = add(json!({"bvar":0}));
+            let lambda =
+                add(json!({"lam":{"name":0,"binderInfo":"default","type":tree,"body":tree}}));
+            add(json!({"app":{"fn":lambda,"arg":x}}))
+        } else {
+            add(pi(tree, tree))
+        };
+        let domain = add(json!({"app":{"fn":list,"arg":argument}}));
+        let mut ty = add(pi(domain, tree));
+        if local {
+            ty = add(pi(tree, ty));
+        }
+        let mut block = original[block_index].clone();
+        block["inductive"]["ctors"][0]["type"] = json!(ty);
+        if local {
+            block["inductive"]["ctors"][0]["numFields"] = json!(2);
+        }
+        values.push(block);
+        let input = values
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let error = check(&input).unwrap_err();
+        let expected = if local {
+            "constructor-local"
+        } else {
+            "negative inductive occurrence"
+        };
+        assert!(
+            matches!(error, ExportError::Invalid(_)) && error.to_string().contains(expected),
+            "{error}"
+        );
+    }
+}
