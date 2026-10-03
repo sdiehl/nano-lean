@@ -35,7 +35,26 @@ jobs:
       - name: Build pinned Mathlib export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 40
-        run: bash .github/scripts/mathlib-ci.sh prepare
+        run: |
+          echo '[progress] preparing the pinned Mathlib export'
+          started=$SECONDS
+          progress() {
+            while sleep 10; do
+              elapsed=$((SECONDS - started))
+              if [[ -f .ci/mathlib.ndjson ]]; then
+                echo "[progress] export ready; cleaning build files; elapsed ${elapsed}s"
+              elif [[ -f .ci/mathlib.ndjson.tmp ]]; then
+                bytes=$(stat -c %s .ci/mathlib.ndjson.tmp 2>/dev/null || echo 0)
+                echo "[progress] generating export; elapsed ${elapsed}s; ${bytes} bytes written"
+              else
+                echo "[progress] preparing Lean and Mathlib dependencies; elapsed ${elapsed}s"
+              fi
+            done
+          }
+          progress &
+          progress_pid=$!
+          trap 'kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true' EXIT
+          bash .github/scripts/mathlib-ci.sh prepare
       - name: Verify export checksum
         run: |
           echo '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6  .ci/mathlib.ndjson' | sha256sum --check
