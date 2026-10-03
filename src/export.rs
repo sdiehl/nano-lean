@@ -1,6 +1,7 @@
 use crate::kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 use crate::{Environment, Error, Expr, Level};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::File,
@@ -90,6 +91,64 @@ pub fn check_export_file(path: impl AsRef<Path>) -> Result<ExportReport> {
     let counts = count_uses(&mut reader)?;
     reader.rewind().map_err(|e| invalid(e.to_string()))?;
     check_with_counts(reader, counts)
+}
+
+/// Conditional result of checking one partition. This is NOT evidence that the
+/// whole export is valid: every partition must succeed on the same input digest.
+#[derive(Debug)]
+pub struct ShardReport {
+    report: ExportReport,
+    index: usize,
+    workers: usize,
+    assigned: usize,
+    ordinary: usize,
+    digest: String,
+}
+impl ShardReport {
+    pub fn json(&self) -> Value {
+        json!({"status": "shard_checked", "shard": self.index, "workers": self.workers,
+            "assigned": self.assigned, "ordinary": self.ordinary, "sha256": self.digest,
+            "report": {"declarations":self.report.declarations,"expressions":self.report.expressions,
+                "names":self.report.names,"levels":self.report.levels}})
+    }
+}
+#[derive(Default)]
+struct CheckPlan {
+    shard: Option<(usize, usize)>,
+    ordinary: usize,
+    assigned: usize,
+    digest: Sha256,
+}
+/// Check a partition of ordinary declarations. Inductives and quotient primitives
+/// are checked by every worker; all declarations remain in dependency order.
+/// Callers must combine ALL partitions with matching digests before acceptance.
+pub fn check_export_file_shard(
+    path: impl AsRef<Path>,
+    shard: usize,
+    workers: usize,
+) -> Result<ShardReport> {
+    if workers == 0 || shard >= workers {
+        return Err(invalid("invalid worker partition"));
+    }
+    let file = File::open(path).map_err(|e| invalid(e.to_string()))?;
+    let mut reader = BufReader::new(file);
+    let counts = count_uses(&mut reader)?;
+    reader.rewind().map_err(|e| invalid(e.to_string()))?;
+    let mut plan = CheckPlan {
+        shard: Some((shard, workers)),
+        ..Default::default()
+    };
+    let report = stacker::grow(64 * 1024 * 1024, || {
+        check_with_counts_core(reader, counts, &mut plan)
+    })?;
+    Ok(ShardReport {
+        report,
+        index: shard,
+        workers,
+        assigned: plan.assigned,
+        ordinary: plan.ordinary,
+        digest: format!("{:x}", plan.digest.finalize()),
+    })
 }
 
 fn references(item: &Value) -> Result<Vec<usize>> {
@@ -194,12 +253,15 @@ fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
 }
 
 fn check_with_counts(reader: impl BufRead, counts: Option<Vec<u32>>) -> Result<ExportReport> {
-    stacker::grow(64 * 1024 * 1024, || check_with_counts_core(reader, counts))
+    stacker::grow(64 * 1024 * 1024, || {
+        check_with_counts_core(reader, counts, &mut CheckPlan::default())
+    })
 }
 
 fn check_with_counts_core(
     reader: impl BufRead,
     mut counts: Option<Vec<u32>>,
+    plan: &mut CheckPlan,
 ) -> Result<ExportReport> {
     let mut names = HashMap::from([(0, Vec::<Value>::new())]);
     let mut levels = HashMap::from([(0, Level::Nat(0))]);
@@ -209,8 +271,21 @@ fn check_with_counts_core(
     let mut expression_count = 0;
     let mut metadata = false;
     let trace = std::env::var_os("NANO_LEAN_TRACE").is_some();
-    for (line, text) in reader.lines().enumerate() {
-        let text = text.map_err(|e| invalid(e.to_string()))?;
+    let mut reader = reader;
+    let mut text = String::new();
+    let mut line = 0;
+    loop {
+        text.clear();
+        if reader
+            .read_line(&mut text)
+            .map_err(|e| invalid(e.to_string()))?
+            == 0
+        {
+            break;
+        }
+        if plan.shard.is_some() {
+            plan.digest.update(text.as_bytes());
+        }
         let item: Value =
             serde_json::from_str(&text).map_err(|e| invalid(format!("line {}: {e}", line + 1)))?;
         let result = (|| -> Result<()> {
@@ -347,7 +422,8 @@ fn check_with_counts_core(
                 eprintln!(
                     "{}",
                     serde_json::json!({
-                        "line": line + 1, "checked": count, "kind": kind,
+                        "line": line + 1, "checked": if plan.shard.is_none() { Some(count) } else { None },
+                        "imported": count, "shard": plan.shard.map(|(i, _)| i), "assigned_checked": plan.assigned, "kind": kind,
                         "name": name(n).ok()
                     })
                 );
@@ -487,10 +563,23 @@ fn check_with_counts_core(
             } else {
                 Some((*get(&expressions, &d["value"])?).clone())
             };
-            if kind == "thm" {
+            let assigned = plan.shard.is_none_or(|(i, n)| plan.ordinary % n == i);
+            plan.ordinary += 1;
+            if !assigned {
+                env.assume_export_declaration(
+                    n,
+                    params,
+                    ty,
+                    value,
+                    kind == "def" || kind == "thm",
+                )?;
+            } else if kind == "thm" {
                 env.declare_theorem(n, params, ty, value.unwrap())?;
             } else {
                 env.declare(n, params, ty, value, kind == "def")?;
+            }
+            if assigned {
+                plan.assigned += 1;
             }
             count += 1;
             Ok(())
@@ -526,6 +615,7 @@ fn check_with_counts_core(
                 }
             }
         }
+        line += 1;
     }
     if !metadata {
         return Err(invalid("empty export"));

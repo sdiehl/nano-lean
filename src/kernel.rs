@@ -81,6 +81,30 @@ impl Environment {
         );
         Ok(())
     }
+    // Conditional environment used only by export workers. The coordinator must
+    // verify every declaration in another worker before accepting the export.
+    pub(crate) fn assume_export_declaration(
+        &mut self,
+        name: String,
+        params: Vec<String>,
+        ty: Expr,
+        value: Option<Expr>,
+        transparent: bool,
+    ) -> Result<()> {
+        if self.declarations.contains_key(&name) {
+            return Err(Error(format!("duplicate declaration: {name}")));
+        }
+        self.declarations.insert(
+            name,
+            Rc::new(Declaration {
+                params,
+                ty,
+                order: self.declarations.len(),
+                value: if transparent { value } else { None },
+            }),
+        );
+        Ok(())
+    }
     pub fn infer(&self, expr: &Expr) -> Result<Expr> {
         Checker::new(self).infer(expr)
     }

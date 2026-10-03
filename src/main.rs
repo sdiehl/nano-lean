@@ -1,6 +1,8 @@
+mod parallel;
+
 use nano_lean::{
     Environment,
-    export::{ExportError, check_export, check_export_file},
+    export::{ExportError, check_export, check_export_file, check_export_file_shard},
     parser,
 };
 use std::{
@@ -11,6 +13,46 @@ use std::{
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args().skip(1).collect();
+    if let [flag, jobs, path] = args.as_slice()
+        && flag == "--export-parallel"
+    {
+        let result = jobs
+            .parse::<usize>()
+            .map_err(|_| "invalid worker count".to_owned())
+            .and_then(|jobs| parallel::run(path, jobs, 2048));
+        return print_parallel_result(result);
+    }
+    if let [flag, jobs, memory_flag, memory, path] = args.as_slice()
+        && flag == "--export-parallel"
+        && memory_flag == "--memory-mib"
+    {
+        let result = (|| {
+            let jobs = jobs
+                .parse::<usize>()
+                .map_err(|_| "invalid worker count".to_owned())?;
+            let memory = memory
+                .parse::<usize>()
+                .map_err(|_| "invalid memory budget".to_owned())?;
+            parallel::run(path, jobs, memory)
+        })();
+        return print_parallel_result(result);
+    }
+    if let [flag, path, index, jobs] = args.as_slice()
+        && flag == "--export-shard"
+    {
+        let result = (|| {
+            let index = index
+                .parse::<usize>()
+                .map_err(|_| "invalid shard index".to_owned())?;
+            let jobs = jobs
+                .parse::<usize>()
+                .map_err(|_| "invalid worker count".to_owned())?;
+            check_export_file_shard(path, index, jobs)
+                .map(|r| r.json())
+                .map_err(|e| e.to_string())
+        })();
+        return print_parallel_result(result);
+    }
     if let [flag, path] = args.as_slice()
         && (flag == "--export" || flag == "--export-stream")
     {
@@ -39,7 +81,7 @@ fn main() -> ExitCode {
     }
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "Usage: nano-lean [FILE|-]\n       nano-lean --export FILE.ndjson\n       nano-lean --export-stream FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
+            "Usage: nano-lean [FILE|-]\n       nano-lean --export FILE.ndjson\n       nano-lean --export-stream FILE.ndjson\n       nano-lean --export-parallel JOBS [--memory-mib MIB] FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
         );
         return ExitCode::SUCCESS;
     }
@@ -64,6 +106,22 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_parallel_result(result: Result<serde_json::Value, String>) -> ExitCode {
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            println!(
+                "{}",
+                serde_json::json!({"status":"rejected", "reason":reason})
+            );
             ExitCode::FAILURE
         }
     }

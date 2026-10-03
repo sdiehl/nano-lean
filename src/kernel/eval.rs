@@ -115,8 +115,17 @@ struct Evaluator<'b, 'a> {
 
 impl<'a> Checker<'a> {
     pub(super) fn whnf_core(&mut self, expr: &Expr, unfold: bool) -> Result<Expr> {
-        let mut evaluator = Evaluator {
-            tc: self,
+        let mut evaluator = Evaluator::new(self);
+        let root = evaluator.term(expr.clone(), None);
+        let value = evaluator.eval(&root, unfold)?;
+        Ok(evaluator.quote_value(&value))
+    }
+}
+
+impl<'b, 'a> Evaluator<'b, 'a> {
+    fn new(tc: &'b mut Checker<'a>) -> Self {
+        Self {
+            tc,
             instances: HashMap::default(),
             bodies: HashMap::default(),
             rules: HashMap::default(),
@@ -131,14 +140,8 @@ impl<'a> Checker<'a> {
             quoted: HashMap::default(),
             applications: HashMap::default(),
             old_applications: HashMap::default(),
-        };
-        let root = evaluator.term(expr.clone(), None);
-        let value = evaluator.eval(&root, unfold)?;
-        Ok(evaluator.quote_value(&value))
+        }
     }
-}
-
-impl Evaluator<'_, '_> {
     fn term(&mut self, expr: Expr, context: Option<Rc<Frame>>) -> Thunk {
         let id = self.tc.cache.id(&expr);
         self.term_with_id(Shared::new(expr), context, 0, id)
@@ -640,78 +643,145 @@ impl Evaluator<'_, '_> {
         result
     }
     fn quote(&mut self, term: &Thunk, depth: usize) -> Expr {
-        if term.context.is_none() {
-            return (*term.expr).clone();
+        enum Work {
+            Visit(Thunk, usize),
+            Finish(Thunk, usize),
         }
-        let key = (term.id, depth);
-        if let Some(e) = self.quoted.get(&key) {
-            return e.clone();
-        }
-        let result = match &*term.expr {
-            Expr::Var(n) => {
-                if let Some((d, slot)) = n.coordinates() {
-                    if d < depth {
-                        (*term.expr).clone()
-                    } else {
-                        let mut rest = d - depth;
-                        let mut frame = term.context.clone();
-                        loop {
-                            match frame {
-                                Some(f) if rest == 0 && slot == 0 => {
-                                    break self.quote(f.value(), 0);
+        let mut work = vec![Work::Visit(term.clone(), depth)];
+        let mut values: Vec<Expr> = Vec::new();
+        while let Some(next) = work.pop() {
+            match next {
+                Work::Visit(term, depth) => {
+                    // Quoting a forced numeral's original suspended arithmetic
+                    // can expand an enormous predecessor/successor history.
+                    if let Some(value) = term.normal.iter().filter_map(OnceCell::get).find(|v| {
+                        v.context.is_none()
+                            && v.args.is_empty()
+                            && matches!(v.head, Expr::Nat(_) | Expr::Str(_))
+                    }) {
+                        values.push(value.head.clone());
+                        continue;
+                    }
+                    if term.context.is_none() {
+                        values.push((*term.expr).clone());
+                        continue;
+                    }
+                    if let Some(e) = self.quoted.get(&(term.id, depth)) {
+                        values.push(e.clone());
+                        continue;
+                    }
+                    let mut children = Vec::new();
+                    let immediate = match &*term.expr {
+                        Expr::Var(n) => {
+                            if let Some((d, slot)) = n.coordinates().filter(|&(d, _)| d >= depth) {
+                                let mut rest = d - depth;
+                                let mut frame = term.context.clone();
+                                loop {
+                                    match frame {
+                                        Some(f) if rest == 0 && slot == 0 => {
+                                            children.push((f.value().clone(), 0));
+                                            break None;
+                                        }
+                                        Some(f) => {
+                                            rest = rest.saturating_sub(1);
+                                            frame = f.parent.clone();
+                                        }
+                                        None => {
+                                            break Some(Expr::Var(Name::bound(depth + rest, slot)));
+                                        }
+                                    }
                                 }
-                                Some(f) => {
-                                    rest = rest.saturating_sub(1);
-                                    frame = f.parent.clone();
-                                }
-                                None => break Expr::Var(Name::bound(depth + rest, slot)),
+                            } else {
+                                Some((*term.expr).clone())
                             }
                         }
+                        Expr::App(f, a) => {
+                            children.push((
+                                self.term_at(f.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            children.push((
+                                self.term_at(a.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            None
+                        }
+                        Expr::Proj(_, _, e) => {
+                            children.push((
+                                self.term_at(e.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            None
+                        }
+                        Expr::Pi(t, b) | Expr::Lam(t, b) => {
+                            children.push((
+                                self.term_at(t.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            children.push((
+                                self.term_at(b.body().clone(), term.context.clone(), depth + 1),
+                                depth + 1,
+                            ));
+                            None
+                        }
+                        Expr::Let(t, v, b) => {
+                            children.push((
+                                self.term_at(t.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            children.push((
+                                self.term_at(v.clone(), term.context.clone(), depth),
+                                depth,
+                            ));
+                            children.push((
+                                self.term_at(b.body().clone(), term.context.clone(), depth + 1),
+                                depth + 1,
+                            ));
+                            None
+                        }
+                        _ => Some((*term.expr).clone()),
+                    };
+                    if let Some(result) = immediate {
+                        self.quoted.insert((term.id, depth), result.clone());
+                        values.push(result);
+                    } else {
+                        work.push(Work::Finish(term, depth));
+                        work.extend(
+                            children
+                                .into_iter()
+                                .rev()
+                                .map(|(term, depth)| Work::Visit(term, depth)),
+                        );
                     }
-                } else {
-                    (*term.expr).clone()
+                }
+                Work::Finish(term, depth) => {
+                    let last = values.pop().expect("quoted child");
+                    let result = match &*term.expr {
+                        Expr::Var(_) => last,
+                        Expr::App(_, _) => values.pop().expect("quoted function").app(last),
+                        Expr::Proj(n, i, _) => Expr::Proj(n.clone(), *i, Shared::new(last)),
+                        Expr::Pi(_, b) | Expr::Lam(_, b) => {
+                            let ty = Shared::new(values.pop().expect("quoted domain"));
+                            let body = bind(b.pattern().clone(), Shared::new(last));
+                            if matches!(*term.expr, Expr::Pi(..)) {
+                                Expr::Pi(ty, body)
+                            } else {
+                                Expr::Lam(ty, body)
+                            }
+                        }
+                        Expr::Let(_, _, b) => {
+                            let value = Shared::new(values.pop().expect("quoted value"));
+                            let ty = Shared::new(values.pop().expect("quoted type"));
+                            Expr::Let(ty, value, bind(b.pattern().clone(), Shared::new(last)))
+                        }
+                        _ => unreachable!("only compound terms schedule children"),
+                    };
+                    self.quoted.insert((term.id, depth), result.clone());
+                    values.push(result);
                 }
             }
-            Expr::App(f, a) => {
-                let f = self.term_at(f.clone(), term.context.clone(), depth);
-                let a = self.term_at(a.clone(), term.context.clone(), depth);
-                self.quote(&f, depth).app(self.quote(&a, depth))
-            }
-            Expr::Proj(n, i, e) => {
-                let e = self.term_at(e.clone(), term.context.clone(), depth);
-                Expr::Proj(n.clone(), *i, Shared::new(self.quote(&e, depth)))
-            }
-            Expr::Pi(t, b) | Expr::Lam(t, b) => {
-                let t = self.term_at(t.clone(), term.context.clone(), depth);
-                let body = self.term_at(b.body().clone(), term.context.clone(), depth + 1);
-                let t = Shared::new(self.quote(&t, depth));
-                let b = bind(
-                    b.pattern().clone(),
-                    Shared::new(self.quote(&body, depth + 1)),
-                );
-                if matches!(*term.expr, Expr::Pi(..)) {
-                    Expr::Pi(t, b)
-                } else {
-                    Expr::Lam(t, b)
-                }
-            }
-            Expr::Let(t, v, b) => {
-                let t = self.term_at(t.clone(), term.context.clone(), depth);
-                let v = self.term_at(v.clone(), term.context.clone(), depth);
-                let body = self.term_at(b.body().clone(), term.context.clone(), depth + 1);
-                Expr::Let(
-                    Shared::new(self.quote(&t, depth)),
-                    Shared::new(self.quote(&v, depth)),
-                    bind(
-                        b.pattern().clone(),
-                        Shared::new(self.quote(&body, depth + 1)),
-                    ),
-                )
-            }
-            _ => (*term.expr).clone(),
-        };
-        self.quoted.insert(key, result.clone());
-        result
+        }
+        values.pop().expect("quoted root")
     }
 }
 
@@ -731,6 +801,63 @@ fn primitive_arity(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_reuses_a_forced_numeric_result() {
+        let env = Environment::new();
+        let mut checker = Checker::new(&env);
+        let mut evaluator = Evaluator::new(&mut checker);
+        let predecessor = evaluator.term(Expr::nat(604_799_999u64), None);
+        let frame = evaluator.frame(predecessor, None);
+        let suspended = evaluator.term(
+            Expr::Const("Nat.succ".into(), vec![]).app(Expr::Var(Name::bound(0, 0))),
+            Some(frame),
+        );
+        assert!(
+            suspended.normal[1]
+                .set(Value {
+                    head: Expr::nat(604_800_000u64),
+                    context: None,
+                    args: vec![],
+                })
+                .is_ok()
+        );
+        assert!(matches!(evaluator.quote(&suspended, 0),
+            Expr::Nat(n) if n.0 == 604_800_000u64.into()));
+    }
+
+    #[test]
+    fn quote_deep_closure_chain_uses_bounded_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let env = Environment::new();
+                let mut checker = Checker::new(&env);
+                let mut evaluator = Evaluator::new(&mut checker);
+                let mut term = evaluator.term(Expr::Sort(Level::Nat(0)), None);
+                let var = Shared::new(Expr::Var(Name::bound(0, 0)));
+                for id in 1..100_000 {
+                    term = Rc::new(Term {
+                        id,
+                        expr: var.clone(),
+                        context: Some(Rc::new(Frame {
+                            id,
+                            value: Some(term),
+                            parent: None,
+                        })),
+                        normal: [OnceCell::new(), OnceCell::new()],
+                        canonical: OnceCell::new(),
+                    });
+                }
+                assert!(matches!(
+                    evaluator.quote(&term, 0),
+                    Expr::Sort(Level::Nat(0))
+                ));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn deep_closure_graph_cleanup_uses_bounded_stack() {
