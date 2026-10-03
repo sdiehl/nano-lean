@@ -96,7 +96,9 @@ impl Environment {
         if !tc.sort(&ty)?.equivalent(&Level::Nat(0))? {
             return Err(Error("theorem type is not a proposition".into()));
         }
-        self.declare(name, params, ty, Some(value), false)
+        // Unlike opaque declarations, theorem bodies may reduce in the kernel
+        // when a recursor needs to expose a proof's constructor.
+        self.declare(name, params, ty, Some(value), true)
     }
     pub fn check(&self, expr: &Expr, ty: &Expr) -> Result<()> {
         let mut tc = Checker::new(self);
@@ -440,7 +442,6 @@ impl<'a> Checker<'a> {
         }
         // Congruence can establish equality without exposing a definition's body.
         match (a, b) {
-            (Expr::Sort(a), Expr::Sort(b)) => return a.equivalent(b),
             (Expr::Pi(at, ab), Expr::Pi(bt, bb)) | (Expr::Lam(at, ab), Expr::Lam(bt, bb)) => {
                 if self.conv(at, bt)? {
                     let (n, body) = ab.unbind_ref();

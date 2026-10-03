@@ -6,6 +6,42 @@ use std::{
 
 static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
 
+#[test]
+fn reducibility_hints_do_not_skip_definition_validation() {
+    use serde_json::{Value, json};
+    let original: Vec<Value> = include_str!("fixtures/smoke.ndjson")
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let source = |items: &[Value]| {
+        items
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for hint in [
+        json!("opaque"),
+        json!("abbrev"),
+        json!({"regular": 0}),
+        json!({"regular": u32::MAX}),
+    ] {
+        let mut items = original.clone();
+        for item in &mut items {
+            if let Some(d) = item.get_mut("def") {
+                d["hints"] = hint.clone();
+            }
+        }
+        assert_eq!(check(&source(&items)).unwrap().declarations, 6);
+        let d = items.iter_mut().find_map(|i| i.get_mut("def")).unwrap();
+        d["value"] = d["type"].clone();
+        assert!(matches!(
+            check(&source(&items)),
+            Err(ExportError::Invalid(_))
+        ));
+    }
+}
+
 fn check(s: &str) -> Result<nano_lean::export::ExportReport, ExportError> {
     let path = std::env::temp_dir().join(format!(
         "nano-lean-export-{}-{}.ndjson",
@@ -28,6 +64,43 @@ fn check(s: &str) -> Result<nano_lean::export::ExportReport, ExportError> {
 fn official_exporter_smoke() {
     let report = check(include_str!("fixtures/smoke.ndjson")).unwrap();
     assert_eq!(report.declarations, 6);
+}
+
+#[test]
+fn neutral_recursor_does_not_repeat_major_normalization() {
+    // Previously this small theorem exhausted the 100-million-step budget.
+    let report = check(include_str!("fixtures/neutral.ndjson")).unwrap();
+    assert_eq!(report.declarations, 53);
+}
+
+#[test]
+fn theorem_bodies_reduce_but_opaque_bodies_do_not() {
+    use serde_json::{Value, json};
+    let source = include_str!("fixtures/theorem-reduction.ndjson");
+    assert_eq!(check(source).unwrap().declarations, 36);
+    let mut items: Vec<Value> = source
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let name = items
+        .iter()
+        .find(|item| item["str"]["str"] == "conjunction")
+        .unwrap()["in"]
+        .clone();
+    let item = items
+        .iter_mut()
+        .find(|item| item["thm"]["name"] == name)
+        .unwrap();
+    let mut declaration = item.as_object_mut().unwrap().remove("thm").unwrap();
+    declaration["isUnsafe"] = json!(false);
+    *item = json!({"opaque": declaration});
+    let source = items
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error = check(&source).unwrap_err();
+    assert!(matches!(error, ExportError::Invalid(ref s) if s.contains("type mismatch")));
 }
 
 #[test]

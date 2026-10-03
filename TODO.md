@@ -69,8 +69,11 @@
 - [x] Compare streaming and reclaimed import results
 - [x] Rerun all 193 export fixtures
 - [x] Split remaining failures into individual tasks
-- [ ] Resolve checking exhaustion in Init `_private.Init.Data.Char.Ordinal.0.Char.succ?_eq._proof_1_10` at export line 3,681,944
-- [ ] Continue the full Mathlib check beyond the 120-second exploratory run
+- [x] Resolve checking exhaustion in Init `_private.Init.Data.Char.Ordinal.0.Char.succ?_eq._proof_1_10` at export line 3,681,944
+- [x] Continue the full Mathlib check beyond the 120-second exploratory run
+- [x] Retain theorem bodies for kernel reduction; resolve `Rat.instEncodable` at Mathlib export line 7,963,318
+- [x] Try K reduction before evaluating proofs and avoid forcing empty eliminators
+- [x] Prevent proof reuse from looping during reduction; resolve `Fin.insertNth_apply_succAbove`
 - [ ] Check all 670,630 Mathlib declarations locally
 - [ ] Record checking time and peak memory
 - [ ] Confirm zero Mathlib errors and timeouts

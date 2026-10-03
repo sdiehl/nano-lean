@@ -731,19 +731,38 @@ impl Environment {
 }
 
 impl Checker<'_> {
-    pub(super) fn reduce_recursor(&mut self, head: &Expr, args: &[Expr]) -> Result<Option<Expr>> {
+    pub(super) fn reduce_neutral_recursor(
+        &mut self,
+        head: &Expr,
+        args: &[Expr],
+    ) -> Result<Option<Expr>> {
         let Expr::Const(name, levels) = head else {
             return Ok(None);
         };
         let Some(rec) = self.env.recursors.get(name).cloned() else {
             return Ok(None);
         };
+        // The evaluator has already tried ordinary constructor reduction. A
+        // neutral major can reduce further only through structure eta or K.
+        if !rec.k
+            && !rec.rules.first().is_some_and(|rule| {
+                self.structure(&self.env.constructors[&rule.constructor].inductive)
+                    .is_some()
+            })
+        {
+            return Ok(None);
+        }
         let major_pos = rec.num_params + rec.num_motives + rec.num_minors + rec.num_indices;
         if args.len() <= major_pos {
             return Ok(None);
         }
         let subst = self.level_arguments(&rec.params, levels)?;
-        let major = self.whnf(&args[major_pos])?;
+        // K compares the major's type, so it must not evaluate its proof body.
+        let major = if rec.k {
+            args[major_pos].clone()
+        } else {
+            self.whnf(&args[major_pos])?
+        };
         let major = match major {
             Expr::Nat(n) => self.nat_constructor(&n.0),
             Expr::Str(s) => {

@@ -11,8 +11,64 @@ struct Term {
 }
 struct Frame {
     id: usize,
-    value: Thunk,
+    value: Option<Thunk>,
     parent: Option<Rc<Frame>>,
+}
+// Closures form deep acyclic graphs. Release uniquely owned edges iteratively
+// so evaluator cleanup does not consume one stack frame per suspended call.
+enum Edge {
+    Term(Thunk),
+    Frame(Rc<Frame>),
+}
+impl Term {
+    fn detach(&mut self, pending: &mut Vec<Edge>) {
+        pending.extend(self.context.take().map(Edge::Frame));
+        for normal in &mut self.normal {
+            if let Some(value) = normal.take() {
+                pending.extend(value.context.map(Edge::Frame));
+                pending.extend(value.args.into_iter().map(Edge::Term));
+            }
+        }
+    }
+}
+impl Frame {
+    fn value(&self) -> &Thunk {
+        self.value.as_ref().expect("live frame has a value")
+    }
+    fn detach(&mut self, pending: &mut Vec<Edge>) {
+        pending.extend(self.value.take().map(Edge::Term));
+        pending.extend(self.parent.take().map(Edge::Frame));
+    }
+}
+fn release(mut pending: Vec<Edge>) {
+    while let Some(edge) = pending.pop() {
+        match edge {
+            Edge::Term(term) => {
+                if let Ok(mut term) = Rc::try_unwrap(term) {
+                    term.detach(&mut pending);
+                }
+            }
+            Edge::Frame(frame) => {
+                if let Ok(mut frame) = Rc::try_unwrap(frame) {
+                    frame.detach(&mut pending);
+                }
+            }
+        }
+    }
+}
+impl Drop for Term {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        self.detach(&mut pending);
+        release(pending);
+    }
+}
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        self.detach(&mut pending);
+        release(pending);
+    }
 }
 struct Closure {
     expr: Shared<Expr>,
@@ -50,6 +106,7 @@ struct Evaluator<'b, 'a> {
     old_nodes: HashMap<(usize, Vec<usize>), Thunk>,
     closed: HashMap<usize, Thunk>,
     proofs: HashMap<usize, Thunk>,
+    active: rustc_hash::FxHashSet<usize>,
     proposition_heads: HashMap<String, Option<usize>>,
     quoted: HashMap<(usize, usize), Expr>,
     applications: HashMap<(usize, Vec<usize>, bool), Value>,
@@ -69,6 +126,7 @@ impl<'a> Checker<'a> {
             old_nodes: HashMap::default(),
             closed: HashMap::default(),
             proofs: HashMap::default(),
+            active: rustc_hash::FxHashSet::default(),
             proposition_heads: HashMap::default(),
             quoted: HashMap::default(),
             applications: HashMap::default(),
@@ -108,7 +166,7 @@ impl Evaluator<'_, '_> {
             let mut frame = context.clone();
             while let Some(f) = frame {
                 if d == 0 {
-                    return f.value.clone();
+                    return f.value().clone();
                 }
                 d -= 1;
                 frame = f.parent.clone();
@@ -136,7 +194,7 @@ impl Evaluator<'_, '_> {
                         depth += 1;
                     }
                     dependencies.push(frame.as_ref().map_or(usize::MAX, |f| {
-                        f.value.canonical.get().copied().unwrap_or(f.value.id)
+                        f.value().canonical.get().copied().unwrap_or(f.value().id)
                     }));
                     word &= word - 1;
                 }
@@ -177,7 +235,7 @@ impl Evaluator<'_, '_> {
     fn frame(&mut self, value: Thunk, parent: Option<Rc<Frame>>) -> Rc<Frame> {
         let f = Rc::new(Frame {
             id: self.next_frame,
-            value,
+            value: Some(value),
             parent,
         });
         self.next_frame += 1;
@@ -219,8 +277,12 @@ impl Evaluator<'_, '_> {
         if let Some(value) = term.normal[usize::from(unfold)].get() {
             return Ok(value.clone());
         }
-        let result =
-            stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.steps(term, unfold))?;
+        let newly_active = self.active.insert(term.id);
+        let result = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.steps(term, unfold));
+        if newly_active {
+            self.active.remove(&term.id);
+        }
+        let result = result?;
         if result.args.is_empty()
             && result.context.is_none()
             && matches!(result.head, Expr::Nat(_) | Expr::Const(..))
@@ -272,7 +334,12 @@ impl Evaluator<'_, '_> {
                     let mut arg = pending.pop().unwrap();
                     let domain = self.term_at(domain.clone(), current.context.clone(), 0);
                     if self.proposition(&domain) {
-                        arg = self.proofs.entry(domain.id).or_insert(arg).clone();
+                        let canonical = self.proofs.entry(domain.id).or_insert_with(|| arg.clone());
+                        // Reusing a proof currently being evaluated would make
+                        // its body refer back to itself and prevent reduction.
+                        if !self.active.contains(&canonical.id) {
+                            arg = canonical.clone();
+                        }
                     }
                     let frame = self.frame(arg, current.context.clone());
                     current = Closure {
@@ -296,7 +363,7 @@ impl Evaluator<'_, '_> {
                         let mut frame = current.context.clone();
                         while let Some(f) = frame {
                             if depth == 0 {
-                                resolved = Some(f.value.clone());
+                                resolved = Some(f.value().clone());
                                 break;
                             }
                             depth -= 1;
@@ -433,7 +500,23 @@ impl Evaluator<'_, '_> {
                     if let Some(rec) = self.tc.env.recursors.get(name).cloned() {
                         let major_pos =
                             rec.num_params + rec.num_motives + rec.num_minors + rec.num_indices;
-                        if pending.len() > major_pos {
+                        // Empty eliminators have no computation rule; forcing
+                        // their impossible proof argument cannot reduce them.
+                        if pending.len() > major_pos && !rec.rules.is_empty() {
+                            if rec.k {
+                                let args = pending
+                                    .iter()
+                                    .rev()
+                                    .map(|a| self.quote(a, 0))
+                                    .collect::<Vec<_>>();
+                                if let Some(e) =
+                                    self.tc.reduce_neutral_recursor(&current.expr, &args)?
+                                {
+                                    current = Closure::closed(e);
+                                    pending.clear();
+                                    continue;
+                                }
+                            }
                             let major = pending[pending.len() - 1 - major_pos].clone();
                             let mut value = self.eval(&major, true)?;
                             let reduced_key = (
@@ -503,7 +586,9 @@ impl Evaluator<'_, '_> {
                                 .rev()
                                 .map(|a| self.quote(a, 0))
                                 .collect::<Vec<_>>();
-                            if let Some(e) = self.tc.reduce_recursor(&current.expr, &args)? {
+                            if let Some(e) =
+                                self.tc.reduce_neutral_recursor(&current.expr, &args)?
+                            {
                                 current = Closure::closed(e);
                                 pending.clear();
                                 continue;
@@ -572,7 +657,9 @@ impl Evaluator<'_, '_> {
                         let mut frame = term.context.clone();
                         loop {
                             match frame {
-                                Some(f) if rest == 0 && slot == 0 => break self.quote(&f.value, 0),
+                                Some(f) if rest == 0 && slot == 0 => {
+                                    break self.quote(f.value(), 0);
+                                }
                                 Some(f) => {
                                     rest = rest.saturating_sub(1);
                                     frame = f.parent.clone();
@@ -638,5 +725,38 @@ fn primitive_arity(name: &str) -> Option<usize> {
         "add" | "sub" | "mul" | "pow" | "div" | "mod" | "gcd" | "beq" | "ble" | "land" | "lor"
         | "xor" | "shiftLeft" | "shiftRight" => Some(2),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_closure_graph_cleanup_uses_bounded_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let expr = Shared::new(Expr::Sort(Level::Nat(0)));
+                let mut context = None;
+                for id in 0..100_000 {
+                    let term = Rc::new(Term {
+                        id,
+                        expr: expr.clone(),
+                        context: context.clone(),
+                        normal: [OnceCell::new(), OnceCell::new()],
+                        canonical: OnceCell::new(),
+                    });
+                    context = Some(Rc::new(Frame {
+                        id,
+                        value: Some(term),
+                        parent: context,
+                    }));
+                }
+                drop(context);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

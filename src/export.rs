@@ -208,6 +208,7 @@ fn check_with_counts_core(
     let mut count = 0;
     let mut expression_count = 0;
     let mut metadata = false;
+    let trace = std::env::var_os("NANO_LEAN_TRACE").is_some();
     for (line, text) in reader.lines().enumerate() {
         let text = text.map_err(|e| invalid(e.to_string()))?;
         let item: Value =
@@ -337,6 +338,20 @@ fn check_with_counts_core(
                 return Err(invalid("malformed declaration entry"));
             }
             let (kind, d) = object.iter().next().unwrap();
+            if trace {
+                let n = if kind == "inductive" {
+                    &d["types"][0]["name"]
+                } else {
+                    &d["name"]
+                };
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "line": line + 1, "checked": count, "kind": kind,
+                        "name": name(n).ok()
+                    })
+                );
+            }
             if kind == "quot" {
                 let params = array(&d["levelParams"])?
                     .iter()

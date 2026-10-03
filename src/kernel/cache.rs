@@ -38,6 +38,13 @@ impl Cache {
             return *id;
         }
         let id = self.id(e);
+        // Pointer aliases are only a shortcut to the stable structural IDs.
+        // Bound their retention so repeated instantiation cannot keep every
+        // transient copy alive for the entire declaration. Clearing the table
+        // also removes its addresses, so allocator reuse cannot leave stale IDs.
+        if self.pointers.len() >= 262_144 {
+            self.pointers.clear();
+        }
         self.pointers.insert(ptr, (e.clone(), id));
         id
     }
