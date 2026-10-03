@@ -31,14 +31,14 @@ jobs:
         id: export
         with:
           path: .ci/mathlib.ndjson
-          key: mathlib-export-ca2ec20fd063b61e71867b2975c81bd989af9f879b4886b8f08cd23c767a47bb
+          key: mathlib-export-22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6
       - name: Build pinned Mathlib export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 40
         run: bash .github/scripts/mathlib-ci.sh prepare
       - name: Verify export checksum
         run: |
-          echo 'ca2ec20fd063b61e71867b2975c81bd989af9f879b4886b8f08cd23c767a47bb  .ci/mathlib.ndjson' | sha256sum --check
+          echo '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6  .ci/mathlib.ndjson' | sha256sum --check
       - uses: actions/cache/save@v4
         if: steps.export.outputs.cache-hit != 'true'
         with:
@@ -52,7 +52,7 @@ jobs:
         run: |
           {
             echo '### Mathlib'
-            echo 'Release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
+            echo 'Lean 4.34.1 Mathlib; release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
             echo '```text'
             cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
             tail -n 3 .ci/mathlib-report/trace.jsonl 2>/dev/null || true

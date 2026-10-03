@@ -30,7 +30,7 @@ bounded() {
 
 case ${1:-} in
   prepare)
-    # A cold build needs Lean, Mathlib oleans and the 5.6 GB export at once.
+    # A cold build needs Lean, Mathlib oleans and the 6.2 GB export at once.
     available=$(df -Pk . | awk 'NR==2 {print $4}')
     if (( available < 20 * 1024 * 1024 )); then
       echo 'At least 20 GiB of free disk is required for a cold export build.' >&2
@@ -46,7 +46,7 @@ case ${1:-} in
       -o .ci/elan-init.sh
     bash .ci/elan-init.sh -y --default-toolchain none
     export PATH="$ELAN_HOME/bin:$PATH"
-    toolchain=leanprover/lean4:v4.29.1
+    toolchain=leanprover/lean4:v4.34.1
     elan toolchain install "$toolchain"
     for repo in lean4export mathlib4; do
       if [[ $repo == lean4export ]]; then
@@ -54,7 +54,7 @@ case ${1:-} in
         revision=66f1fb4bc256072069767fce52d39480e4524869
       else
         url=https://github.com/leanprover-community/mathlib4.git
-        revision=5e932f97dd25535344f80f9dd8da3aab83df0fe6
+        revision=d13f23b723b8a846827a245b89c10fc7d3f11612
       fi
       git init ".ci/$repo"
       git -C ".ci/$repo" remote add origin "$url"
@@ -80,9 +80,9 @@ import json
 import sys
 with open(sys.argv[1]) as source:
     result = json.load(source)
-if result.get('status') != 'checked' or result.get('declarations') != 670630:
+if result.get('status') != 'checked' or result.get('declarations') != 718574:
     raise SystemExit(f'Incomplete Mathlib check: {result}')
-if result.get('sha256') != 'ca2ec20fd063b61e71867b2975c81bd989af9f879b4886b8f08cd23c767a47bb':
+if result.get('sha256') != '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6':
     raise SystemExit('Checked input digest differs from the pinned Mathlib export')
 PY
     ;;
