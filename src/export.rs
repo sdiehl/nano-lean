@@ -82,10 +82,14 @@ impl ExportReport {
 }
 
 pub fn check_export(reader: impl BufRead) -> Result<ExportReport> {
+    #[cfg(feature = "profile")]
+    let _profile = crate::profile::export();
     check_with_counts(reader, None)
 }
 
 pub fn check_export_file(path: impl AsRef<Path>) -> Result<ExportReport> {
+    #[cfg(feature = "profile")]
+    let _profile = crate::profile::export();
     let file = File::open(path).map_err(|e| invalid(e.to_string()))?;
     let mut reader = BufReader::new(file);
     let counts = count_uses(&mut reader)?;
@@ -127,6 +131,8 @@ pub fn check_export_file_shard(
     shard: usize,
     workers: usize,
 ) -> Result<ShardReport> {
+    #[cfg(feature = "profile")]
+    let _profile = crate::profile::export();
     if workers == 0 || shard >= workers {
         return Err(invalid("invalid worker partition"));
     }
@@ -199,6 +205,8 @@ fn references(item: &Value) -> Result<Vec<usize>> {
 }
 
 fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
+    #[cfg(feature = "profile")]
+    let _prepass = crate::profile::span("prepass");
     let mut counts = Vec::<u32>::new();
     for (line, text) in reader.lines().enumerate() {
         let text = text.map_err(|e| invalid(e.to_string()))?;
@@ -413,6 +421,8 @@ fn check_with_counts_core(
                 return Err(invalid("malformed declaration entry"));
             }
             let (kind, d) = object.iter().next().unwrap();
+            #[cfg(feature = "profile")]
+            let _declaration = crate::profile::span("declarations");
             if trace {
                 let n = if kind == "inductive" {
                     &d["types"][0]["name"]

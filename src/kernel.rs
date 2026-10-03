@@ -150,6 +150,7 @@ struct Checker<'a> {
     scope: usize,
     next_scope: usize,
     cache: cache::Cache,
+    evaluation: eval::State,
     checking: bool,
     definitions: HashMap<Name<Expr>, Expr>,
 }
@@ -164,6 +165,7 @@ impl<'a> Checker<'a> {
             scope: 0,
             next_scope: 1,
             cache: cache::Cache::default(),
+            evaluation: eval::State::default(),
             checking: true,
             definitions: HashMap::default(),
         }
@@ -418,6 +420,8 @@ impl<'a> Checker<'a> {
         }
     }
     fn conv(&mut self, a: &Expr, b: &Expr) -> Result<bool> {
+        #[cfg(feature = "profile")]
+        crate::profile::count("conversions");
         let ai = self.cache.id(a);
         let bi = self.cache.id(b);
         if ai == bi {

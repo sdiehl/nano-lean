@@ -97,6 +97,14 @@ struct Instance {
 /// Only the final weak-head value is converted back to the binding representation.
 struct Evaluator<'b, 'a> {
     tc: &'b mut Checker<'a>,
+    state: State,
+}
+pub(super) struct State {
+    // Proof reuse can select a local hypothesis even for a closed proposition.
+    // Reuse is therefore limited to requests with no local hypotheses or let
+    // definitions, within the same Checker. Otherwise a local proof could escape
+    // through the syntax cache even before the local scope changes.
+    scope: usize,
     instances: HashMap<usize, Rc<Instance>>,
     bodies: HashMap<usize, Shared<Expr>>,
     rules: HashMap<(usize, usize), Shared<Expr>>,
@@ -113,19 +121,10 @@ struct Evaluator<'b, 'a> {
     old_applications: HashMap<(usize, Vec<usize>, bool), Value>,
 }
 
-impl<'a> Checker<'a> {
-    pub(super) fn whnf_core(&mut self, expr: &Expr, unfold: bool) -> Result<Expr> {
-        let mut evaluator = Evaluator::new(self);
-        let root = evaluator.term(expr.clone(), None);
-        let value = evaluator.eval(&root, unfold)?;
-        Ok(evaluator.quote_value(&value))
-    }
-}
-
-impl<'b, 'a> Evaluator<'b, 'a> {
-    fn new(tc: &'b mut Checker<'a>) -> Self {
+impl Default for State {
+    fn default() -> Self {
         Self {
-            tc,
+            scope: 0,
             instances: HashMap::default(),
             bodies: HashMap::default(),
             rules: HashMap::default(),
@@ -141,6 +140,50 @@ impl<'b, 'a> Evaluator<'b, 'a> {
             applications: HashMap::default(),
             old_applications: HashMap::default(),
         }
+    }
+}
+
+impl Drop for Evaluator<'_, '_> {
+    fn drop(&mut self) {
+        // Retain small semantic graphs across WHNF requests in one declaration.
+        // Large reductions are released at the request boundary.
+        if self.tc.locals.is_empty()
+            && self.tc.definitions.is_empty()
+            && self.state.next_term < 8192
+            && self.state.next_frame < 16384
+            && self.state.applications.len() + self.state.old_applications.len() < 8192
+            && self.state.quoted.len() < 8192
+        {
+            self.tc.evaluation = std::mem::take(&mut self.state);
+        }
+    }
+}
+
+impl<'a> Checker<'a> {
+    pub(super) fn whnf_core(&mut self, expr: &Expr, unfold: bool) -> Result<Expr> {
+        #[cfg(feature = "profile")]
+        let _whnf = crate::profile::span("whnf");
+        let mut evaluator = Evaluator::new(self);
+        let root = evaluator.term(expr.clone(), None);
+        let value = evaluator.eval(&root, unfold)?;
+        Ok(evaluator.quote_value(&value))
+    }
+}
+
+impl<'b, 'a> Evaluator<'b, 'a> {
+    fn new(tc: &'b mut Checker<'a>) -> Self {
+        #[cfg(feature = "profile")]
+        crate::profile::count("evaluators");
+        let mut state = std::mem::take(&mut tc.evaluation);
+        if state.scope != tc.scope || !tc.locals.is_empty() || !tc.definitions.is_empty() {
+            state = State::default();
+        }
+        state.scope = tc.scope;
+        #[cfg(feature = "profile")]
+        if state.next_term == 0 {
+            crate::profile::count("evaluation_sessions");
+        }
+        Self { tc, state }
     }
     fn term(&mut self, expr: Expr, context: Option<Rc<Frame>>) -> Thunk {
         let id = self.tc.cache.id(&expr);
@@ -206,42 +249,46 @@ impl<'b, 'a> Evaluator<'b, 'a> {
             dependencies.extend([usize::MAX, context.as_ref().map_or(0, |f| f.id)]);
         }
         if context.is_none()
-            && let Some(t) = self.closed.get(&id)
+            && let Some(t) = self.state.closed.get(&id)
         {
             return t.clone();
         }
         let key = (id, dependencies);
-        if let Some(t) = self.nodes.get(&key) {
+        if let Some(t) = self.state.nodes.get(&key) {
             return t.clone();
         }
-        if let Some(t) = self.old_nodes.get(&key).cloned() {
-            self.nodes.insert(key, t.clone());
+        if let Some(t) = self.state.old_nodes.get(&key).cloned() {
+            self.state.nodes.insert(key, t.clone());
             return t;
         }
-        if self.nodes.len() >= 262_144 {
-            self.old_nodes = std::mem::take(&mut self.nodes);
+        if self.state.nodes.len() >= 262_144 {
+            self.state.old_nodes = std::mem::take(&mut self.state.nodes);
         }
         let value = Rc::new(Term {
-            id: self.next_term,
+            id: self.state.next_term,
             expr,
             context,
             normal: [OnceCell::new(), OnceCell::new()],
             canonical: OnceCell::new(),
         });
-        self.next_term += 1;
+        #[cfg(feature = "profile")]
+        crate::profile::count("terms");
+        self.state.next_term += 1;
         if value.context.is_none() {
-            self.closed.insert(id, value.clone());
+            self.state.closed.insert(id, value.clone());
         }
-        self.nodes.insert(key, value.clone());
+        self.state.nodes.insert(key, value.clone());
         value
     }
     fn frame(&mut self, value: Thunk, parent: Option<Rc<Frame>>) -> Rc<Frame> {
+        #[cfg(feature = "profile")]
+        crate::profile::count("frames");
         let f = Rc::new(Frame {
-            id: self.next_frame,
+            id: self.state.next_frame,
             value: Some(value),
             parent,
         });
-        self.next_frame += 1;
+        self.state.next_frame += 1;
         f
     }
     // Reusing a proof of the identical instantiated proposition is justified by
@@ -256,7 +303,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         let Expr::Const(name, _) = &*head.expr else {
             return false;
         };
-        if let Some(expected) = self.proposition_heads.get(name) {
+        if let Some(expected) = self.state.proposition_heads.get(name) {
             return *expected == Some(arity);
         }
         let Some(d) = self.tc.env.declarations.get(name) else {
@@ -273,17 +320,17 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         } else {
             None
         };
-        self.proposition_heads.insert(name.clone(), expected);
+        self.state.proposition_heads.insert(name.clone(), expected);
         expected == Some(arity)
     }
     fn eval(&mut self, term: &Thunk, unfold: bool) -> Result<Value> {
         if let Some(value) = term.normal[usize::from(unfold)].get() {
             return Ok(value.clone());
         }
-        let newly_active = self.active.insert(term.id);
+        let newly_active = self.state.active.insert(term.id);
         let result = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.steps(term, unfold));
         if newly_active {
-            self.active.remove(&term.id);
+            self.state.active.remove(&term.id);
         }
         let result = result?;
         if result.args.is_empty()
@@ -307,10 +354,10 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                     .collect(),
                 unfold,
             );
-            if self.applications.len() >= 524_288 {
-                self.old_applications = std::mem::take(&mut self.applications);
+            if self.state.applications.len() >= 524_288 {
+                self.state.old_applications = std::mem::take(&mut self.state.applications);
             }
-            self.applications.insert(key, result.clone());
+            self.state.applications.insert(key, result.clone());
         }
         Ok(result)
     }
@@ -337,10 +384,14 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                     let mut arg = pending.pop().unwrap();
                     let domain = self.term_at(domain.clone(), current.context.clone(), 0);
                     if self.proposition(&domain) {
-                        let canonical = self.proofs.entry(domain.id).or_insert_with(|| arg.clone());
+                        let canonical = self
+                            .state
+                            .proofs
+                            .entry(domain.id)
+                            .or_insert_with(|| arg.clone());
                         // Reusing a proof currently being evaluated would make
                         // its body refer back to itself and prevent reduction.
-                        if !self.active.contains(&canonical.id) {
+                        if !self.state.active.contains(&canonical.id) {
                             arg = canonical.clone();
                         }
                     }
@@ -436,17 +487,17 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                             .collect(),
                         unfold,
                     );
-                    if let Some(value) = self.applications.get(&key) {
+                    if let Some(value) = self.state.applications.get(&key) {
                         return Ok(value.clone());
                     }
-                    if let Some(value) = self.old_applications.get(&key).cloned() {
-                        self.applications.insert(key, value.clone());
+                    if let Some(value) = self.state.old_applications.get(&key).cloned() {
+                        self.state.applications.insert(key, value.clone());
                         return Ok(value);
                     }
                     if visited.len() < 256 {
                         visited.push((head_id, pending.clone()));
                     }
-                    let instance = if let Some(instance) = self.instances.get(&head_id) {
+                    let instance = if let Some(instance) = self.state.instances.get(&head_id) {
                         instance.clone()
                     } else {
                         let declaration = self.tc.decl(name)?;
@@ -455,7 +506,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                             declaration,
                             substitution,
                         });
-                        self.instances.insert(head_id, instance.clone());
+                        self.state.instances.insert(head_id, instance.clone());
                         instance
                     };
                     let d = &instance.declaration;
@@ -487,11 +538,11 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         }
                     }
                     if unfold && let Some(value) = &d.value {
-                        let body = if let Some(body) = self.bodies.get(&head_id) {
+                        let body = if let Some(body) = self.state.bodies.get(&head_id) {
                             body.clone()
                         } else {
                             let body = Shared::new(self.tc.substitute_levels(value, subst)?);
-                            self.bodies.insert(head_id, body.clone());
+                            self.state.bodies.insert(head_id, body.clone());
                             body
                         };
                         current = Closure {
@@ -531,9 +582,10 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                                 unfold,
                             );
                             if let Some(cached) = self
+                                .state
                                 .applications
                                 .get(&reduced_key)
-                                .or_else(|| self.old_applications.get(&reduced_key))
+                                .or_else(|| self.state.old_applications.get(&reduced_key))
                             {
                                 return Ok(cached.clone());
                             }
@@ -569,12 +621,12 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                                 args.extend(value.args.iter().skip(ctor.num_params).cloned());
                                 args.extend(pending.iter().rev().skip(major_pos + 1).cloned());
                                 let key = (head_id, rule_index);
-                                let rhs = if let Some(rhs) = self.rules.get(&key) {
+                                let rhs = if let Some(rhs) = self.state.rules.get(&key) {
                                     rhs.clone()
                                 } else {
                                     let rhs =
                                         Shared::new(self.tc.substitute_levels(&rule.rhs, subst)?);
-                                    self.rules.insert(key, rhs.clone());
+                                    self.state.rules.insert(key, rhs.clone());
                                     rhs
                                 };
                                 current = Closure {
@@ -643,6 +695,8 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         result
     }
     fn quote(&mut self, term: &Thunk, depth: usize) -> Expr {
+        #[cfg(feature = "profile")]
+        let _quote = crate::profile::span("quote");
         enum Work {
             Visit(Thunk, usize),
             Finish(Thunk, usize),
@@ -652,6 +706,8 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         while let Some(next) = work.pop() {
             match next {
                 Work::Visit(term, depth) => {
+                    #[cfg(feature = "profile")]
+                    crate::profile::count("quote_visits");
                     // Quoting a forced numeral's original suspended arithmetic
                     // can expand an enormous predecessor/successor history.
                     if let Some(value) = term.normal.iter().filter_map(OnceCell::get).find(|v| {
@@ -666,7 +722,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         values.push((*term.expr).clone());
                         continue;
                     }
-                    if let Some(e) = self.quoted.get(&(term.id, depth)) {
+                    if let Some(e) = self.state.quoted.get(&(term.id, depth)) {
                         values.push(e.clone());
                         continue;
                     }
@@ -742,7 +798,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         _ => Some((*term.expr).clone()),
                     };
                     if let Some(result) = immediate {
-                        self.quoted.insert((term.id, depth), result.clone());
+                        self.state.quoted.insert((term.id, depth), result.clone());
                         values.push(result);
                     } else {
                         work.push(Work::Finish(term, depth));
@@ -755,6 +811,8 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                     }
                 }
                 Work::Finish(term, depth) => {
+                    #[cfg(feature = "profile")]
+                    crate::profile::count("quote_rebuilds");
                     let last = values.pop().expect("quoted child");
                     let result = match &*term.expr {
                         Expr::Var(_) => last,
@@ -776,7 +834,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         }
                         _ => unreachable!("only compound terms schedule children"),
                     };
-                    self.quoted.insert((term.id, depth), result.clone());
+                    self.state.quoted.insert((term.id, depth), result.clone());
                     values.push(result);
                 }
             }
@@ -801,6 +859,41 @@ fn primitive_arity(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reused_evaluation_does_not_export_local_proofs() {
+        let mut env = Environment::new();
+        crate::parser::run("axiom P : Prop; axiom p : P", &mut env).unwrap();
+        let mut checker = Checker::new(&env);
+        let p = Expr::constant("P");
+        let x = Name::new("x");
+        let identity = Expr::lam(x.clone(), p.clone(), Expr::Var(x));
+        let closed = identity.clone().app(Expr::constant("p"));
+        let h = Name::new("h");
+        checker
+            .local(h.clone(), p.clone(), |tc| {
+                let first = identity.clone().app(Expr::Var(h.clone()));
+                assert!(tc.whnf(&first)?.aeq(&Expr::Var(h)));
+                // A previously used local proof must not be substituted into
+                // this closed term and escape through the syntax WHNF cache.
+                assert!(tc.whnf(&closed)?.aeq(&Expr::constant("p")));
+                Ok(())
+            })
+            .unwrap();
+        let result = checker.whnf(&closed).unwrap();
+        assert!(checker.infer(&result).unwrap().aeq(&p));
+    }
+
+    #[test]
+    fn reused_evaluation_preserves_unfolding_modes() {
+        let mut env = Environment::new();
+        crate::parser::run("axiom A : Type; axiom a : A; def d : A := a", &mut env).unwrap();
+        let mut checker = Checker::new(&env);
+        let d = Expr::constant("d");
+        assert!(checker.whnf_mode(&d, false).unwrap().aeq(&d));
+        assert!(checker.whnf(&d).unwrap().aeq(&Expr::constant("a")));
+        assert!(checker.whnf_mode(&d, false).unwrap().aeq(&d));
+    }
 
     #[test]
     fn quote_reuses_a_forced_numeric_result() {

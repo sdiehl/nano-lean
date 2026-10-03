@@ -3,6 +3,8 @@ pub mod kernel;
 pub mod level;
 mod lexer;
 pub mod parser;
+#[cfg(feature = "profile")]
+mod profile;
 pub mod syntax;
 
 pub use kernel::{Environment, Error};

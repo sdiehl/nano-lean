@@ -23,6 +23,9 @@ Parallel checks show periodic status in CI; set `NANO_LEAN_PROGRESS=1` to enable
 
 Set `NANO_LEAN_TRACE=1` to log each declaration to stderr during a long export check.
 
+Build with `--features profile` to emit evaluator allocation counts and inclusive
+timings to stderr after each export check. Profiling is disabled in normal builds.
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
