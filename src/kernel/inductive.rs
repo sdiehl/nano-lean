@@ -851,7 +851,7 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    fn structure(&self, name: &str) -> Option<Rc<Constructor>> {
+    pub(super) fn structure(&self, name: &str) -> Option<Rc<Constructor>> {
         let info = self.env.inductives.get(name)?;
         if info.recursive || info.num_indices != 0 || info.constructors.len() != 1 {
             return None;

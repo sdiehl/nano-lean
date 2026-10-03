@@ -1,5 +1,6 @@
 use super::*;
 use std::{cell::OnceCell, rc::Rc};
+mod check;
 
 type Thunk = Rc<Term>;
 struct Term {
@@ -98,6 +99,11 @@ struct Instance {
 struct Evaluator<'b, 'a> {
     tc: &'b mut Checker<'a>,
     state: State,
+    variables: Vec<(Name<Expr>, Thunk)>,
+    synced_variables: usize,
+    initial_locals: usize,
+    initial_scope: usize,
+    reuse_proofs: bool,
 }
 pub(super) struct State {
     // Proof reuse can select a local hypothesis even for a closed proposition.
@@ -145,9 +151,12 @@ impl Default for State {
 
 impl Drop for Evaluator<'_, '_> {
     fn drop(&mut self) {
+        self.tc.locals.truncate(self.initial_locals);
+        self.tc.scope = self.initial_scope;
         // Retain small semantic graphs across WHNF requests in one declaration.
         // Large reductions are released at the request boundary.
-        if self.tc.locals.is_empty()
+        if self.variables.is_empty()
+            && self.tc.locals.is_empty()
             && self.tc.definitions.is_empty()
             && self.state.next_term < 8192
             && self.state.next_frame < 16384
@@ -183,7 +192,30 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         if state.next_term == 0 {
             crate::profile::count("evaluation_sessions");
         }
-        Self { tc, state }
+        let initial_locals = tc.locals.len();
+        let initial_scope = tc.scope;
+        let reuse_proofs = tc.semantic;
+        Self {
+            tc,
+            state,
+            variables: Vec::new(),
+            synced_variables: 0,
+            initial_locals,
+            initial_scope,
+            reuse_proofs,
+        }
+    }
+    // Register typed semantic variables only at a legacy reduction boundary.
+    // Inference and conversion otherwise keep binder domains in closures.
+    fn sync_variables(&mut self) {
+        while self.synced_variables < self.variables.len() {
+            let (name, ty) = self.variables[self.synced_variables].clone();
+            let ty = self.quote(&ty, 0);
+            self.tc.locals.push((name, ty));
+            self.tc.scope = self.tc.next_scope;
+            self.tc.next_scope += 1;
+            self.synced_variables += 1;
+        }
     }
     fn term(&mut self, expr: Expr, context: Option<Rc<Frame>>) -> Thunk {
         let id = self.tc.cache.id(&expr);
@@ -228,7 +260,9 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                 context.as_ref().map_or(0, |f| f.id),
                 quote_depth,
             ]);
-        } else if let Some(bits) = self.tc.cache.bound_support(id) {
+        } else if let Some(bits) = self.tc.cache.bound_support(id)
+            && bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= 64
+        {
             let mut frame = context.clone();
             let mut depth = 0;
             for (i, word) in bits.iter().enumerate() {
@@ -246,6 +280,9 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                 }
             }
         } else {
+            // Wide lexical environments use their persistent frame identity.
+            // Copying every captured ID into every subterm's key makes deeply
+            // nested binders retain a quadratic amount of key storage.
             dependencies.extend([usize::MAX, context.as_ref().map_or(0, |f| f.id)]);
         }
         if context.is_none()
@@ -290,6 +327,14 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         });
         self.state.next_frame += 1;
         f
+    }
+    fn apply(&mut self, function: &Thunk, argument: &Thunk) -> Thunk {
+        let function = self.frame(function.clone(), None);
+        let context = self.frame(argument.clone(), Some(function));
+        self.term(
+            Expr::Var(Name::bound(1, 0)).app(Expr::Var(Name::bound(0, 0))),
+            Some(context),
+        )
     }
     // Reusing a proof of the identical instantiated proposition is justified by
     // proof irrelevance. We never erase its type or invent a proof inhabitant.
@@ -383,7 +428,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                 Expr::Lam(domain, b) if !pending.is_empty() => {
                     let mut arg = pending.pop().unwrap();
                     let domain = self.term_at(domain.clone(), current.context.clone(), 0);
-                    if self.proposition(&domain) {
+                    if self.reuse_proofs && self.proposition(&domain) {
                         let canonical = self
                             .state
                             .proofs
@@ -558,6 +603,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         // their impossible proof argument cannot reduce them.
                         if pending.len() > major_pos && !rec.rules.is_empty() {
                             if rec.k {
+                                self.sync_variables();
                                 let args = pending
                                     .iter()
                                     .rev()
@@ -636,6 +682,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                                 pending = args.into_iter().rev().collect();
                                 continue;
                             }
+                            self.sync_variables();
                             let args = pending
                                 .iter()
                                 .rev()

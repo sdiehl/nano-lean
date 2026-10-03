@@ -135,10 +135,7 @@ impl Environment {
         tc.nf(expr)
     }
     pub fn def_eq(&self, a: &Expr, b: &Expr) -> Result<bool> {
-        let mut tc = Checker::new(self);
-        let ta = tc.infer(a)?;
-        let tb = tc.infer(b)?;
-        Ok(tc.conv(&ta, &tb)? && tc.conv(a, b)?)
+        Checker::new(self).semantic_def_eq(a, b)
     }
 }
 
@@ -152,6 +149,8 @@ struct Checker<'a> {
     cache: cache::Cache,
     evaluation: eval::State,
     checking: bool,
+    // Disabled inside value sessions when bridging to syntax reduction rules.
+    semantic: bool,
     definitions: HashMap<Name<Expr>, Expr>,
 }
 
@@ -167,6 +166,7 @@ impl<'a> Checker<'a> {
             cache: cache::Cache::default(),
             evaluation: eval::State::default(),
             checking: true,
+            semantic: true,
             definitions: HashMap::default(),
         }
     }
@@ -236,6 +236,9 @@ impl<'a> Checker<'a> {
         Ok(params.iter().cloned().zip(values.iter().cloned()).collect())
     }
     fn sort(&mut self, e: &Expr) -> Result<Level> {
+        if self.semantic {
+            return self.semantic_sort(e);
+        }
         let ty = self.infer(e)?;
         self.sort_type(e, ty)
     }
@@ -246,6 +249,9 @@ impl<'a> Checker<'a> {
         }
     }
     fn check(&mut self, e: &Expr, expected: &Expr) -> Result<()> {
+        if self.semantic {
+            return self.semantic_check(e, expected);
+        }
         let actual = self.infer(e)?;
         self.check_type(e, actual, expected)
     }
@@ -266,6 +272,9 @@ impl<'a> Checker<'a> {
         result
     }
     fn infer(&mut self, e: &Expr) -> Result<Expr> {
+        if self.semantic {
+            return self.semantic_infer(e);
+        }
         self.infer_at(e, &mut Vec::new())
     }
     fn infer_at(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Expr> {
@@ -420,6 +429,9 @@ impl<'a> Checker<'a> {
         }
     }
     fn conv(&mut self, a: &Expr, b: &Expr) -> Result<bool> {
+        if self.semantic {
+            return self.semantic_conv(a, b);
+        }
         #[cfg(feature = "profile")]
         crate::profile::count("conversions");
         let ai = self.cache.id(a);

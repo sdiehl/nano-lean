@@ -152,6 +152,9 @@ impl Cache {
     pub fn has_loose_id(&self, id: usize) -> bool {
         self.loose[id].is_some()
     }
+    pub fn is_closed(&self, id: usize) -> bool {
+        !self.open[id] && self.loose[id].is_none()
+    }
     pub fn has_loose(&mut self, e: &Expr) -> bool {
         let id = self.id(e);
         self.loose[id].is_some()
