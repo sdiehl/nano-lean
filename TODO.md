@@ -74,6 +74,8 @@
 - [x] Retain theorem bodies for kernel reduction; resolve `Rat.instEncodable` at Mathlib export line 7,963,318
 - [x] Try K reduction before evaluating proofs and avoid forcing empty eliminators
 - [x] Prevent proof reuse from looping during reduction; resolve `Fin.insertNth_apply_succAbove`
+- [x] Quote deep closures iteratively and reuse computed numerals; resolve `Std.Time.Week.Offset.ofMilliseconds._proof_1`
+- [x] Add process-based parallel export checking with complete partition verification and a total memory budget
 - [ ] Check all 670,630 Mathlib declarations locally
 - [ ] Record checking time and peak memory
 - [ ] Confirm zero Mathlib errors and timeouts

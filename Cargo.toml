@@ -6,7 +6,7 @@ description = "A small dependent type checker built with unbound"
 license = "MIT"
 
 [dependencies]
-unbound = { git = "https://github.com/sdiehl/unbound", rev = "eb566e0a51756752f676bf5578652f5920fa913a" }
+unbound = { git = "https://github.com/sdiehl/unbound", rev = "0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce" }
 logos = "0.16"
 lalrpop-util = "0.23.1"
 offsides = "0.2.1"

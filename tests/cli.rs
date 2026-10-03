@@ -54,12 +54,15 @@ fn parallel_export_matches_serial_and_workers_are_partial() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/theorem-reduction.ndjson"
     );
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()));
     let (ok, serial) = export_command(&["--export", path]);
     assert!(ok);
     for workers in ["1", "2", "3"] {
         let (ok, parallel) = export_command(&["--export-parallel", workers, path]);
         assert!(ok, "{parallel}");
         assert_eq!(parallel["status"], "checked");
+        assert_eq!(parallel["sha256"], digest);
         for field in ["declarations", "expressions", "names", "levels"] {
             assert_eq!(parallel[field], serial[field]);
         }
@@ -111,4 +114,19 @@ fn parallel_export_rejects_invalid_declarations_in_each_partition() {
     }
     assert!(corrupted >= 2);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn parallel_memory_budget_stops_workers() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke.ndjson");
+    let (ok, result) = export_command(&["--export-parallel", "2", "--memory-mib", "1", path]);
+    assert!(!ok);
+    assert!(
+        result["reason"]
+            .as_str()
+            .unwrap()
+            .contains("memory budget exceeded"),
+        "{result}"
+    );
+    assert!(!export_command(&["--export-parallel", "2", "--memory-mib", "0", path]).0);
 }

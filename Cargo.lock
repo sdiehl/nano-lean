@@ -156,6 +156,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -171,7 +177,7 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "foldhash",
+ "foldhash 0.1.5",
 ]
 
 [[package]]
@@ -659,16 +665,18 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unbound"
-version = "0.3.0"
-source = "git+https://github.com/sdiehl/unbound?rev=eb566e0a51756752f676bf5578652f5920fa913a#eb566e0a51756752f676bf5578652f5920fa913a"
+version = "0.4.0"
+source = "git+https://github.com/sdiehl/unbound?rev=0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce#0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce"
 dependencies = [
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
  "unbound-derive",
 ]
 
 [[package]]
 name = "unbound-derive"
-version = "0.3.0"
-source = "git+https://github.com/sdiehl/unbound?rev=eb566e0a51756752f676bf5578652f5920fa913a#eb566e0a51756752f676bf5578652f5920fa913a"
+version = "0.4.0"
+source = "git+https://github.com/sdiehl/unbound?rev=0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce#0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce"
 dependencies = [
  "proc-macro2",
  "quote",
