@@ -19,6 +19,8 @@ The default memory budget is 2 GiB; override with `--memory-mib 4096` before the
 
 Pushes run the full Mathlib check in CI with a 10 GiB memory budget and saved logs.
 
+Parallel checks show periodic status in CI; set `NANO_LEAN_PROGRESS=1` to enable it locally.
+
 Set `NANO_LEAN_TRACE=1` to log each declaration to stderr during a long export check.
 
 ## License

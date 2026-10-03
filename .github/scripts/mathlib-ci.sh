@@ -69,11 +69,12 @@ case ${1:-} in
     rm -rf .ci/mathlib4 .ci/lean4export .ci/elan
     ;;
   check)
-    # Keep trace output out of the Actions console; the artifact retains it.
+    # Show periodic Rust progress in Actions and retain the full trace artifact.
     bounded nano-mathlib-check /usr/bin/time -v -o "$report/time.txt" \
-      env NANO_LEAN_TRACE=1 "$root/target/release/nano-lean" \
+      env NANO_LEAN_TRACE=1 NANO_LEAN_PROGRESS=1 "$root/target/release/nano-lean" \
       --export-parallel 1 --memory-mib 10240 "$root/.ci/mathlib.ndjson" \
-      > "$report/result.json" 2> "$report/trace.jsonl"
+      > "$report/result.json" \
+      2> >(tee "$report/trace.jsonl" | awk '/^\[progress\]/ { print; fflush() }' >&2)
     python3 - "$report/result.json" <<'PY'
 import json
 import sys

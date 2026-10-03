@@ -130,3 +130,28 @@ fn parallel_memory_budget_stops_workers() {
     );
     assert!(!export_command(&["--export-parallel", "2", "--memory-mib", "0", path]).0);
 }
+
+#[test]
+fn progress_stays_on_stderr_and_preserves_json_results() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/theorem-reduction.ndjson"
+    );
+    for enabled in ["1", "0"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_nano-lean"))
+            .args(["--export-parallel", "2", path])
+            .env("NANO_LEAN_PROGRESS", enabled)
+            .env_remove("NANO_LEAN_TRACE")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["status"], "checked");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            stderr.contains("[progress] complete: 36 declarations checked"),
+            enabled == "1"
+        );
+        assert!(!stderr.contains("assigned_checked"));
+    }
+}

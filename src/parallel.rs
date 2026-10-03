@@ -2,24 +2,94 @@
 //! assumptions are discharged only when all partitions accept the same export.
 use serde_json::{Value, json};
 use std::{
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read},
     process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 type Output = thread::JoinHandle<io::Result<Vec<u8>>>;
-struct Workers(Vec<(usize, Child, Output)>);
+#[derive(Clone, Default)]
+struct Snapshot {
+    imported: u64,
+    assigned: u64,
+    name: String,
+}
+struct Worker {
+    index: usize,
+    child: Child,
+    output: Output,
+    stderr: thread::JoinHandle<io::Result<()>>,
+    progress: Arc<Mutex<Option<Snapshot>>>,
+}
+struct Workers(Vec<Worker>);
 impl Drop for Workers {
     fn drop(&mut self) {
-        for (_, child, _) in &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
+        for worker in &mut self.0 {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
         }
     }
 }
 
 pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> {
+    let progress = match std::env::var("NANO_LEAN_PROGRESS").as_deref() {
+        Ok("0") => false,
+        Ok(_) => true,
+        Err(_) => std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+    };
+    let start = Instant::now();
+    let result = run_workers(path, jobs, memory_mib, progress);
+    if progress {
+        match &result {
+            Ok(report) => eprintln!(
+                "[progress] complete: {} declarations checked in {}s",
+                report["declarations"],
+                start.elapsed().as_secs()
+            ),
+            Err(reason) => eprintln!(
+                "[progress] stopped after {}s: {}",
+                start.elapsed().as_secs(),
+                brief(reason)
+            ),
+        }
+    }
+    result
+}
+
+fn brief(text: &str) -> String {
+    text.chars()
+        .take(200)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+fn status(index: usize, jobs: usize, snapshot: Option<&Snapshot>) -> String {
+    match snapshot {
+        None => format!("worker {}/{}: scanning export", index + 1, jobs),
+        Some(s) if jobs == 1 => format!(
+            "worker 1/1: {} declarations checked; checking {}",
+            s.imported,
+            brief(&s.name)
+        ),
+        Some(s) => format!(
+            "worker {}/{}: {} assigned declarations checked, {} imported; checking {}",
+            index + 1,
+            jobs,
+            s.assigned,
+            s.imported,
+            brief(&s.name)
+        ),
+    }
+}
+
+fn run_workers(
+    path: &str,
+    jobs: usize,
+    memory_mib: usize,
+    progress: bool,
+) -> Result<Value, String> {
     if !(1..=64).contains(&jobs) {
         return Err("worker count must be between 1 and 64".into());
     }
@@ -29,10 +99,22 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
         .ok_or("memory budget must be a positive number of MiB")? as u64;
     // Refuse to start unmonitored workers on unsupported platforms.
     memory_bytes(std::process::id()).map_err(|e| format!("cannot monitor memory: {e}"))?;
+    let started = Instant::now();
+    let mut last_progress = Instant::now();
+    if progress {
+        eprintln!(
+            "[progress] starting {jobs} worker(s), {memory_mib} MiB total budget; scanning export"
+        );
+    }
+    let trace_requested = std::env::var_os("NANO_LEAN_TRACE").is_some();
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut workers = Workers(Vec::new());
     for index in 0..jobs {
-        let mut child = Command::new(&executable)
+        let mut command = Command::new(&executable);
+        if progress {
+            command.env("NANO_LEAN_TRACE", "1");
+        }
+        let mut child = command
             .args([
                 "--export-shard",
                 path,
@@ -41,7 +123,7 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("cannot start worker {index}: {e}"))?;
         let mut stdout = child.stdout.take().expect("piped worker output");
@@ -53,12 +135,40 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
             io::copy(&mut stdout, &mut io::sink())?;
             Ok(bytes)
         });
-        workers.0.push((index, child, output));
+        let stderr = child.stderr.take().expect("piped worker stderr");
+        let snapshot = Arc::new(Mutex::new(None));
+        let snapshot_writer = snapshot.clone();
+        let stderr = thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let line = line?;
+                let update = if progress {
+                    snapshot_from_trace(&line)
+                } else {
+                    None
+                };
+                let is_trace = update.is_some();
+                if let Some(update) = update {
+                    *snapshot_writer.lock().unwrap() = Some(update);
+                }
+                if !progress || trace_requested || !is_trace {
+                    eprintln!("{line}");
+                }
+            }
+            Ok(())
+        });
+        workers.0.push(Worker {
+            index,
+            child,
+            output,
+            stderr,
+            progress: snapshot,
+        });
     }
     let mut reports = vec![Value::Null; jobs];
     while !workers.0.is_empty() {
         let mut total = memory_bytes(std::process::id()).map_err(|e| e.to_string())?;
-        for (_, child, _) in &mut workers.0 {
+        for worker in &mut workers.0 {
+            let child = &mut worker.child;
             if child.try_wait().map_err(|e| e.to_string())?.is_none() {
                 match memory_bytes(child.id()) {
                     Ok(bytes) => total = total.saturating_add(bytes),
@@ -74,10 +184,26 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
                 total / (1024 * 1024)
             ));
         }
+        if progress && last_progress.elapsed() >= Duration::from_secs(10) {
+            eprintln!(
+                "[progress] elapsed {}s | memory {} / {memory_mib} MiB | {} / {jobs} workers finished",
+                started.elapsed().as_secs(),
+                total / (1024 * 1024),
+                jobs - workers.0.len()
+            );
+            for worker in &workers.0 {
+                let snapshot = worker.progress.lock().unwrap();
+                eprintln!(
+                    "[progress] {}",
+                    status(worker.index, jobs, snapshot.as_ref())
+                );
+            }
+            last_progress = Instant::now();
+        }
         let mut i = 0;
         while i < workers.0.len() {
             if workers.0[i]
-                .1
+                .child
                 .try_wait()
                 .map_err(|e| e.to_string())?
                 .is_none()
@@ -85,11 +211,21 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
                 i += 1;
                 continue;
             }
-            let (index, mut child, output) = workers.0.swap_remove(i);
+            let Worker {
+                index,
+                mut child,
+                output,
+                stderr,
+                ..
+            } = workers.0.swap_remove(i);
             let status = child.wait().map_err(|e| e.to_string())?;
             let output = output
                 .join()
                 .map_err(|_| "worker output reader panicked")?
+                .map_err(|e| e.to_string())?;
+            stderr
+                .join()
+                .map_err(|_| "worker stderr reader panicked")?
                 .map_err(|e| e.to_string())?;
             if !status.success() {
                 return Err(format!(
@@ -99,6 +235,14 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
             }
             let report: Value = serde_json::from_slice(&output)
                 .map_err(|e| format!("invalid result from worker {index}: {e}"))?;
+            if progress {
+                eprintln!(
+                    "[progress] worker {}/{} finished its partition in {}s; awaiting all workers",
+                    index + 1,
+                    jobs,
+                    started.elapsed().as_secs()
+                );
+            }
             reports[index] = report;
         }
         if !workers.0.is_empty() {
@@ -106,6 +250,30 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
         }
     }
     combine(&reports)
+}
+
+fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
+    let event: Value = serde_json::from_str(line).ok()?;
+    let name = event["name"].as_str()?;
+    let name = serde_json::from_str::<Vec<Value>>(name)
+        .ok()
+        .map(|parts| {
+            parts
+                .iter()
+                .map(|p| {
+                    p.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| p.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        })
+        .unwrap_or_else(|| name.to_owned());
+    Some(Snapshot {
+        imported: event["imported"].as_u64()?,
+        assigned: event["assigned_checked"].as_u64()?,
+        name,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -202,6 +370,21 @@ mod tests {
             })
             .collect()
     }
+    #[test]
+    fn progress_distinguishes_imports_from_checked_partitions() {
+        let event = json!({"imported":200,"assigned_checked":75,"name":"[\"Nat\",\"add\"]"});
+        let snapshot = snapshot_from_trace(&event.to_string()).unwrap();
+        assert_eq!(snapshot.name, "Nat.add");
+        assert!(status(0, 1, Some(&snapshot)).contains("200 declarations checked"));
+        assert!(
+            status(1, 2, Some(&snapshot))
+                .contains("75 assigned declarations checked, 200 imported")
+        );
+        assert!(status(0, 2, None).contains("scanning export"));
+        assert!(snapshot_from_trace("not a trace").is_none());
+        assert_eq!(brief("x\n::error::y"), "x ::error::y");
+    }
+
     #[test]
     fn accepts_only_complete_matching_partitions() {
         assert_eq!(combine(&reports()).unwrap()["status"], "checked");
