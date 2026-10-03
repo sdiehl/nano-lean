@@ -1,0 +1,67 @@
+name: Mathlib
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mathlib-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mathlib:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release checker
+        run: cargo build --release --locked
+      - name: Prepare runner disk
+        run: |
+          mkdir -p .ci/mathlib-report
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h . | tee .ci/mathlib-report/disk.txt
+      - uses: actions/cache/restore@v4
+        id: export
+        with:
+          path: .ci/mathlib.ndjson
+          key: mathlib-export-ca2ec20fd063b61e71867b2975c81bd989af9f879b4886b8f08cd23c767a47bb
+      - name: Build pinned Mathlib export
+        if: steps.export.outputs.cache-hit != 'true'
+        timeout-minutes: 40
+        run: bash .github/scripts/mathlib-ci.sh prepare
+      - name: Verify export checksum
+        run: |
+          echo 'ca2ec20fd063b61e71867b2975c81bd989af9f879b4886b8f08cd23c767a47bb  .ci/mathlib.ndjson' | sha256sum --check
+      - uses: actions/cache/save@v4
+        if: steps.export.outputs.cache-hit != 'true'
+        with:
+          path: .ci/mathlib.ndjson
+          key: ${{ steps.export.outputs.cache-primary-key }}
+      - name: Check all Mathlib declarations
+        timeout-minutes: 300
+        run: bash .github/scripts/mathlib-ci.sh check
+      - name: Report result
+        if: always()
+        run: |
+          {
+            echo '### Mathlib'
+            echo 'Release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
+            echo '```text'
+            cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
+            tail -n 3 .ci/mathlib-report/trace.jsonl 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathlib-${{ github.sha }}
+          path: .ci/mathlib-report/
+          if-no-files-found: warn
+          retention-days: 14

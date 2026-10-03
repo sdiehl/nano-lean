@@ -17,6 +17,8 @@ The importer accepts safe proof exports and rejects unsafe or partial declaratio
 Check in parallel with `cargo run --release -- --export-parallel 2 FILE.ndjson`.
 The default memory budget is 2 GiB; override with `--memory-mib 4096` before the filename.
 
+Pushes run the full Mathlib check in CI with a 10 GiB memory budget and saved logs.
+
 Set `NANO_LEAN_TRACE=1` to log each declaration to stderr during a long export check.
 
 ## License
