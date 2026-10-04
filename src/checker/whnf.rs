@@ -10,12 +10,12 @@ use num_traits::{ToPrimitive, Zero};
 const BIG_EXP: u64 = 1 << 24;
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    pub fn whnf_core(&mut self, e: ExprPtr<'t>, cheap: bool) -> ExprPtr<'t> {
+    pub fn whnf_core(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
         self.tick();
         if !matches!(*e, Expr::App { .. } | Expr::Let { .. } | Expr::Proj { .. }) {
             return e;
         }
-        if !cheap && let Some(&r) = self.whnf_core_cache.get(&e) {
+        if let Some(&r) = self.whnf_core_cache.get(&e) {
             return r;
         }
         let r = match *e {
@@ -28,11 +28,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     body = data.body;
                 }
                 let body = self.ctx.inst(body, &values);
-                self.whnf_core(body, cheap)
+                self.whnf_core(body)
             }
             Expr::App { .. } => {
                 let (f0, args) = self.ctx.unfold_apps(e);
-                let f = self.whnf_core(f0, cheap);
+                let f = self.whnf_core(f0);
                 if f.is_lambda() {
                     let mut m = 0;
                     let mut b = f;
@@ -42,29 +42,62 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                         b = body;
                         m += 1;
                     }
-                    let b = self.ctx.inst(b, &args[..m]);
+                    let b = self.reduce_binders(b, args[..m].to_vec());
                     let r = self.ctx.apps(b, &args[m..]);
-                    self.whnf_core(r, cheap)
+                    self.whnf_core(r)
                 } else if f == f0 {
                     match self.reduce_rec(f, &args) {
-                        Some(r) => self.whnf_core(r, cheap),
+                        Some(r) => self.whnf_core(r),
                         None => e,
                     }
                 } else {
                     let r = self.ctx.apps(f, &args);
-                    self.whnf_core(r, cheap)
+                    self.whnf_core(r)
                 }
             }
             Expr::Proj { idx, e: s, .. } => match self.reduce_proj(idx, s) {
-                Some(r) => self.whnf_core(r, cheap),
+                Some(r) => self.whnf_core(r),
                 None => e,
             },
             _ => unreachable!(),
         };
-        if !cheap {
-            self.whnf_core_cache.insert(e, r);
-        }
+        self.whnf_core_cache.insert(e, r);
         r
+    }
+
+    /// Keep substitutions outside the body while exposing adjacent beta/let
+    /// steps. Materialize only when another reduction rule needs syntax.
+    fn reduce_binders(&mut self, mut body: ExprPtr<'t>, mut env: Vec<ExprPtr<'t>>) -> ExprPtr<'t> {
+        loop {
+            self.tick();
+            match *body {
+                Expr::Let { data, .. } => {
+                    let value = self.ctx.inst(data.val, &env);
+                    env.push(value);
+                    body = data.body;
+                }
+                Expr::App { .. } => {
+                    let (mut head, args) = self.ctx.unfold_apps(body);
+                    let mut consumed = 0;
+                    let mut values = Vec::new();
+                    while consumed < args.len() {
+                        let Expr::Lam { body: next, .. } = *head else {
+                            break;
+                        };
+                        values.push(self.ctx.inst(args[consumed], &env));
+                        consumed += 1;
+                        head = next;
+                    }
+                    if consumed == args.len() {
+                        env.extend(values);
+                        body = head;
+                    } else {
+                        return self.ctx.inst(body, &env);
+                    }
+                }
+                _ => return self.ctx.inst(body, &env),
+            }
+        }
     }
 
     pub fn whnf(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -84,9 +117,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             return r;
         }
         let mut t = e;
+        let mut path = Vec::new();
         let r = loop {
             self.tick();
-            let t1 = self.whnf_core(t, false);
+            if let Some(&r) = self.whnf_cache.get(&t) {
+                break r;
+            }
+            path.push(t);
+            let t1 = self.whnf_core(t);
             if let Some(v) = self.reduce_nat(t1) {
                 break v;
             }
@@ -95,7 +133,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 None => break t1,
             }
         };
-        self.whnf_cache.insert(e, r);
+        for node in path {
+            self.whnf_cache.insert(node, r);
+        }
         r
     }
 
@@ -207,6 +247,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Expr::Const { name: cname, .. } = *major.head() else {
             return None;
         };
+        let mut canonical = args.to_vec();
+        canonical[mi] = major;
+        let key = (rec.info.name, levels, canonical);
+        if let Some(&result) = self.rec_cache.get(&key) {
+            return Some(result);
+        }
         let rule = rec.rules.iter().find(|r| r.ctor == cname)?;
         let (_, margs) = self.ctx.unfold_apps(major);
         let nf = usize::from(rule.nfields);
@@ -221,7 +267,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             + usize::from(rec.num_minors);
         let rhs = self.ctx.apps(rhs, &args[..np]);
         let rhs = self.ctx.apps(rhs, &margs[margs.len() - nf..]);
-        Some(self.ctx.apps(rhs, &args[mi + 1..]))
+        let result = self.ctx.apps(rhs, &args[mi + 1..]);
+        self.rec_cache.insert(key, result);
+        Some(result)
     }
 
     fn rec_induct(&self, rec: &Recursor<'t>) -> Option<crate::term::ptr::NamePtr<'t>> {

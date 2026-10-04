@@ -17,18 +17,58 @@ pub const LOCAL_HASH: u64 = 1201;
 /// Loose bound variable count and a has-locals flag live in the pointer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Expr<'a> {
-    Var { idx: u16, hash: u64 },
-    Sort { level: LevelPtr<'a>, hash: u64 },
-    Const { name: NamePtr<'a>, levels: LevelsPtr<'a>, hash: u64 },
-    App { fun: ExprPtr<'a>, arg: ExprPtr<'a>, hash: u64 },
-    Lam { ty: ExprPtr<'a>, body: ExprPtr<'a>, hash: u64 },
-    Pi { ty: ExprPtr<'a>, body: ExprPtr<'a>, hash: u64 },
-    Let { data: &'a LetData<'a>, hash: u64 },
-    Proj { name: NamePtr<'a>, idx: u16, e: ExprPtr<'a>, hash: u64 },
-    NatLit { n: BigUintPtr<'a>, hash: u64 },
-    StrLit { s: StringPtr<'a>, hash: u64 },
+    Var {
+        idx: u16,
+        hash: u64,
+    },
+    Sort {
+        level: LevelPtr<'a>,
+        hash: u64,
+    },
+    Const {
+        name: NamePtr<'a>,
+        levels: LevelsPtr<'a>,
+        hash: u64,
+    },
+    App {
+        fun: ExprPtr<'a>,
+        arg: ExprPtr<'a>,
+        hash: u64,
+    },
+    Lam {
+        ty: ExprPtr<'a>,
+        body: ExprPtr<'a>,
+        hash: u64,
+    },
+    Pi {
+        ty: ExprPtr<'a>,
+        body: ExprPtr<'a>,
+        hash: u64,
+    },
+    Let {
+        data: &'a LetData<'a>,
+        hash: u64,
+    },
+    Proj {
+        name: NamePtr<'a>,
+        idx: u16,
+        e: ExprPtr<'a>,
+        hash: u64,
+    },
+    NatLit {
+        n: BigUintPtr<'a>,
+        hash: u64,
+    },
+    StrLit {
+        s: StringPtr<'a>,
+        hash: u64,
+    },
     /// A free variable introduced by the checker when it goes under a binder.
-    Local { id: u32, ty: ExprPtr<'a>, hash: u64 },
+    Local {
+        id: u32,
+        ty: ExprPtr<'a>,
+        hash: u64,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,49 +157,122 @@ pub mod mk {
 
     pub fn var<'a>(idx: u16) -> (Expr<'a>, Meta) {
         debug_assert!(idx < HAS_LOCAL - 1);
-        (Expr::Var { idx, hash: hash64!(VAR_HASH, idx) }, idx + 1)
+        (
+            Expr::Var {
+                idx,
+                hash: hash64!(VAR_HASH, idx),
+            },
+            idx + 1,
+        )
     }
 
     pub fn sort(level: LevelPtr<'_>) -> (Expr<'_>, Meta) {
-        (Expr::Sort { level, hash: hash64!(SORT_HASH, level) }, 0)
+        (
+            Expr::Sort {
+                level,
+                hash: hash64!(SORT_HASH, level),
+            },
+            0,
+        )
     }
 
     pub fn konst<'a>(name: NamePtr<'a>, levels: LevelsPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::Const { name, levels, hash: hash64!(CONST_HASH, name, levels) }, 0)
+        (
+            Expr::Const {
+                name,
+                levels,
+                hash: hash64!(CONST_HASH, name, levels),
+            },
+            0,
+        )
     }
 
     pub fn app<'a>(fun: ExprPtr<'a>, arg: ExprPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::App { fun, arg, hash: hash64!(APP_HASH, fun, arg) }, join(fun, arg))
+        (
+            Expr::App {
+                fun,
+                arg,
+                hash: hash64!(APP_HASH, fun, arg),
+            },
+            join(fun, arg),
+        )
     }
 
     pub fn lam<'a>(ty: ExprPtr<'a>, body: ExprPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::Lam { ty, body, hash: hash64!(LAM_HASH, ty, body) }, under(ty, body))
+        (
+            Expr::Lam {
+                ty,
+                body,
+                hash: hash64!(LAM_HASH, ty, body),
+            },
+            under(ty, body),
+        )
     }
 
     pub fn pi<'a>(ty: ExprPtr<'a>, body: ExprPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::Pi { ty, body, hash: hash64!(PI_HASH, ty, body) }, under(ty, body))
+        (
+            Expr::Pi {
+                ty,
+                body,
+                hash: hash64!(PI_HASH, ty, body),
+            },
+            under(ty, body),
+        )
     }
 
     /// Hash and metadata of a let node; the caller allocates the payload on a miss.
     pub fn let_(d: LetData<'_>) -> (u64, Meta) {
         let hash = hash64!(LET_HASH, d.ty, d.val, d.body, d.nondep);
-        let nlb = d.ty.nlb().max(d.val.nlb()).max(d.body.nlb().saturating_sub(1));
-        (hash, nlb | ((d.ty.meta() | d.val.meta() | d.body.meta()) & HAS_LOCAL))
+        let nlb =
+            d.ty.nlb()
+                .max(d.val.nlb())
+                .max(d.body.nlb().saturating_sub(1));
+        (
+            hash,
+            nlb | ((d.ty.meta() | d.val.meta() | d.body.meta()) & HAS_LOCAL),
+        )
     }
 
     pub fn proj<'a>(name: NamePtr<'a>, idx: u16, e: ExprPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::Proj { name, idx, e, hash: hash64!(PROJ_HASH, name, idx, e) }, e.meta())
+        (
+            Expr::Proj {
+                name,
+                idx,
+                e,
+                hash: hash64!(PROJ_HASH, name, idx, e),
+            },
+            e.meta(),
+        )
     }
 
     pub fn nat(n: BigUintPtr<'_>) -> (Expr<'_>, Meta) {
-        (Expr::NatLit { n, hash: hash64!(NAT_HASH, n) }, 0)
+        (
+            Expr::NatLit {
+                n,
+                hash: hash64!(NAT_HASH, n),
+            },
+            0,
+        )
     }
 
     pub fn str(s: StringPtr<'_>) -> (Expr<'_>, Meta) {
-        (Expr::StrLit { s, hash: hash64!(STR_HASH, s) }, 0)
+        (
+            Expr::StrLit {
+                s,
+                hash: hash64!(STR_HASH, s),
+            },
+            0,
+        )
     }
 
     pub fn local<'a>(id: u32, ty: ExprPtr<'a>) -> (Expr<'a>, Meta) {
-        (Expr::Local { id, ty, hash: hash64!(LOCAL_HASH, id) }, HAS_LOCAL)
+        (
+            Expr::Local {
+                id,
+                ty,
+                hash: hash64!(LOCAL_HASH, id),
+            },
+            HAS_LOCAL,
+        )
     }
 }

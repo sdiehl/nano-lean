@@ -20,7 +20,9 @@ impl Level<'_> {
     pub fn get_hash(&self) -> u64 {
         match self {
             Level::Zero => ZERO_HASH,
-            Level::Succ(_, h) | Level::Max(_, _, h) | Level::IMax(_, _, h) | Level::Param(_, h) => *h,
+            Level::Succ(_, h) | Level::Max(_, _, h) | Level::IMax(_, _, h) | Level::Param(_, h) => {
+                *h
+            }
         }
     }
 }
@@ -49,7 +51,9 @@ impl<'a> LevelPtr<'a> {
         match *self {
             Level::Zero => true,
             Level::Succ(l, _) => l.params_in(params),
-            Level::Max(l, r, _) | Level::IMax(l, r, _) => l.params_in(params) && r.params_in(params),
+            Level::Max(l, r, _) | Level::IMax(l, r, _) => {
+                l.params_in(params) && r.params_in(params)
+            }
             Level::Param(..) => params.contains(&self),
         }
     }
@@ -58,10 +62,13 @@ impl<'a> LevelPtr<'a> {
 impl<'a> LevelsPtr<'a> {
     /// All elements are distinct parameters.
     pub fn distinct_params(self) -> bool {
-        self.iter().enumerate().all(|(i, l)| l.is_param() && !self[..i].contains(l))
+        self.iter()
+            .enumerate()
+            .all(|(i, l)| l.is_param() && !self[..i].contains(l))
     }
 
     pub fn has_param(self, n: NamePtr<'a>) -> bool {
-        self.iter().any(|l| matches!(**l, Level::Param(m, _) if m == n))
+        self.iter()
+            .any(|l| matches!(**l, Level::Param(m, _) if m == n))
     }
 }

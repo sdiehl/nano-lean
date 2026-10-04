@@ -8,10 +8,18 @@ const FOUNDATIONS: &[u8] = include_bytes!("../../tests/fixtures/foundations.ndjs
 fn check_all(bytes: &[u8]) -> Result<usize, String> {
     let arena = Arena::new();
     let store = import_bytes(&arena, bytes).map_err(|e| e.to_string())?;
+    let mut adapter = Adapter::new(&store);
     for index in 0..store.declars.len() {
         let mut local = Arena::new();
-        check_declaration(&store, &mut local, index as u32, Limits::default())
-            .map_err(|e| format!("{}: {}", store.declars[index].name(), e.reason()))?;
+        check_with_adapter(
+            &store,
+            &mut local,
+            index as u32,
+            Limits::default(),
+            Some(&mut adapter),
+            false,
+        )
+        .map_err(|e| format!("{}: {}", store.declars[index].name(), e.reason()))?;
     }
     Ok(store.stats.declarations)
 }
@@ -173,8 +181,18 @@ fn failed_and_exhausted_congruence_probes_fall_back_to_unfolding() {
     };
     assert!(tc.def_eq(body("PhaseTwo.erasedCostly"), body("PhaseTwo.erasedOne")));
     assert!(tc.probe_remaining.is_none());
-    assert!(tc.probe_exhaustions > 0);
+    assert_eq!(
+        tc.probe_exhaustions, 0,
+        "unused arguments need no reduction"
+    );
+    let (_, arguments) = tc.ctx.unfold_apps(body("PhaseTwo.erasedCostly"));
+    let succ = tc.konst0(tc.names.nat_succ);
+    let costly = tc.ctx.app(succ, arguments[0]);
     let one = tc.ctx.nat_lit(1u32.into());
+    let cheap = tc.ctx.app(succ, one);
+    assert!(!tc.probe_args(costly, cheap));
+    assert!(tc.probe_exhaustions > 0);
+    assert!(tc.probe_remaining.is_none());
     let two = tc.ctx.nat_lit(2u32.into());
     assert!(!tc.def_eq(one, two));
     assert!(local.allocated_bytes() < 2 << 20);
@@ -419,4 +437,151 @@ fn arena_fallback_rechecks_the_target_body_and_reports_its_use() {
             assert!(result.unwrap_or_else(|e| panic!("{}", e.reason())));
         }
     }
+}
+
+#[test]
+fn contextual_inference_keeps_distinct_local_types_and_dependencies() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, FOUNDATIONS).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let prop = tc.ctx.sort(tc.ctx.zero());
+    let one = tc.ctx.succ(tc.ctx.zero());
+    let ty = tc.ctx.sort(one);
+    let variable = tc.ctx.var(0);
+    let prop_identity = tc.ctx.lam(prop, variable);
+    let type_identity = tc.ctx.lam(ty, variable);
+    let prop_expected = tc.ctx.pi(prop, prop);
+    let type_expected = tc.ctx.pi(ty, ty);
+    assert_eq!(tc.infer(prop_identity, false), prop_expected);
+    assert_eq!(tc.infer(type_identity, false), type_expected);
+    // The body refers to the outer type through an intervening unused binder.
+    let outer = tc.ctx.var(1);
+    let inner = tc.ctx.lam(prop, outer);
+    let dependent = tc.ctx.lam(ty, inner);
+    let result = tc.infer(dependent, false);
+    let inner_expected = tc.ctx.pi(prop, ty);
+    let expected = tc.ctx.pi(ty, inner_expected);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn beta_and_let_ladders_do_not_copy_remaining_bodies() {
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            let arena = Arena::new();
+            let store = import_bytes(&arena, FOUNDATIONS).unwrap();
+            let local = Arena::new();
+            let mut tc = Tc::new(&store, &local);
+            tc.limit = store.declars.len() as u32;
+            let nat = tc.konst0(tc.names.nat);
+            let zero = tc.ctx.nat_lit(0u32.into());
+            let variable = tc.ctx.var(0);
+            let mut beta = variable;
+            for _ in 0..1024 {
+                let lam = tc.ctx.lam(nat, beta);
+                beta = tc.ctx.app(lam, variable);
+            }
+            let lam = tc.ctx.lam(nat, beta);
+            let term = tc.ctx.app(lam, zero);
+            assert_eq!(tc.infer(term, false), nat);
+            assert_eq!(tc.whnf(term), zero);
+            let mut lets = variable;
+            for _ in 0..1024 {
+                lets = tc.ctx.let_(nat, variable, lets, false);
+            }
+            let lets = tc.ctx.let_(nat, zero, lets, false);
+            assert_eq!(tc.infer(lets, false), nat);
+            assert_eq!(tc.whnf(lets), zero);
+            assert!(local.allocated_bytes() < 2 << 20);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn cached_inductives_can_be_rechecked_in_an_earlier_scope() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, FOUNDATIONS).unwrap();
+    let mut adapter = Adapter::new(&store);
+    for indices in [
+        (0..store.declars.len()).collect::<Vec<_>>(),
+        (0..store.declars.len()).rev().collect(),
+    ] {
+        for index in indices {
+            let mut local = Arena::new();
+            check_with_adapter(
+                &store,
+                &mut local,
+                index as u32,
+                Limits::default(),
+                Some(&mut adapter),
+                true,
+            )
+            .unwrap_or_else(|e| panic!("{}: {}", store.declars[index].name(), e.reason()));
+        }
+    }
+}
+
+#[test]
+fn conversion_locals_share_work_without_aliasing_nested_binders() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, FOUNDATIONS).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let nat = tc.konst0(tc.names.nat);
+    let inner = tc.ctx.var(0);
+    let outer = tc.ctx.var(1);
+    let left = tc.ctx.lam(nat, outer);
+    let left = tc.ctx.lam(nat, left);
+    let right = tc.ctx.lam(nat, inner);
+    let right = tc.ctx.lam(nat, right);
+    for _ in 0..4 {
+        assert!(!tc.def_eq(left, right));
+        assert_eq!(tc.conversion_depth.get(), 0);
+    }
+    let slots = tc.conversion_locals.len();
+    assert!(slots >= 2);
+    assert!(!tc.def_eq(left, right));
+    assert_eq!(tc.conversion_locals.len(), slots);
+    tc.probe_remaining = Some(1);
+    let exhausted =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tc.def_eq(left, right)))
+            .unwrap_err();
+    assert!(exhausted.is::<crate::term::outcome::ProbeExhausted>());
+    tc.probe_remaining = None;
+    assert_eq!(tc.conversion_depth.get(), 0);
+    assert!(!tc.def_eq(left, right));
+}
+
+#[test]
+fn repeated_conversion_does_not_copy_bodies_under_fresh_local_names() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, FOUNDATIONS).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let nat = tc.konst0(tc.names.nat);
+    let succ = tc.konst0(tc.names.nat_succ);
+    let var = tc.ctx.var(0);
+    let lhs_body = tc.ctx.app(succ, var);
+    let lhs = tc.ctx.lam(nat, lhs_body);
+    let identity = tc.ctx.lam(nat, var);
+    let rhs_body = tc.ctx.app(identity, lhs_body);
+    let rhs = tc.ctx.lam(nat, rhs_body);
+    assert!(tc.def_eq(lhs, rhs));
+    let nodes = tc.ctx.dag.exprs.len();
+    for _ in 0..64 {
+        tc.eq_cache.remove(&(lhs, rhs));
+        tc.eq_cache.remove(&(rhs, lhs));
+        assert!(tc.def_eq(lhs, rhs));
+    }
+    assert!(
+        tc.ctx.dag.exprs.len() <= nodes + 8,
+        "conversion reopened shared bodies with fresh locals"
+    );
 }

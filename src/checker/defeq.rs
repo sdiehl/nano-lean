@@ -4,6 +4,15 @@ use crate::term::expr::Expr;
 use crate::term::ptr::ExprPtr;
 use std::cmp::Ordering;
 
+/// Restore binder depth even when a speculative comparison unwinds.
+struct ConversionScope(std::rc::Rc<std::cell::Cell<usize>>, usize);
+
+impl Drop for ConversionScope {
+    fn drop(&mut self) {
+        self.0.set(self.1);
+    }
+}
+
 /// Which side lazy delta unfolds first: `Less` unfolds the left.
 fn unfold_order(t: Hint, s: Hint) -> Ordering {
     match (t, s) {
@@ -46,7 +55,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
-    fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
+    pub(super) fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
         if self.probe_remaining.is_some() {
             return self.args_eq(t, s);
         }
@@ -84,6 +93,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn def_eq_binding(&mut self, mut t: ExprPtr<'t>, mut s: ExprPtr<'t>) -> bool {
+        let _scope = ConversionScope(self.conversion_depth.clone(), self.conversion_depth.get());
         let pi = t.is_pi();
         let mut locals = Vec::new();
         while let Expr::Lam {
@@ -112,11 +122,22 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     return false;
                 }
             }
+            if tb == sb {
+                return true;
+            }
             let l = if tb.nlb() > 0 || sb.nlb() > 0 {
-                self.fresh_local(sd)
+                let key = (self.conversion_depth.get(), sd);
+                if let Some(&local) = self.conversion_locals.get(&key) {
+                    local
+                } else {
+                    let local = self.fresh_local(sd);
+                    self.conversion_locals.insert(key, local);
+                    local
+                }
             } else {
                 self.ctx.prop()
             };
+            self.conversion_depth.set(self.conversion_depth.get() + 1);
             locals.push(l);
             t = tb;
             s = sb;
@@ -136,6 +157,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             && self.whnf(t).const_name() == Some(bt)
         {
             return true;
+        }
+        // Proof equality depends on types, not on evaluating proof bodies.
+        if !self.statically_not_proof(t)
+            && let Some(r) = self.proof_irrel(t, s)
+        {
+            return r;
         }
         if t.num_args() == s.num_args()
             && t.num_args() > 0
@@ -157,12 +184,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         {
             return true;
         }
-        // Proof equality depends on types, not on evaluating proof bodies.
-        if let Some(r) = self.proof_irrel(t, s) {
-            return r;
-        }
-        let tn = self.whnf_core(t, true);
-        let sn = self.whnf_core(s, true);
+        let tn = self.whnf_core(t);
+        let sn = self.whnf_core(s);
         if (tn != t || sn != s)
             && let Some(r) = self.quick(tn, sn)
         {
@@ -196,8 +219,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
             _ => {}
         }
-        let tnn = self.whnf_core(tn, false);
-        let snn = self.whnf_core(sn, false);
+        let tnn = self.whnf_core(tn);
+        let snn = self.whnf_core(sn);
         if tnn != tn || snn != sn {
             return self.def_eq_core(tnn, snn);
         }
@@ -213,6 +236,49 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             return r;
         }
         self.unit_like(tn, sn)
+    }
+
+    /// Recognize data and types without building their instantiated types just
+    /// to rule out proof irrelevance. Unknown universe parameters stay unknown.
+    fn statically_not_proof(&self, e: ExprPtr<'t>) -> bool {
+        fn positive(level: crate::term::ptr::LevelPtr<'_>) -> bool {
+            use crate::term::level::Level;
+            match *level {
+                Level::Succ(..) => true,
+                Level::Max(a, b, _) => positive(a) || positive(b),
+                Level::IMax(_, b, _) => positive(b),
+                _ => false,
+            }
+        }
+        if matches!(
+            *e,
+            Expr::Sort { .. } | Expr::Pi { .. } | Expr::NatLit { .. } | Expr::StrLit { .. }
+        ) {
+            return true;
+        }
+        let Some(ty) = self.uninstantiated_type(e) else {
+            return false;
+        };
+        if matches!(*ty, Expr::Sort { .. }) {
+            return true;
+        }
+        self.uninstantiated_type(ty)
+            .is_some_and(|sort| matches!(*sort, Expr::Sort { level, .. } if positive(level)))
+    }
+
+    fn uninstantiated_type(&self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
+        let mut ty = match *e.head() {
+            Expr::Const { name, .. } => self.declar(name)?.ty(),
+            Expr::Local { ty, .. } => ty,
+            _ => return None,
+        };
+        for _ in 0..e.num_args() {
+            let Expr::Pi { body, .. } = *ty else {
+                return None;
+            };
+            ty = body;
+        }
+        Some(ty)
     }
 
     fn proof_irrel(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
@@ -313,13 +379,46 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     fn unfold_core(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
         let u = self.unfold(e).expect("delta hint without unfolding");
-        self.whnf_core(u, true)
+        self.whnf_core(u)
+    }
+
+    fn relevant_arguments(&mut self, head: ExprPtr<'t>, count: usize) -> std::rc::Rc<[bool]> {
+        let Some(name) = head.const_name() else {
+            return vec![true; count].into();
+        };
+        if let Some(mask) = self.argument_support.get(&(name, count)) {
+            return mask.clone();
+        }
+        let mut mask = vec![true; count];
+        if let Some((mut body, _)) = self.declar(name).and_then(|d| d.unfoldable()) {
+            let mut consumed = 0;
+            while consumed < count
+                && let Expr::Lam { body: next, .. } = *body
+            {
+                body = next;
+                consumed += 1;
+            }
+            let support = self.support(body);
+            for (i, used) in mask[..consumed].iter_mut().enumerate() {
+                *used = support.binary_search(&((consumed - 1 - i) as u16)).is_ok();
+            }
+        }
+        let mask: std::rc::Rc<[bool]> = mask.into();
+        self.argument_support.insert((name, count), mask.clone());
+        mask
     }
 
     fn args_eq(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
-        let (_, ta) = self.ctx.unfold_apps(t);
+        let (head, ta) = self.ctx.unfold_apps(t);
         let (_, sa) = self.ctx.unfold_apps(s);
-        ta.len() == sa.len() && ta.iter().zip(&sa).all(|(&a, &b)| self.def_eq(a, b))
+        if ta.len() != sa.len() {
+            return false;
+        }
+        let relevant = self.relevant_arguments(head, ta.len());
+        ta.iter()
+            .zip(&sa)
+            .enumerate()
+            .all(|(i, (&a, &b))| !relevant[i] || self.def_eq(a, b))
     }
 
     fn def_eq_app(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {

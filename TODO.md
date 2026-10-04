@@ -37,16 +37,17 @@
 - [x] Add regressions for every mismatch with the existing kernel.
 - [x] Verify malformed exports cannot be accepted through caches or speculative paths.
 
-Inductive reconstruction reuses the existing kernel. Seven positive stress
+Inductive reconstruction reuses the existing kernel. Four positive stress
 fixtures require a counted retry after native arena exhaustion; the fixture gate
 uses an explicit 100-million-step budget. Native-only completion remains below.
 
 ## Phase 4 — Full Mathlib completion
 
-- [ ] Eliminate fallback on the application/beta/let ladders and four magma stress fixtures.
-- [ ] Reduce adapter overhead while preserving shared inductive validation.
-- [ ] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
-- [ ] Recheck the 100,000-declaration prefix with zero unsupported declarations.
+- [x] Eliminate fallback on the application, beta, and let ladders.
+- [ ] Eliminate fallback on the four magma stress fixtures.
+- [x] Reduce adapter overhead while preserving shared inductive validation.
+- [x] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
+- [x] Recheck the 100,000-declaration prefix with zero unsupported declarations.
 - [ ] Increase prefix sizes incrementally, recording the first failure and peak RSS.
 - [ ] Reduce remaining failures to single-declaration regression cases.
 - [ ] Fix reduction, universe, or allocation hotspots before increasing budgets.

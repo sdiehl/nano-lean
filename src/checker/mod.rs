@@ -1,9 +1,10 @@
-//! Locally nameless type checker over the interned term store. Going under a
-//! binder instantiates it with a fresh local that carries its type, so every
-//! term the checker sees is closed and all caches key on pointers.
+//! Locally nameless type checker over the interned term store. Inference carries
+//! fresh typed locals in a binder context; conversion operates on closed terms.
 
+mod contextual;
 mod defeq;
 mod inductive;
+pub use inductive::Adapter;
 mod quot;
 #[cfg(test)]
 mod tests;
@@ -41,19 +42,35 @@ pub fn check_declaration<'a>(
     store: &'a Store<'a>,
     arena: &mut Arena,
     idx: u32,
+    limits: Limits,
+) -> Result<bool, crate::term::outcome::Failure> {
+    check_with_adapter(store, arena, idx, limits, None, false)
+}
+
+pub fn check_with_adapter<'a>(
+    store: &'a Store<'a>,
+    arena: &mut Arena,
+    idx: u32,
     mut limits: Limits,
+    mut adapter: Option<&mut Adapter<'a>>,
+    native_only: bool,
 ) -> Result<bool, crate::term::outcome::Failure> {
     use crate::term::outcome::{self, Failure};
-    let mut tc = Tc::new(store, arena).with_limits(limits);
+    let mut tc = Tc::new(store, arena)
+        .with_limits(limits)
+        .with_adapter(adapter.as_deref_mut());
     let result = outcome::run(|| tc.check(idx));
     limits.steps = tc.steps_left;
     drop(tc);
     match result {
-        Err(Failure::Declined(reason)) if reason == "declaration arena budget exhausted" => {
+        Err(Failure::Declined(reason))
+            if !native_only && reason == "declaration arena budget exhausted" =>
+        {
             arena.reset();
             outcome::run(|| {
                 Tc::new(store, arena)
                     .with_limits(limits)
+                    .with_adapter(adapter)
                     .check_existing(idx)
             })
             .map(|()| true)
@@ -62,19 +79,29 @@ pub fn check_declaration<'a>(
     }
 }
 
+type ContextKey<'t> = (ExprPtr<'t>, Vec<ExprPtr<'t>>);
+type RecKey<'t> = (NamePtr<'t>, LevelsPtr<'t>, Vec<ExprPtr<'t>>);
+
 pub struct Tc<'t, 'a: 't> {
     pub ctx: Ctx<'t, 'a>,
     pub(crate) names: Names<'t>,
     pub(crate) uparams: LevelsPtr<'t>,
     /// Declarations at or past this index are not yet in scope.
     pub(crate) limit: u32,
+    adapter: Option<&'t mut Adapter<'a>>,
     next_local: u32,
+    conversion_depth: std::rc::Rc<std::cell::Cell<usize>>,
+    conversion_locals: FxHashMap<(usize, ExprPtr<'t>), ExprPtr<'t>>,
     probe_remaining: Option<u32>,
     limits: Limits,
     steps_left: u64,
     #[cfg(test)]
     probe_exhaustions: usize,
+    open_infer_cache: [FxHashMap<ContextKey<'t>, ExprPtr<'t>>; 2],
+    support_cache: FxHashMap<ExprPtr<'t>, std::rc::Rc<[u16]>>,
     infer_cache: [FxHashMap<ExprPtr<'t>, ExprPtr<'t>>; 2],
+    pub(crate) argument_support: FxHashMap<(NamePtr<'t>, usize), std::rc::Rc<[bool]>>,
+    pub(crate) rec_cache: FxHashMap<RecKey<'t>, ExprPtr<'t>>,
     pub(crate) whnf_core_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) eq_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
@@ -94,18 +121,30 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             ctx,
             uparams,
             limit: 0,
+            adapter: None,
             next_local: 0,
+            conversion_depth: Default::default(),
+            conversion_locals: Default::default(),
             probe_remaining: None,
             limits: Limits::default(),
             steps_left: Limits::default().steps,
             #[cfg(test)]
             probe_exhaustions: 0,
+            open_infer_cache: Default::default(),
+            support_cache: Default::default(),
             infer_cache: Default::default(),
+            argument_support: FxHashMap::default(),
+            rec_cache: FxHashMap::default(),
             whnf_core_cache: FxHashMap::default(),
             whnf_cache: FxHashMap::default(),
             eq_cache: FxHashSet::default(),
             fail_cache: FxHashSet::default(),
         }
+    }
+
+    pub fn with_adapter(mut self, adapter: Option<&'t mut Adapter<'a>>) -> Self {
+        self.adapter = adapter;
+        self
     }
 
     pub fn with_limits(mut self, limits: Limits) -> Self {
@@ -121,11 +160,19 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             crate::unsupported!("declaration arena budget exhausted");
         }
         self.infer_cache.iter_mut().for_each(|cache| cache.clear());
+        self.open_infer_cache
+            .iter_mut()
+            .for_each(|cache| cache.clear());
+        self.support_cache.clear();
+        self.argument_support.clear();
+        self.rec_cache.clear();
         self.whnf_core_cache.clear();
         self.whnf_cache.clear();
         self.eq_cache.clear();
         self.fail_cache.clear();
         self.probe_remaining = None;
+        self.conversion_depth.set(0);
+        self.conversion_locals.clear();
         self.steps_left = self.limits.steps;
         let d: Declar<'t> = self.ctx.store.declars[idx as usize];
         self.uparams = d.uparams();
@@ -310,66 +357,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.ctx.inst(ft, &args[j..])
     }
 
-    fn infer_let(&mut self, mut e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        let mut values = Vec::new();
-        while let Expr::Let { data, .. } = *e {
-            self.tick();
-            let value = self.ctx.inst(data.val, &values);
-            if !only {
-                let ty = self.ctx.inst(data.ty, &values);
-                self.check_type(ty);
-                let actual = self.infer(value, false);
-                ensure!(self.def_eq(actual, ty), "let value type mismatch");
-            }
-            values.push(value);
-            e = data.body;
-        }
-        let body = self.ctx.inst(e, &values);
-        self.infer(body, only)
+    fn infer_let(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
+        self.infer_contextual(e, &mut Vec::new(), only)
     }
 
     fn infer_lam(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        let mut locals = Vec::new();
-        let mut tys = Vec::new();
-        let mut cur = e;
-        while let Expr::Lam { ty, body, .. } = *cur {
-            let d = self.ctx.inst(ty, &locals);
-            if !only {
-                self.check_type(d);
-            }
-            tys.push(ty);
-            let l = self.fresh_local(d);
-            locals.push(l);
-            cur = body;
-        }
-        let b = self.ctx.inst(cur, &locals);
-        let r = self.infer(b, only);
-        let mut r = self.ctx.abstract_locals(r, &locals);
-        for &ty in tys.iter().rev() {
-            r = self.ctx.pi(ty, r);
-        }
-        r
+        self.infer_contextual(e, &mut Vec::new(), only)
     }
 
     fn infer_pi(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        let mut locals = Vec::new();
-        let mut levels = Vec::new();
-        let mut cur = e;
-        while let Expr::Pi { ty, body, .. } = *cur {
-            let d = self.ctx.inst(ty, &locals);
-            let s = self.infer(d, only);
-            levels.push(self.ensure_sort(s));
-            let l = self.fresh_local(d);
-            locals.push(l);
-            cur = body;
-        }
-        let b = self.ctx.inst(cur, &locals);
-        let s = self.infer(b, only);
-        let mut r = self.ensure_sort(s);
-        for &l in levels.iter().rev() {
-            r = self.ctx.imax(l, r);
-        }
-        self.ctx.sort(r)
+        self.infer_contextual(e, &mut Vec::new(), only)
     }
 
     fn infer_proj(

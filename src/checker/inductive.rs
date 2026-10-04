@@ -11,10 +11,29 @@ use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
 use nano_lean::kernel;
-use nano_lean::kernel::export_validation::{ExportDependency, validate_export_dependencies};
+use nano_lean::kernel::export_validation::{
+    ExportDependency, ExportSession, validate_export_dependencies,
+};
 use nano_lean::{Expr as OldExpr, Level as OldLevel};
 use std::collections::BTreeSet;
 use unbound::prelude::{Name as OldName, Shared, bind};
+
+/// A worker's adapter belongs to exactly one immutable imported store.
+pub struct Adapter<'a> {
+    store: &'a Store<'a>,
+    session: ExportSession,
+    convert: Convert<'a>,
+}
+
+impl<'a> Adapter<'a> {
+    pub fn new(store: &'a Store<'a>) -> Self {
+        Self {
+            store,
+            session: ExportSession::default(),
+            convert: Convert::default(),
+        }
+    }
+}
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
     pub(crate) fn check_inductive(&mut self, idx: u32, d: Declar<'t>) {
@@ -44,7 +63,52 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 ctors_end: idx,
                 end: idx + 1,
             });
+        if let Some(adapter) = self.adapter.as_mut() {
+            assert!(
+                std::ptr::eq(adapter.store, self.ctx.store),
+                "adapter belongs to another export"
+            );
+            adapter.session.begin(idx);
+        }
         let dependencies = self.inductive_dependencies(block);
+        if let Some(adapter) = self.adapter.as_mut() {
+            let prefix: Vec<_> = dependencies
+                .into_iter()
+                .map(|index| {
+                    (
+                        index,
+                        adapter.convert.declaration(
+                            adapter.store,
+                            adapter.store.declars[index as usize],
+                            false,
+                        ),
+                    )
+                })
+                .collect();
+            let target = adapter.convert.declaration(
+                adapter.store,
+                adapter.store.declars[idx as usize],
+                true,
+            );
+            let work = std::rc::Rc::new(std::cell::Cell::new(self.steps_left));
+            let result = adapter.session.validate(
+                prefix,
+                target,
+                matches!(d, Declar::Thm(..)),
+                work.clone(),
+            );
+            self.steps_left = work.get();
+            if adapter.convert.expressions.len() > 65536 {
+                adapter.convert = Convert::default();
+            }
+            if let Err(error) = result {
+                if error.0.contains("budget exhausted") {
+                    crate::unsupported!("validation work budget exhausted");
+                }
+                reject!("declaration validation: {error}");
+            }
+            return;
+        }
         let mut convert = Convert::default();
         let prefix: Vec<_> = dependencies
             .into_iter()
@@ -81,7 +145,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let mut seen = FxHashSet::default();
         let mut needed = BTreeSet::new();
         for d in &store.declars[target.start as usize..target.end as usize] {
-            roots(*d, &mut expressions);
+            roots(*d, &mut expressions, true);
         }
         loop {
             while let Some(e) = expressions.pop() {
@@ -126,15 +190,23 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             if index >= target.start {
                 continue;
             }
+            let dependency = store.blocks.get(&name).map_or(index, |block| block.start);
+            if self
+                .adapter
+                .as_ref()
+                .is_some_and(|a| a.session.contains(dependency))
+            {
+                continue;
+            }
             if let Some(block) = store.blocks.get(&name) {
                 if needed.insert(block.start) {
                     for d in &store.declars[block.start as usize..block.end as usize] {
-                        roots(*d, &mut expressions);
+                        roots(*d, &mut expressions, false);
                     }
                 }
             } else if needed.insert(index) {
                 let d = store.declars[index as usize];
-                roots(d, &mut expressions);
+                roots(d, &mut expressions, false);
                 if matches!(d, Declar::Quot(_)) {
                     declarations.extend(self.names.eq);
                     for n in [self.names.quot, self.names.quot_mk].into_iter().flatten() {
@@ -149,9 +221,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 }
 
-fn roots<'a>(d: Declar<'a>, out: &mut Vec<ExprPtr<'a>>) {
+fn roots<'a>(d: Declar<'a>, out: &mut Vec<ExprPtr<'a>>, target: bool) {
     out.push(d.ty());
-    if let Declar::Opaque(_, v) = d {
+    // Opaque dependency bodies cannot participate in reduction. Their own
+    // declaration checks validate those bodies separately.
+    if target && let Declar::Opaque(_, v) = d {
         out.push(v);
     }
     if let Some((v, _)) = d.unfoldable() {

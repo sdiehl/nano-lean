@@ -100,10 +100,22 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
     }
 
     pub fn max(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
+        if l == r || matches!(*r, Level::Zero) {
+            return l;
+        }
+        if matches!(*l, Level::Zero) {
+            return r;
+        }
         self.level(Level::Max(l, r, hash64!(MAX_HASH, l, r)))
     }
 
     pub fn imax(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
+        if l == r || matches!(*l, Level::Zero) || matches!(*r, Level::Zero) {
+            return r;
+        }
+        if matches!(*r, Level::Succ(..)) {
+            return self.max(l, r);
+        }
         self.level(Level::IMax(l, r, hash64!(IMAX_HASH, l, r)))
     }
 

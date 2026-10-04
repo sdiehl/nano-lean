@@ -16,13 +16,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect(
-        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N]",
+        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N] [--native-only]",
     );
     let mut threads = 1usize;
     let mut selected = None;
     let mut limit = usize::MAX;
     let mut import_only = false;
     let mut trace = false;
+    let mut native_only = false;
     let mut limits = checker::Limits::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -36,6 +37,7 @@ fn main() {
             }
             "--import-only" => import_only = true,
             "--trace" => trace = true,
+            "--native-only" => native_only = true,
             "--steps" => {
                 limits.steps = args
                     .next()
@@ -123,6 +125,7 @@ fn main() {
                 .stack_size(64 << 20)
                 .spawn_scoped(sc, || {
                     let mut local = term::arena::Arena::new();
+                    let mut adapter = checker::Adapter::new(&store);
                     loop {
                         let job = next.fetch_add(1, Relaxed);
                         if job >= n {
@@ -133,7 +136,14 @@ fn main() {
                         if trace {
                             eprintln!("start {idx} {}", store.declars[idx as usize].name());
                         }
-                        let r = checker::check_declaration(&store, &mut local, idx, limits);
+                        let r = checker::check_with_adapter(
+                            &store,
+                            &mut local,
+                            idx,
+                            limits,
+                            Some(&mut adapter),
+                            native_only,
+                        );
                         if matches!(r, Ok(true)) {
                             fallbacks.fetch_add(1, Relaxed);
                         }
