@@ -103,6 +103,8 @@ pub struct Tc<'t, 'a: 't> {
     pub(crate) argument_support: FxHashMap<(NamePtr<'t>, usize), std::rc::Rc<[bool]>>,
     pub(crate) rec_cache: FxHashMap<RecKey<'t>, ExprPtr<'t>>,
     pub(crate) whnf_core_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
+    /// Unfolding results are valid only within the current declaration scope.
+    pub(crate) unfold_cache: FxHashMap<ExprPtr<'t>, Option<ExprPtr<'t>>>,
     pub(crate) whnf_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) eq_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     pub(crate) fail_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
@@ -136,6 +138,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             argument_support: FxHashMap::default(),
             rec_cache: FxHashMap::default(),
             whnf_core_cache: FxHashMap::default(),
+            unfold_cache: FxHashMap::default(),
             whnf_cache: FxHashMap::default(),
             eq_cache: FxHashSet::default(),
             fail_cache: FxHashSet::default(),
@@ -168,6 +171,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.rec_cache.clear();
         self.whnf_core_cache.clear();
         self.whnf_cache.clear();
+        self.unfold_cache.clear();
         self.eq_cache.clear();
         self.fail_cache.clear();
         self.probe_remaining = None;

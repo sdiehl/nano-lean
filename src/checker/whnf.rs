@@ -150,6 +150,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub(crate) fn unfold(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
+        if let Some(&result) = self.unfold_cache.get(&e) {
+            return result;
+        }
+        let result = self.unfold_uncached(e);
+        self.unfold_cache.insert(e, result);
+        result
+    }
+
+    fn unfold_uncached(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         let h = e.head();
         let Expr::Const { name, levels, .. } = *h else {
             return None;

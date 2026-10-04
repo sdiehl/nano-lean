@@ -100,7 +100,7 @@ fn export_groups_never_authorize_self_or_forward_references() {
 }
 
 #[test]
-fn a_reused_checker_cannot_reuse_types_from_a_later_scope() {
+fn a_reused_checker_cannot_reuse_types_or_unfoldings_from_a_later_scope() {
     let input = forward_reference(false);
     let arena = Arena::new();
     let store = import_bytes(&arena, &input).unwrap();
@@ -110,10 +110,12 @@ fn a_reused_checker_cannot_reuse_types_from_a_later_scope() {
     let levels = tc.empty_levels();
     let g = tc.ctx.konst(store.declars[3].name(), levels);
     tc.infer(g, false);
+    assert!(tc.unfold(g).is_some());
     let failure = outcome::run(|| tc.check(2))
         .err()
         .expect("forward reference accepted");
     assert!(failure.reason().contains("unknown constant"));
+    assert!(tc.unfold(g).is_none());
 }
 
 #[test]
