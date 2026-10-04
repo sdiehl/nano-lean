@@ -56,7 +56,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
     pub(super) fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
-        if self.fail_cache.contains(&(t, s)) {
+        if self.fail_cache.contains(&(t, s)) || self.small_delta_body(t) {
             return false;
         }
         if self.probe_remaining.is_some() {
@@ -83,6 +83,43 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             self.fail_cache.insert((s, t));
         }
         equal
+    }
+
+    /// Expose small wrappers that apply or project an argument. Keep congruence
+    /// for constant-headed bodies, where unfolding can duplicate substantial work.
+    fn small_delta_body(&self, e: ExprPtr<'t>) -> bool {
+        let Some(name) = e.head().const_name() else {
+            return false;
+        };
+        let Some((mut body, _)) = self.declar(name).and_then(|d| d.unfoldable()) else {
+            return false;
+        };
+        for _ in 0..e.num_args() {
+            let Expr::Lam { body: next, .. } = *body else {
+                break;
+            };
+            body = next;
+        }
+        let mut head = body.head();
+        while let Expr::Proj { e, .. } = *head {
+            head = e.head();
+        }
+        if !matches!(*head, Expr::Var { .. }) {
+            return false;
+        }
+        fn small(e: ExprPtr<'_>, remaining: &mut usize) -> bool {
+            if *remaining == 0 {
+                return false;
+            }
+            *remaining -= 1;
+            match *e {
+                Expr::App { fun, arg, .. } => small(fun, remaining) && small(arg, remaining),
+                Expr::Proj { e, .. } => small(e, remaining),
+                Expr::Lam { .. } | Expr::Pi { .. } | Expr::Let { .. } => false,
+                _ => true,
+            }
+        }
+        small(body, &mut 8)
     }
 
     fn quick(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
