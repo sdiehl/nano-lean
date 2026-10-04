@@ -175,7 +175,8 @@ PYPROBE
             completed=$((completed + 1))
           fi
           if (( completed > 0 )); then
-            echo "[progress] ${completed}/718577 completed; estimated remaining $((elapsed * (718577 - completed) / completed))s"
+            remaining=$((elapsed * (718577 - completed) / completed))
+            echo "[progress] ${completed}/718577 completed; estimated remaining $((remaining / 60))m $((remaining % 60))s"
           fi
         fi
         systemctl show nano-mathlib-check.service \
