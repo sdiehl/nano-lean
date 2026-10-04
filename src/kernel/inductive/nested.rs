@@ -130,10 +130,17 @@ impl NestedExpansion {
                 locals.push((p.0.clone(), (*domain).clone()));
                 body = (*rest.instantiate(&variable(p))).clone();
             }
+            let names = result.block.types.iter().map(|t| t.name.clone()).collect();
             let body = rewrite(&body, &mut |e| {
                 fuel = fuel.checked_sub(1).ok_or_else(|| {
                     Error("checking budget exhausted during nested expansion".into())
                 })?;
+                // Most constructor domains do not mention this family. Keep
+                // their DAG sharing instead of expanding them into a tree while
+                // searching for nested occurrences that cannot be present.
+                if !occurs(e, &names) {
+                    return Ok(Some(e.clone()));
+                }
                 result.replace_nested(env, e, &mut reserved, &mut next_name)
             })?;
             result.block.constructors[cursor].ty = abstract_over(&locals, body, false);
@@ -434,6 +441,33 @@ mod tests {
             env.declarations.remove(&name);
         }
         restored
+    }
+
+    #[test]
+    fn nested_discovery_preserves_unrelated_shared_domains() {
+        let mut block = spec("Tree", "Type", 0, &[("node", "Type -> Tree", 1)]);
+        let mut domain = Shared::new(Expr::Const("Leaf".into(), vec![]));
+        for _ in 0..18 {
+            let pair = Shared::new(Expr::Const("Pair".into(), vec![]));
+            let head = Shared::new(Expr::App(pair, domain.clone()));
+            domain = Shared::new(Expr::App(head, domain.clone()));
+        }
+        block.constructors[0].ty = Expr::pi(
+            Name::new("field"),
+            (*domain).clone(),
+            Expr::Const("Tree".into(), vec![]),
+        );
+        // Discovery needs to inspect eighteen shared levels, not their
+        // exponentially larger tree expansion. Full typing is a separate pass.
+        let expansion = NestedExpansion::new(&Environment::new(), &block).unwrap();
+        assert!(!expansion.is_nested());
+        let Expr::Pi(result, _) = &expansion.block.constructors[0].ty else {
+            panic!("missing constructor domain");
+        };
+        let (Expr::App(original, _), Expr::App(rewritten, _)) = (&*domain, &**result) else {
+            panic!("missing shared domain");
+        };
+        assert_eq!(original.as_ptr(), rewritten.as_ptr());
     }
 
     #[test]

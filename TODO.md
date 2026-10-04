@@ -47,6 +47,8 @@ uses an explicit 100-million-step budget. Native-only completion remains below.
 - [ ] Eliminate fallback on the four magma stress fixtures.
 - [x] Reduce adapter overhead while preserving shared inductive validation.
 - [x] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
+- [x] Avoid repeated speculative comparisons under rigid heads.
+- [x] Preserve unrelated shared domains during nested-inductive discovery.
 - [x] Recheck the 100,000-declaration prefix with zero unsupported declarations.
 - [ ] Increase prefix sizes incrementally, recording the first failure and peak RSS.
 - [ ] Reduce remaining failures to single-declaration regression cases.

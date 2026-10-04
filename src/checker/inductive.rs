@@ -103,7 +103,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
             if let Err(error) = result {
                 if error.0.contains("budget exhausted") {
-                    crate::unsupported!("validation work budget exhausted");
+                    crate::unsupported!("validation: {error}");
                 }
                 reject!("declaration validation: {error}");
             }
@@ -132,7 +132,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.steps_left = work.get();
         if let Err(error) = result {
             if error.0.contains("budget exhausted") {
-                crate::unsupported!("validation work budget exhausted");
+                crate::unsupported!("validation: {error}");
             }
             reject!("declaration validation: {error}");
         }

@@ -193,9 +193,48 @@ fn failed_and_exhausted_congruence_probes_fall_back_to_unfolding() {
     assert!(!tc.probe_args(costly, cheap));
     assert!(tc.probe_exhaustions > 0);
     assert!(tc.probe_remaining.is_none());
+    let exhausted = tc.probe_exhaustions;
+    let remaining = tc.steps_left;
+    assert!(!tc.probe_args(costly, cheap));
+    assert!(!tc.probe_args(cheap, costly));
+    assert_eq!(tc.probe_exhaustions, exhausted);
+    assert_eq!(tc.steps_left, remaining);
+    // An inconclusive probe must never become evidence of inequality.
     let two = tc.ctx.nat_lit(2u32.into());
+    tc.fail_cache.insert((cheap, two));
+    assert!(tc.def_eq(cheap, two));
     assert!(!tc.def_eq(one, two));
     assert!(local.allocated_bytes() < 2 << 20);
+}
+
+#[test]
+fn rigid_congruence_does_not_repeat_exhausted_speculation() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, REDUCTION).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let value = store
+        .declars
+        .iter()
+        .find_map(|d| match *d {
+            Declar::Def(info, value, _) if info.name.to_string() == "PhaseTwo.erasedCostly" => {
+                Some(value)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let (_, arguments) = tc.ctx.unfold_apps(value);
+    let (rec, mut arguments) = tc.ctx.unfold_apps(arguments[0]);
+    *arguments.last_mut().unwrap() = tc.ctx.nat_lit(512u32.into());
+    let computation = tc.ctx.apps(rec, &arguments);
+    let succ = tc.konst0(tc.names.nat_succ);
+    let left = tc.ctx.app(succ, computation);
+    let zero = tc.ctx.nat_lit(0u32.into());
+    let right = tc.ctx.app(succ, zero);
+    assert!(tc.def_eq(left, right));
+    assert_eq!(tc.probe_exhaustions, 0);
+    assert!(tc.fail_cache.is_empty());
 }
 
 #[test]

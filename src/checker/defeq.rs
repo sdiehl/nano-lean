@@ -56,13 +56,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
     pub(super) fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
+        if self.fail_cache.contains(&(t, s)) {
+            return false;
+        }
         if self.probe_remaining.is_some() {
             return self.args_eq(t, s);
         }
         self.probe_remaining = Some(2048);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.args_eq(t, s)));
         self.probe_remaining = None;
-        match result {
+        let equal = match result {
             Ok(equal) => equal,
             Err(p) if p.is::<crate::term::outcome::ProbeExhausted>() => {
                 #[cfg(test)]
@@ -72,7 +75,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 false
             }
             Err(p) => std::panic::resume_unwind(p),
+        };
+        if !equal {
+            // Both callers must remember inconclusive probes. This only skips
+            // speculation; conversion still tries reduction and eta afterwards.
+            self.fail_cache.insert((t, s));
+            self.fail_cache.insert((s, t));
         }
+        equal
     }
 
     fn quick(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
@@ -166,6 +176,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
         if t.num_args() == s.num_args()
             && t.num_args() > 0
+            // Rigid heads cannot delta-reduce. Their arguments will be compared
+            // by def_eq_app, so an initial probe only duplicates that work.
+            && self.delta_hint(t).is_some()
             && let (
                 Expr::Const {
                     name: a,
@@ -359,12 +372,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                                 },
                             ) = (*t.head(), *s.head())
                             && a == b
-                            && !self.fail_cache.contains(&(t, s))
+                            && self.ctx.levels_eq(la, lb)
+                            && self.probe_args(t, s)
                         {
-                            if self.ctx.levels_eq(la, lb) && self.probe_args(t, s) {
-                                return Ok(true);
-                            }
-                            self.fail_cache.insert((t, s));
+                            return Ok(true);
                         }
                         t = self.unfold_core(t);
                         s = self.unfold_core(s);
