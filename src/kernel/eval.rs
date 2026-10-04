@@ -1,6 +1,11 @@
 use super::*;
-use std::{cell::OnceCell, rc::Rc};
+use std::{
+    cell::OnceCell,
+    rc::{Rc, Weak},
+};
 mod check;
+mod relevance;
+pub(super) use relevance::Summary;
 
 type Thunk = Rc<Term>;
 struct Term {
@@ -20,14 +25,14 @@ struct Frame {
 enum Edge {
     Term(Thunk),
     Frame(Rc<Frame>),
+    Value(Value),
 }
 impl Term {
     fn detach(&mut self, pending: &mut Vec<Edge>) {
         pending.extend(self.context.take().map(Edge::Frame));
         for normal in &mut self.normal {
             if let Some(value) = normal.take() {
-                pending.extend(value.context.map(Edge::Frame));
-                pending.extend(value.args.into_iter().map(Edge::Term));
+                pending.push(Edge::Value(value));
             }
         }
     }
@@ -52,6 +57,11 @@ fn release(mut pending: Vec<Edge>) {
             Edge::Frame(frame) => {
                 if let Ok(mut frame) = Rc::try_unwrap(frame) {
                     frame.detach(&mut pending);
+                }
+            }
+            Edge::Value(value) => {
+                if let Ok(mut value) = Rc::try_unwrap(value) {
+                    value.detach(&mut pending);
                 }
             }
         }
@@ -83,11 +93,25 @@ impl Closure {
         }
     }
 }
-#[derive(Clone)]
-struct Value {
+type Value = Rc<ValueData>;
+struct ValueData {
+    id: usize,
     head: Expr,
     context: Option<Rc<Frame>>,
     args: Vec<Thunk>,
+}
+impl ValueData {
+    fn detach(&mut self, pending: &mut Vec<Edge>) {
+        pending.extend(self.context.take().map(Edge::Frame));
+        pending.extend(self.args.drain(..).map(Edge::Term));
+    }
+}
+impl Drop for ValueData {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        self.detach(&mut pending);
+        release(pending);
+    }
 }
 
 struct Instance {
@@ -116,6 +140,9 @@ pub(super) struct State {
     rules: HashMap<(usize, usize), Shared<Expr>>,
     next_term: usize,
     next_frame: usize,
+    next_value: usize,
+    frames: HashMap<(usize, usize), Weak<Frame>>,
+    values: HashMap<(usize, usize, Vec<usize>), Weak<ValueData>>,
     nodes: HashMap<(usize, Vec<usize>), Thunk>,
     old_nodes: HashMap<(usize, Vec<usize>), Thunk>,
     closed: HashMap<usize, Thunk>,
@@ -136,6 +163,9 @@ impl Default for State {
             rules: HashMap::default(),
             next_term: 0,
             next_frame: 1,
+            next_value: 0,
+            frames: HashMap::default(),
+            values: HashMap::default(),
             nodes: HashMap::default(),
             old_nodes: HashMap::default(),
             closed: HashMap::default(),
@@ -318,6 +348,22 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         value
     }
     fn frame(&mut self, value: Thunk, parent: Option<Rc<Frame>>) -> Rc<Frame> {
+        // Short environments recur in application construction. Deep lexical
+        // extensions are usually unique; hashing every one costs more than
+        // allocating it and adds no sharing of its already shared tail.
+        let key = parent
+            .as_ref()
+            .is_none_or(|f| f.parent.is_none())
+            .then(|| (value.id, parent.as_ref().map_or(0, |f| f.id)));
+        if let Some(frame) = key
+            .as_ref()
+            .and_then(|k| self.state.frames.get(k))
+            .and_then(Weak::upgrade)
+        {
+            #[cfg(feature = "profile")]
+            crate::profile::count("frame_intern_hits");
+            return frame;
+        }
         #[cfg(feature = "profile")]
         crate::profile::count("frames");
         let f = Rc::new(Frame {
@@ -326,7 +372,51 @@ impl<'b, 'a> Evaluator<'b, 'a> {
             parent,
         });
         self.state.next_frame += 1;
+        if let Some(key) = key {
+            if self.state.frames.len() >= 16_384 {
+                self.state.frames.clear();
+            }
+            self.state.frames.insert(key, Rc::downgrade(&f));
+        }
         f
+    }
+    fn value(&mut self, head: Expr, mut context: Option<Rc<Frame>>, args: Vec<Thunk>) -> Value {
+        // Intern only bounded keys. Weak entries share live reductions without
+        // keeping otherwise dead closure graphs alive until the session ends.
+        let key = (args.len() <= 64).then(|| {
+            let id = self.tc.cache.id(&head);
+            if !self.tc.cache.has_loose_id(id) {
+                context = None;
+            }
+            (
+                id,
+                context.as_ref().map_or(0, |f| f.id),
+                args.iter().map(|a| a.id).collect(),
+            )
+        });
+        if let Some(value) = key
+            .as_ref()
+            .and_then(|k| self.state.values.get(k))
+            .and_then(Weak::upgrade)
+        {
+            #[cfg(feature = "profile")]
+            crate::profile::count("value_intern_hits");
+            return value;
+        }
+        let value = Rc::new(ValueData {
+            id: self.state.next_value,
+            head,
+            context,
+            args,
+        });
+        self.state.next_value += 1;
+        if let Some(key) = key {
+            if self.state.values.len() >= 16_384 {
+                self.state.values.clear();
+            }
+            self.state.values.insert(key, Rc::downgrade(&value));
+        }
+        value
     }
     fn apply(&mut self, function: &Thunk, argument: &Thunk) -> Thunk {
         let function = self.frame(function.clone(), None);
@@ -475,8 +565,8 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         let v = self.eval(&value, unfold)?;
                         pending.extend(v.args.iter().rev().cloned());
                         current = Closure {
-                            expr: Shared::new(v.head),
-                            context: v.context,
+                            expr: Shared::new(v.head.clone()),
+                            context: v.context.clone(),
                         };
                         continue;
                     }
@@ -516,11 +606,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         continue;
                     }
                     let head = Expr::Proj(name.clone(), *index, Shared::new(source));
-                    return Ok(Value {
-                        head,
-                        context: None,
-                        args: pending.into_iter().rev().collect(),
-                    });
+                    return Ok(self.value(head, None, pending.into_iter().rev().collect()));
                 }
                 Expr::Const(name, levels) => {
                     let head_id = self.tc.cache.shared(&current.expr);
@@ -568,7 +654,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                             {
                                 Expr::nat(0u32)
                             } else if matches!(v.head, Expr::Nat(_)) && v.args.is_empty() {
-                                v.head
+                                v.head.clone()
                             } else {
                                 break;
                             };
@@ -638,11 +724,8 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                             if let Expr::Nat(n) = &value.head {
                                 let ctor = self.tc.nat_constructor(&n.0);
                                 let (head, args) = inductive::spine(&ctor);
-                                value = Value {
-                                    head,
-                                    context: None,
-                                    args: args.into_iter().map(|e| self.term(e, None)).collect(),
-                                };
+                                let args = args.into_iter().map(|e| self.term(e, None)).collect();
+                                value = self.value(head, None, args);
                             } else if let Expr::Str(s) = &value.head {
                                 let e = self.tc.string_constructor(s)?;
                                 let t = self.term(e, None);
@@ -726,11 +809,11 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                 }
                 _ => {}
             }
-            return Ok(Value {
-                head: (*current.expr).clone(),
-                context: current.context.clone(),
-                args: pending.into_iter().rev().collect(),
-            });
+            return Ok(self.value(
+                (*current.expr).clone(),
+                current.context.clone(),
+                pending.into_iter().rev().collect(),
+            ));
         }
     }
     fn quote_value(&mut self, value: &Value) -> Expr {
@@ -906,6 +989,60 @@ fn primitive_arity(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn values_and_frames_share_only_identical_captures() {
+        let env = Environment::new();
+        let mut tc = Checker::new(&env);
+        let mut ev = Evaluator::new(&mut tc);
+        let a = ev.term(Expr::Sort(Level::Nat(0)), None);
+        let b = ev.term(Expr::Sort(Level::Nat(1)), None);
+        let fa = ev.frame(a.clone(), None);
+        assert!(Rc::ptr_eq(&fa, &ev.frame(a.clone(), None)));
+        let fb = ev.frame(b, None);
+        let head = Expr::Lam(
+            Shared::new(Expr::Sort(Level::Nat(1))),
+            bind(Name::new("x"), Shared::new(Expr::Var(Name::bound(1, 0)))),
+        );
+        let va = ev.value(head.clone(), Some(fa.clone()), vec![]);
+        let same = ev.value(head.clone(), Some(fa), vec![]);
+        let different = ev.value(head, Some(fb), vec![]);
+        assert!(Rc::ptr_eq(&va, &same));
+        assert!(!Rc::ptr_eq(&va, &different));
+        let proof = ev.value(Expr::Var(Name::new("h")), None, vec![]);
+        let other = ev.value(Expr::Var(Name::new("h")), None, vec![]);
+        assert!(!Rc::ptr_eq(&proof, &other));
+        let weak = Rc::downgrade(&va);
+        drop(va);
+        drop(same);
+        assert!(weak.upgrade().is_none());
+    }
+    #[test]
+    fn shared_normal_values_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let env = Environment::new();
+                let mut tc = Checker::new(&env);
+                let mut ev = Evaluator::new(&mut tc);
+                let mut term = ev.term(Expr::Sort(Level::Nat(0)), None);
+                let expr = term.expr.clone();
+                for id in 1..30_000 {
+                    let value = ev.value(Expr::Sort(Level::Nat(0)), None, vec![term]);
+                    term = Rc::new(Term {
+                        id,
+                        expr: expr.clone(),
+                        context: None,
+                        normal: [OnceCell::new(), OnceCell::from(value)],
+                        canonical: OnceCell::new(),
+                    });
+                }
+                assert!(ev.state.values.len() <= 16_384);
+                drop(term);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn reused_evaluation_does_not_export_local_proofs() {
@@ -955,11 +1092,7 @@ mod tests {
         );
         assert!(
             suspended.normal[1]
-                .set(Value {
-                    head: Expr::nat(604_800_000u64),
-                    context: None,
-                    args: vec![],
-                })
+                .set(evaluator.value(Expr::nat(604_800_000u64), None, vec![]))
                 .is_ok()
         );
         assert!(matches!(evaluator.quote(&suspended, 0),

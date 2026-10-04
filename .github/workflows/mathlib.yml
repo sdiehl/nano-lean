@@ -22,20 +22,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release checker
         run: cargo build --release --locked
-      - name: Prepare runner disk
-        run: |
-          mkdir -p .ci/mathlib-report
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          df -h . | tee .ci/mathlib-report/disk.txt
       - uses: actions/cache/restore@v4
         id: export
         with:
           path: .ci/mathlib.ndjson
           key: mathlib-export-22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6
+      - name: Prepare runner disk
+        run: |
+          mkdir -p .ci/mathlib-report
+          if [[ "$EXPORT_CACHE_HIT" != true ]]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          fi
+          df -h . | tee .ci/mathlib-report/disk.txt
+        env:
+          EXPORT_CACHE_HIT: ${{ steps.export.outputs.cache-hit }}
+      - name: Restore Mathlib downloads
+        if: steps.export.outputs.cache-hit != 'true'
+        id: mathlib-downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/mathlib/*.ltar
+          # A new snapshot can include downloads missing from a failed run.
+          key: mathlib-downloads-${{ runner.os }}-d13f23b723b8a846827a245b89c10fc7d3f11612-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            mathlib-downloads-${{ runner.os }}-d13f23b723b8a846827a245b89c10fc7d3f11612-
       - name: Build pinned Mathlib export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 40
         run: |
+          git config --global init.defaultBranch main
           echo '[progress] preparing the pinned Mathlib export'
           started=$SECONDS
           progress() {
@@ -49,17 +64,29 @@ jobs:
               else
                 echo "[progress] preparing Lean and Mathlib dependencies; elapsed ${elapsed}s"
               fi
+              systemctl show nano-mathlib-export.service \
+                --property=MemoryCurrent --property=MemoryPeak --property=CPUUsageNSec \
+                2>/dev/null || true
             done
           }
           progress &
           progress_pid=$!
           trap 'kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true' EXIT
+          # systemd-run services outlive the step's shell unless stopped explicitly.
+          trap 'sudo systemctl stop nano-mathlib-export.service || true; exit 130' INT TERM
           bash .github/scripts/mathlib-ci.sh prepare
+      - name: Save Mathlib downloads even on failure
+        if: always() && steps.mathlib-downloads.outputs.cache-primary-key != '' && steps.mathlib-downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/mathlib/*.ltar
+          key: ${{ steps.mathlib-downloads.outputs.cache-primary-key }}
       - name: Verify export checksum
+        id: verify-export
         run: |
           echo '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6  .ci/mathlib.ndjson' | sha256sum --check
       - uses: actions/cache/save@v4
-        if: steps.export.outputs.cache-hit != 'true'
+        if: always() && steps.verify-export.outcome == 'success' && steps.export.outputs.cache-hit != 'true'
         with:
           path: .ci/mathlib.ndjson
           key: ${{ steps.export.outputs.cache-primary-key }}
@@ -72,7 +99,9 @@ jobs:
           {
             echo '### Mathlib'
             echo 'Lean 4.34.1 Mathlib; release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
+            echo 'Cold export generation has a separate 14 GiB OS limit; cache hits skip generation.'
             echo '```text'
+            cat .ci/mathlib-report/export-time.txt 2>/dev/null || true
             cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
             tail -n 3 .ci/mathlib-report/trace.jsonl 2>/dev/null || true
             echo '```'

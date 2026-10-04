@@ -16,15 +16,17 @@ mkdir -p "$report"
 # in an unrelated CI job. MemoryMax also accounts for reclaimable file cache.
 bounded() {
   local unit=$1
-  shift
+  local memory=$2
+  local runtime=$3
+  shift 3
   sudo systemd-run --unit="$unit" --wait --pipe --collect \
     --uid="$(id -u)" --gid="$(id -g)" \
     --working-directory="$root" \
     --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
     --setenv="GITHUB_ACTIONS=true" \
-    --property=MemoryMax=11G --property=MemorySwapMax=0 \
+    --property="MemoryMax=$memory" --property=MemorySwapMax=0 \
     --property=OOMPolicy=kill \
-    --property=RuntimeMaxSec=18000 \
+    --property="RuntimeMaxSec=$runtime" \
     "$@"
 }
 
@@ -36,7 +38,13 @@ case ${1:-} in
       echo 'At least 20 GiB of free disk is required for a cold export build.' >&2
       exit 1
     fi
-    bounded nano-mathlib-export bash .github/scripts/mathlib-ci.sh export \
+    # The exporter retains the imported Lean environment and its deduplication
+    # tables. The checker's 11 GiB cap can make it repeatedly fault mapped oleans
+    # back in near the end of Mathlib. Leave 2 GiB for the 16 GiB runner's OS.
+    # Bound the service itself too: a step timeout does not stop systemd units.
+    bounded nano-mathlib-export 14G 2100 \
+      /usr/bin/time -v -o "$report/export-time.txt" \
+      bash .github/scripts/mathlib-ci.sh export \
       2>&1 | tee "$report/export.log"
     ;;
   export)
@@ -70,7 +78,7 @@ case ${1:-} in
     ;;
   check)
     # Show periodic Rust progress in Actions and retain the full trace artifact.
-    bounded nano-mathlib-check /usr/bin/time -v -o "$report/time.txt" \
+    bounded nano-mathlib-check 11G 18000 /usr/bin/time -v -o "$report/time.txt" \
       env NANO_LEAN_TRACE=1 NANO_LEAN_PROGRESS=1 "$root/target/release/nano-lean" \
       --export-parallel 1 --memory-mib 10240 "$root/.ci/mathlib.ndjson" \
       > "$report/result.json" \

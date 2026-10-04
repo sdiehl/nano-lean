@@ -53,6 +53,8 @@ struct Session<'b, 'a> {
     variables: HashMap<Name<Expr>, Thunk>,
     equal: HashMap<(usize, usize, bool), bool>,
     sorts: HashMap<usize, Level>,
+    relevance_active: rustc_hash::FxHashSet<(String, Vec<Level>)>,
+    proof_status: HashMap<usize, Option<bool>>,
     previous_semantic: bool,
 }
 impl Drop for Session<'_, '_> {
@@ -120,6 +122,8 @@ impl<'b, 'a> Session<'b, 'a> {
             variables,
             equal: HashMap::default(),
             sorts: HashMap::default(),
+            relevance_active: rustc_hash::FxHashSet::default(),
+            proof_status: HashMap::default(),
             previous_semantic,
         }
     }
@@ -128,6 +132,89 @@ impl<'b, 'a> Session<'b, 'a> {
         self.variables.insert(name.clone(), domain.clone());
         self.ev.variables.push((name.clone(), domain.clone()));
         self.ev.term(Expr::Var(name), None)
+    }
+    fn summary(&mut self, name: &str, levels: &[Level]) -> Result<Summary> {
+        let declaration = self.ev.tc.decl(name)?;
+        // Cached facts cannot authorize universe arguments in a new checker.
+        self.ev.tc.level_arguments(&declaration.params, levels)?;
+        if let Some((_, summary)) = declaration
+            .relevance
+            .borrow()
+            .iter()
+            .find(|(us, _)| us == levels)
+        {
+            return Ok(*summary);
+        }
+        let key = (name.to_owned(), levels.to_vec());
+        if !self.relevance_active.insert(key.clone()) {
+            return Ok(Summary::default());
+        }
+        let result = self.compute_summary(name, levels);
+        self.relevance_active.remove(&key);
+        let summary = result?;
+        // Owned by the declaration, so rollback or replacement cannot leave a
+        // stale name-keyed entry. Store no session values or fresh variables.
+        let mut cached = declaration.relevance.borrow_mut();
+        if cached.len() >= 16 {
+            cached.clear();
+        }
+        cached.push((key.1, summary));
+        Ok(summary)
+    }
+    fn compute_summary(&mut self, name: &str, levels: &[Level]) -> Result<Summary> {
+        #[cfg(feature = "profile")]
+        crate::profile::count("relevance_summaries");
+        let head = self
+            .ev
+            .term(Expr::Const(name.into(), levels.to_vec()), None);
+        let mut ty = self.infer(&head, false)?;
+        let mut domains = Vec::new();
+        let mut summary = Summary::default();
+        loop {
+            match self.view(&ty, true)? {
+                View::Pi(domain, body) if domains.len() < 64 => {
+                    let level = self.sort(&domain, false)?;
+                    if level.equivalent(&Level::Nat(0))? {
+                        summary.proofs |= 1 << domains.len();
+                    }
+                    domains.push(level);
+                    let x = self.fresh(&domain);
+                    ty = self.apply_body(&body, &x)?;
+                }
+                View::Pi(..) => break,
+                View::Value(_) => {
+                    let mut level = self.type_sort(&ty)?;
+                    summary.set_result(domains.len(), &level)?;
+                    for (arity, domain) in domains.into_iter().enumerate().rev() {
+                        level = Level::imax(domain, level);
+                        summary.set_result(arity, &level)?;
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(summary)
+    }
+    fn known_proof(&mut self, term: &Thunk) -> Result<Option<bool>> {
+        if let Some(status) = self.proof_status.get(&term.id) {
+            return Ok(*status);
+        }
+        let mut head = term.clone();
+        let mut arity = 0;
+        while let Expr::App(f, _) = &*head.expr {
+            arity += 1;
+            head = self.child(f, &head);
+        }
+        let status = match &*head.expr {
+            Expr::Const(name, levels) => self.summary(name, levels)?.result(arity),
+            Expr::Sort(_) | Expr::Pi(..) | Expr::Nat(_) | Expr::Str(_) if arity == 0 => Some(false),
+            _ => None,
+        };
+        if self.proof_status.len() >= 16_384 {
+            self.proof_status.clear();
+        }
+        self.proof_status.insert(term.id, status);
+        Ok(status)
     }
     fn child(&mut self, expr: &Shared<Expr>, parent: &Thunk) -> Thunk {
         self.ev.term_at(expr.clone(), parent.context.clone(), 0)
@@ -173,7 +260,7 @@ impl<'b, 'a> Session<'b, 'a> {
                 let v = self.ev.eval(t, unfold)?;
                 if let Expr::Pi(d, b) = &v.head {
                     let d = self.ev.term_at(d.clone(), v.context.clone(), 0);
-                    Ok(View::Pi(d, self.body(b, v.context, false)))
+                    Ok(View::Pi(d, self.body(b, v.context.clone(), false)))
                 } else {
                     Ok(View::Value(v))
                 }
@@ -200,11 +287,10 @@ impl<'b, 'a> Session<'b, 'a> {
     fn sort(&mut self, e: &Thunk, checking: bool) -> Result<Level> {
         let ty = self.infer(e, checking)?;
         match self.view(&ty, true)? {
-            View::Value(Value {
-                head: Expr::Sort(u),
-                args,
-                ..
-            }) if args.is_empty() => Ok(u),
+            View::Value(v) if v.args.is_empty() => match &v.head {
+                Expr::Sort(u) => Ok(u.clone()),
+                _ => Err(Error("expected a type".into())),
+            },
             _ => Err(Error("expected a type".into())),
         }
     }
@@ -373,7 +459,7 @@ impl<'b, 'a> Session<'b, 'a> {
         let View::Value(v) = self.view(&ty, true)? else {
             return Err(Error("projection from non-inductive type".into()));
         };
-        let Expr::Const(n, levels) = v.head else {
+        let Expr::Const(n, levels) = &v.head else {
             return Err(Error("projection from non-inductive type".into()));
         };
         if n != name {
@@ -395,7 +481,7 @@ impl<'b, 'a> Session<'b, 'a> {
         if index >= ctor.num_fields {
             return Err(Error("projection field out of range".into()));
         }
-        let subst = self.ev.tc.level_arguments(&ctor.params, &levels)?;
+        let subst = self.ev.tc.level_arguments(&ctor.params, levels)?;
         let expr = self.ev.tc.substitute_levels(&ctor.ty, &subst)?;
         let mut field = Type::Term(self.ev.term(expr, None));
         for arg in v.args.iter().take(ctor.num_params) {
@@ -451,14 +537,25 @@ impl<'b, 'a> Session<'b, 'a> {
         self.conv(&Type::Term(a.clone()), &Type::Term(b.clone()), types)
     }
     fn conv_core(&mut self, a: &Type, b: &Type, types: bool) -> Result<bool> {
+        if let Some(fuel) = &mut self.ev.tc.probe_fuel {
+            *fuel = fuel
+                .checked_sub(1)
+                .ok_or_else(|| Error("conversion probe exhausted".into()))?;
+        }
         self.ev.tc.tick()?;
         #[cfg(feature = "profile")]
         crate::profile::count("semantic_conversions");
         if !types && let (Type::Term(at), Type::Term(bt)) = (a, b) {
-            let ta = self.infer(at, false)?;
-            if self.type_sort(&ta)?.equivalent(&Level::Nat(0))? {
-                let tb = self.infer(bt, false)?;
-                return self.conv(&ta, &tb, true);
+            let status = self.known_proof(at)?;
+            if status != Some(false) {
+                let ta = self.infer(at, false)?;
+                let proof =
+                    status == Some(true) || self.type_sort(&ta)?.equivalent(&Level::Nat(0))?;
+                self.proof_status.insert(at.id, Some(proof));
+                if proof {
+                    let tb = self.infer(bt, false)?;
+                    return self.conv(&ta, &tb, true);
+                }
             }
         }
         let av = self.view(a, false)?;
@@ -535,8 +632,8 @@ impl<'b, 'a> Session<'b, 'a> {
         if !types {
             let ta = self.infer(at, false)?;
             if let View::Value(tv) = self.view(&ta, true)?
-                && let Expr::Const(n, _) = tv.head
-                && self.ev.tc.structure(&n).is_some_and(|c| c.num_fields == 0)
+                && let Expr::Const(n, _) = &tv.head
+                && self.ev.tc.structure(n).is_some_and(|c| c.num_fields == 0)
             {
                 let tb = self.infer(bt, false)?;
                 return self.conv(&ta, &tb, true);
@@ -548,6 +645,9 @@ impl<'b, 'a> Session<'b, 'a> {
         Ok(false)
     }
     fn congruent(&mut self, a: &Value, b: &Value) -> Result<bool> {
+        if a.id == b.id {
+            return Ok(true);
+        }
         if a.args.len() != b.args.len() {
             return Ok(false);
         }
@@ -589,9 +689,35 @@ impl<'b, 'a> Session<'b, 'a> {
         if !heads {
             return Ok(false);
         }
-        for (a, b) in a.args.iter().zip(&b.args) {
-            if !self.conv_terms(a, b, false)? {
-                return Ok(false);
+        let summary = if let Expr::Const(name, levels) = &a.head {
+            self.summary(name, levels)?
+        } else {
+            Summary::default()
+        };
+        let unfoldable = matches!(&a.head, Expr::Const(name, _)
+            if self.ev.tc.env.declarations.get(name).is_some_and(|d| d.value.is_some()));
+        for (i, (a, b)) in a.args.iter().zip(&b.args).enumerate() {
+            if summary.proof_argument(i) {
+                #[cfg(feature = "profile")]
+                crate::profile::count("proof_arguments_skipped");
+                continue;
+            }
+            // Bound each speculative argument separately. Sharing one limit
+            // across the whole spine can needlessly unfold large functions.
+            let probe = self.ev.tc.probe_fuel.is_none() && unfoldable;
+            if probe {
+                self.ev.tc.probe_fuel = Some(2048);
+            }
+            let result = self.conv_terms(a, b, false);
+            if probe {
+                self.ev.tc.probe_fuel = None;
+            }
+            match result {
+                // An interrupted comparison is not a cached inequality.
+                Err(e) if probe && e.0 == "conversion probe exhausted" => return Ok(false),
+                Err(e) => return Err(e),
+                Ok(false) => return Ok(false),
+                Ok(true) => {}
             }
         }
         Ok(true)
@@ -674,6 +800,91 @@ mod tests {
 
     fn expr(source: &str) -> Expr {
         parse_expr(source).unwrap()
+    }
+    #[test]
+    fn relevance_respects_universes_and_unknown_telescope_tails() {
+        let mut env = Environment::new();
+        let a = Name::new("A");
+        let x = Name::new("x");
+        env.declare(
+            "poly".into(),
+            vec!["u".into()],
+            Expr::pi(
+                a.clone(),
+                Expr::Sort(Level::Param("u".into())),
+                Expr::pi(x, Expr::Var(a.clone()), Expr::Var(a)),
+            ),
+            None,
+            true,
+        )
+        .unwrap();
+        run("axiom P : Prop", &mut env).unwrap();
+        let mut ty = Expr::constant("P");
+        for _ in 0..65 {
+            ty = Expr::pi(Name::new("h"), Expr::constant("P"), ty);
+        }
+        env.axiom("many", ty).unwrap();
+        let mut tc = Checker::new(&env);
+        tc.uparams.insert("u".into());
+        let mut s = Session::new(&mut tc);
+        let prop = s.summary("poly", &[Level::Nat(0)]).unwrap();
+        let data = s.summary("poly", &[Level::Nat(1)]).unwrap();
+        let unknown = s.summary("poly", &[Level::Param("u".into())]).unwrap();
+        assert!(prop.proof_argument(1));
+        assert_eq!(prop.result(2), Some(true));
+        assert!(!data.proof_argument(1));
+        assert_eq!(data.result(2), Some(false));
+        assert!(!unknown.proof_argument(1));
+        assert_eq!(unknown.result(2), None);
+        let many = s.summary("many", &[]).unwrap();
+        assert!(many.proof_argument(63));
+        assert!(!many.proof_argument(64));
+        assert_eq!(many.result(65), None);
+        drop(s);
+        let mut undeclared = Checker::new(&env);
+        let mut undeclared = Session::new(&mut undeclared);
+        assert!(
+            undeclared
+                .summary("poly", &[Level::Param("u".into())])
+                .is_err()
+        );
+    }
+    #[test]
+    fn speculative_comparison_falls_back_without_caching_failure() {
+        let mut env = Environment::new();
+        run("axiom A : Type; axiom a : A; axiom b : A; def hold : (forall (x : A), A) := fun (x : A) => a", &mut env).unwrap();
+        let mut previous = Expr::constant("a");
+        for i in 0..2200 {
+            let name = format!("d{i}");
+            env.define(&name, Expr::constant("A"), previous).unwrap();
+            previous = Expr::constant(name);
+        }
+        let mut tc = Checker::new(&env);
+        let mut s = Session::new(&mut tc);
+        let slow = s.ev.term(previous, None);
+        let fast = s.ev.term(Expr::constant("a"), None);
+        let hold = s.ev.term(Expr::constant("hold"), None);
+        let left = s.app(&hold, &slow);
+        let right = s.app(&hold, &fast);
+        let lv = s.ev.eval(&left, false).unwrap();
+        let rv = s.ev.eval(&right, false).unwrap();
+        assert!(!s.congruent(&lv, &rv).unwrap());
+        assert!(s.ev.tc.probe_fuel.is_none());
+        assert!(s.conv_terms(&left, &right, false).unwrap());
+        assert!(s.conv_terms(&slow, &fast, false).unwrap());
+        let different = s.ev.term(Expr::constant("b"), None);
+        assert!(!s.conv_terms(&slow, &different, false).unwrap());
+    }
+
+    #[test]
+    fn proof_summaries_never_bypass_argument_or_proposition_checks() {
+        let mut env = Environment::new();
+        run("axiom P : Prop; axiom Q : Prop; axiom p : P; axiom p2 : P; axiom q : Q; axiom F : (forall (T : Prop), forall (h : T), Type)", &mut env).unwrap();
+        assert!(env.def_eq(&expr("F P p"), &expr("F P p2")).unwrap());
+        assert!(!env.def_eq(&expr("F P p"), &expr("F Q q")).unwrap());
+        assert!(env.infer(&expr("F P q")).is_err());
+        assert!(env.infer(&expr("F P Type")).is_err());
+        assert!(!env.def_eq(&expr("p"), &expr("q")).unwrap());
     }
 
     #[test]

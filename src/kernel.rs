@@ -29,6 +29,7 @@ struct Declaration {
     ty: Expr,
     value: Option<Expr>,
     order: usize,
+    relevance: std::cell::RefCell<Vec<(Vec<Level>, eval::Summary)>>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -77,6 +78,7 @@ impl Environment {
                 ty,
                 order: self.declarations.len(),
                 value: if transparent { value } else { None },
+                relevance: Default::default(),
             }),
         );
         Ok(())
@@ -101,6 +103,7 @@ impl Environment {
                 ty,
                 order: self.declarations.len(),
                 value: if transparent { value } else { None },
+                relevance: Default::default(),
             }),
         );
         Ok(())
@@ -144,6 +147,7 @@ struct Checker<'a> {
     uparams: BTreeSet<String>,
     locals: Vec<(Name<Expr>, Expr)>,
     fuel: usize,
+    probe_fuel: Option<usize>,
     scope: usize,
     next_scope: usize,
     cache: cache::Cache,
@@ -161,6 +165,7 @@ impl<'a> Checker<'a> {
             uparams: BTreeSet::new(),
             locals: Vec::new(),
             fuel: 100_000_000,
+            probe_fuel: None,
             scope: 0,
             next_scope: 1,
             cache: cache::Cache::default(),

@@ -1,5 +1,49 @@
 use super::*;
 
+enum BoundSupport {
+    Inline(u64),
+    Wide(Box<[u64]>),
+}
+
+impl BoundSupport {
+    fn as_slice(&self) -> &[u64] {
+        match self {
+            Self::Inline(0) => &[],
+            Self::Inline(bits) => std::slice::from_ref(bits),
+            Self::Wide(bits) => bits,
+        }
+    }
+
+    fn include(&mut self, index: usize, word: u64) {
+        if word == 0 {
+            return;
+        }
+        match self {
+            Self::Inline(bits) if index == 0 => *bits |= word,
+            Self::Wide(bits) if index < bits.len() => bits[index] |= word,
+            _ => {
+                let mut bits = self.as_slice().to_vec();
+                bits.resize(index + 1, 0);
+                bits[index] |= word;
+                *self = Self::Wide(bits.into_boxed_slice());
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Self, under_binder: bool) {
+        for (i, &word) in other.as_slice().iter().enumerate() {
+            if under_binder {
+                self.include(i, word >> 1);
+                if i > 0 {
+                    self.include(i - 1, word << 63);
+                }
+            } else {
+                self.include(i, word);
+            }
+        }
+    }
+}
+
 /// Structural keys ignore binder hints, but retain every bound-variable index.
 #[derive(PartialEq, Eq, Hash)]
 enum Key {
@@ -21,7 +65,7 @@ pub(super) struct Cache {
     pointers: HashMap<usize, (Shared<Expr>, usize)>,
     open: Vec<bool>,
     loose: Vec<Option<usize>>,
-    bound: Vec<Vec<u64>>,
+    bound: Vec<BoundSupport>,
     wide: Vec<bool>,
     contexts: HashMap<Vec<usize>, usize>,
     opened: HashMap<(usize, usize, usize), Expr>,
@@ -84,47 +128,30 @@ impl Cache {
                 .max(self.loose[*c].and_then(|n| n.checked_sub(1))),
             _ => None,
         };
-        let mut bound = Vec::new();
-        let mut merge = |bits: &[u64], under: bool| {
-            bound.resize(bound.len().max(bits.len()), 0);
-            for (i, word) in bits.iter().enumerate() {
-                if under {
-                    bound[i] |= word >> 1;
-                    if i > 0 {
-                        bound[i - 1] |= word << 63;
-                    }
-                } else {
-                    bound[i] |= word;
-                }
-            }
-        };
+        let mut bound = BoundSupport::Inline(0);
         match &key {
             Key::Var(n) => {
                 if let Some((d, _)) = n.coordinates()
                     && d < 4096
                 {
-                    bound.resize(d / 64 + 1, 0);
-                    bound[d / 64] |= 1 << (d % 64);
+                    bound.include(d / 64, 1 << (d % 64));
                 }
             }
             Key::App(a, b) => {
-                merge(&self.bound[*a], false);
-                merge(&self.bound[*b], false);
+                bound.merge(&self.bound[*a], false);
+                bound.merge(&self.bound[*b], false);
             }
             Key::Pi(a, b) | Key::Lam(a, b) => {
-                merge(&self.bound[*a], false);
-                merge(&self.bound[*b], true);
+                bound.merge(&self.bound[*a], false);
+                bound.merge(&self.bound[*b], true);
             }
-            Key::Proj(_, _, a) => merge(&self.bound[*a], false),
+            Key::Proj(_, _, a) => bound.merge(&self.bound[*a], false),
             Key::Let(a, b, c) => {
-                merge(&self.bound[*a], false);
-                merge(&self.bound[*b], false);
-                merge(&self.bound[*c], true);
+                bound.merge(&self.bound[*a], false);
+                bound.merge(&self.bound[*b], false);
+                bound.merge(&self.bound[*c], true);
             }
             _ => {}
-        }
-        while bound.last() == Some(&0) {
-            bound.pop();
         }
         let wide = match &key {
             Key::Var(n) => n.coordinates().is_some_and(|(d, _)| d >= 4096),
@@ -146,7 +173,7 @@ impl Cache {
         if self.wide[id] {
             None
         } else {
-            Some(&self.bound[id])
+            Some(self.bound[id].as_slice())
         }
     }
     pub fn has_loose_id(&self, id: usize) -> bool {
@@ -219,7 +246,7 @@ impl Cache {
 
     pub fn context_key(&mut self, id: usize, context: &[Name<Expr>], scope: usize) -> usize {
         let mut names = Vec::new();
-        for (i, word) in self.bound[id].iter().enumerate() {
+        for (i, word) in self.bound[id].as_slice().iter().enumerate() {
             let mut bits = *word;
             while bits != 0 {
                 let d = i * 64 + bits.trailing_zeros() as usize;
@@ -244,5 +271,56 @@ impl Cache {
         // Free names are globally fresh and have immutable types/values within a checker.
         // Extending a context therefore cannot change an already inferred open term.
         if self.loose[id].is_some() { scope } else { 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn support_shifts_across_word_boundaries_without_losing_variables() {
+        let mut cache = Cache::default();
+        for depth in [0, 1, 63, 64, 65, 127, 128, 4095, 4096] {
+            let body = Expr::Var(Name::bound(depth, 0));
+            let id = cache.id(&body);
+            if depth < 4096 {
+                let mut expected = vec![0; depth / 64 + 1];
+                expected[depth / 64] = 1 << (depth % 64);
+                assert_eq!(cache.bound_support(id), Some(expected.as_slice()));
+            } else {
+                assert!(cache.bound_support(id).is_none());
+            }
+            let lambda = Expr::Lam(
+                Shared::new(Expr::Sort(Level::Nat(0))),
+                bind(Name::new("x"), Shared::new(body)),
+            );
+            let id = cache.id(&lambda);
+            if depth == 0 {
+                assert_eq!(cache.bound_support(id), Some([].as_slice()));
+                assert!(!cache.has_loose_id(id));
+            } else if depth < 4096 {
+                let mut expected = vec![0; (depth - 1) / 64 + 1];
+                expected[(depth - 1) / 64] = 1 << ((depth - 1) % 64);
+                assert_eq!(cache.bound_support(id), Some(expected.as_slice()));
+                if depth <= 64 {
+                    assert!(matches!(cache.bound[id], BoundSupport::Inline(_)));
+                }
+            } else {
+                assert!(cache.bound_support(id).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn support_union_preserves_inline_and_wide_captures() {
+        let mut a = BoundSupport::Inline(1 | (1 << 63));
+        let mut b = BoundSupport::Inline(0);
+        b.include(1, 3);
+        a.merge(&b, true);
+        assert_eq!(a.as_slice(), &[1 | (1 << 63), 1]);
+        let mut closed = BoundSupport::Inline(0);
+        closed.merge(&BoundSupport::Inline(1), true);
+        assert!(matches!(closed, BoundSupport::Inline(0)));
     }
 }

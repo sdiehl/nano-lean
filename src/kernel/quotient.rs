@@ -208,6 +208,7 @@ mod tests {
                     params: vec![],
                     ty: Expr::Sort(Level::Nat(0)),
                     value: None,
+                    relevance: Default::default(),
                 }),
             );
             let f = Expr::constant("minor");
@@ -235,6 +236,7 @@ mod tests {
                     params: vec![],
                     ty: Expr::Sort(Level::Nat(0)),
                     value: None,
+                    relevance: Default::default(),
                 }),
             );
             let expected = f.app(value).app(Expr::constant("extra"));

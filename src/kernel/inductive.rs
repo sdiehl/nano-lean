@@ -257,6 +257,7 @@ impl Environment {
                 params: params.to_vec(),
                 ty,
                 value: None,
+                relevance: Default::default(),
             }),
         );
         added.push(name.into());
