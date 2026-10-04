@@ -88,7 +88,7 @@ import json
 import sys
 with open(sys.argv[1]) as source:
     result = json.load(source)
-if result.get('status') != 'checked' or result.get('declarations') != 718574:
+if result.get('status') != 'checked' or result.get('declarations') != 718577:
     raise SystemExit(f'Incomplete Mathlib check: {result}')
 if result.get('sha256') != '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6':
     raise SystemExit('Checked input digest differs from the pinned Mathlib export')
