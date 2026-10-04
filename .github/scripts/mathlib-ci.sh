@@ -8,7 +8,32 @@ if [[ ${GITHUB_ACTIONS:-} != true || $(uname -s) != Linux ]]; then
 fi
 
 root=$(pwd)
-report="$root/.ci/mathlib-report"
+corpus=${2:-mathlib}
+case $corpus in
+  mathlib)
+    module=Mathlib
+    expected_count=718577
+    expected_coverage=a8e898c54b761ad374648e5b24ca25f040125409f8575a42458a37cb117e5a06
+    ;;
+  init-prelude)
+    module=Init.Prelude
+    expected_count=2106
+    expected_coverage=a6085bdbb8b9d6507f309e3c3fe567baba2806425be6e25f884b7ed28082f16b
+    ;;
+  init)
+    module=Init
+    expected_count=59626
+    expected_coverage=57d65adc8c42b881e677f9a5319f9950b26d064b8fd6f214e783119ea1dd9063
+    ;;
+  std)
+    module=Std
+    expected_count=100829
+    expected_coverage=cae9e2c520253e1f4bbacf5c3d6145e31b5d40c346b68962c4cc0d48589cc118
+    ;;
+  *) echo "Unknown corpus: $corpus" >&2; exit 2 ;;
+esac
+input="$root/.ci/$corpus.ndjson"
+report="$root/.ci/$corpus-report"
 mkdir -p "$report"
 
 # Limit the whole process tree, including compressed/swap-backed allocations.
@@ -34,7 +59,7 @@ case ${1:-} in
   prepare)
     # A cold build needs Lean, Mathlib oleans and the 6.2 GB export at once.
     available=$(df -Pk . | awk 'NR==2 {print $4}')
-    if (( available < 20 * 1024 * 1024 )); then
+    if [[ $corpus == mathlib ]] && (( available < 20 * 1024 * 1024 )); then
       echo 'At least 20 GiB of free disk is required for a cold export build.' >&2
       exit 1
     fi
@@ -43,7 +68,7 @@ case ${1:-} in
     # Bound the service itself too: a step timeout does not stop systemd units.
     bounded nano-mathlib-export 14G 2100 \
       /usr/bin/time -v -o "$report/export-time.txt" \
-      bash .github/scripts/mathlib-ci.sh export \
+      bash .github/scripts/mathlib-ci.sh export "$corpus" \
       2>&1 | tee "$report/export.log"
     ;;
   export)
@@ -55,34 +80,41 @@ case ${1:-} in
     export PATH="$ELAN_HOME/bin:$PATH"
     toolchain=leanprover/lean4:v4.34.1
     elan toolchain install "$toolchain"
-    git init --initial-branch=main .ci/mathlib4
-    git -C .ci/mathlib4 remote add origin https://github.com/leanprover-community/mathlib4.git
-    git -C .ci/mathlib4 fetch --depth=1 origin d13f23b723b8a846827a245b89c10fc7d3f11612
-    git -C .ci/mathlib4 checkout --detach FETCH_HEAD
     cargo install olean-export --version '=0.1.0' --locked -j 2 --root "$root/.ci/exporter"
-    (cd .ci/mathlib4 && elan run "$toolchain" lake exe cache get)
+    if [[ $corpus == mathlib ]]; then
+      git init --initial-branch=main .ci/mathlib4
+      git -C .ci/mathlib4 remote add origin https://github.com/leanprover-community/mathlib4.git
+      git -C .ci/mathlib4 fetch --depth=1 origin d13f23b723b8a846827a245b89c10fc7d3f11612
+      git -C .ci/mathlib4 checkout --detach FETCH_HEAD
+      (cd .ci/mathlib4 && elan run "$toolchain" lake exe cache get)
+    fi
     exporter="$root/.ci/exporter/bin/olean-export"
-    # Check a small real 4.34.1 export before generating the large artifact.
-    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
-      -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
-    "$root/target/release/examples/nl" .ci/export-smoke.ndjson 1 \
-      --native-only --steps 100000000 --arena-mib 256 \
-      > "$report/export-smoke.log" 2>&1
-    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Mathlib -j 2 \
-      -o "$root/.ci/mathlib.ndjson.tmp")
-    mv .ci/mathlib.ndjson.tmp .ci/mathlib.ndjson
-    sha256sum .ci/mathlib.ndjson > .ci/mathlib.ndjson.sha256
+    if [[ $corpus == mathlib ]]; then
+      # Check a small real 4.34.1 export before generating the large artifact.
+      (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
+        -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
+      "$root/target/release/examples/nl" .ci/export-smoke.ndjson 1 \
+        --native-only --steps 100000000 --arena-mib 256 \
+        > "$report/export-smoke.log" 2>&1
+      (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" "$module" -j 2 \
+        -o "$input.tmp")
+    else
+      LEAN_PATH="$(elan run "$toolchain" lean --print-prefix)/lib/lean" \
+        "$exporter" "$module" -j 2 -o "$input.tmp"
+    fi
+    mv "$input.tmp" "$input"
+    (cd "$root" && sha256sum ".ci/$corpus.ndjson" > "$input.sha256")
     rm -rf .ci/mathlib4 .ci/exporter .ci/elan .ci/export-smoke.ndjson
     ;;
   verify)
-    sha256sum --check .ci/mathlib.ndjson.sha256
-    python3 - .ci/mathlib.ndjson <<'PYVERIFY'
+    sha256sum --check "$input.sha256"
+    python3 - "$input" "$expected_count" "$expected_coverage" <<'PYVERIFY'
 import hashlib
 import json
 import sys
 
 # Canonical name segments preserve the distinction between strings and numbers.
-# The digest comes from the original pinned 4.34.1 export, independently of
+# Coverage pins identify the complete declaration set independently of
 # expression IDs, declaration ordering, or the exporter's JSON formatting.
 names = {0: ''}
 declarations = []
@@ -115,15 +147,15 @@ with open(sys.argv[1], 'rb') as source:
             for kind in ('types', 'ctors', 'recs'):
                 declarations.extend(names[d['name']] for d in record['inductive'][kind])
 coverage = hashlib.sha256(('\n'.join(sorted(declarations)) + '\n').encode()).hexdigest()
-if len(declarations) != 718577 or coverage != 'a8e898c54b761ad374648e5b24ca25f040125409f8575a42458a37cb117e5a06':
-    raise SystemExit(f'Mathlib coverage mismatch: {len(declarations)} declarations, {coverage}')
+if len(declarations) != int(sys.argv[2]) or coverage != sys.argv[3]:
+    raise SystemExit(f'Export coverage mismatch: {len(declarations)} declarations, {coverage}')
 print(f'Verified Lean 4.34.1: {len(declarations)} declaration names; coverage {coverage}')
 PYVERIFY
     ;;
   check)
     # Keep the complete declaration trace; Actions gets a heartbeat every 10s,
     # including during import or a single unusually expensive declaration.
-    sha256sum --check .ci/mathlib.ndjson.sha256
+    sha256sum --check "$input.sha256"
     # Probe inside the same service/user context as the checker. Installing perf
     # or changing permissions cannot supply a PMU hidden by the hypervisor.
     perf_command=()
@@ -160,7 +192,7 @@ PYPROBE
     cat "$report/perf-status.txt"
     started=$SECONDS
     bounded nano-mathlib-check 11G 2700 "${perf_command[@]}" /usr/bin/time -v -o "$report/time.txt" \
-      "$root/target/release/examples/nl" "$root/.ci/mathlib.ndjson" 1 \
+      "$root/target/release/examples/nl" "$input" 1 \
       --native-only --trace --steps 100000000 --arena-mib 256 \
       > "$report/failures.log" 2> "$report/trace.log" &
     check_pid=$!
@@ -168,15 +200,15 @@ PYPROBE
       while sleep 10; do
         elapsed=$((SECONDS - started))
         last=$(tail -n 1 "$report/trace.log")
-        echo "[progress] checking Mathlib; elapsed ${elapsed}s; $last"
+        echo "[progress] checking $module; elapsed ${elapsed}s; $last"
         if [[ $last =~ ^(start|end)\ ([0-9]+)\  ]]; then
           completed=${BASH_REMATCH[2]}
           if [[ ${BASH_REMATCH[1]} == end ]]; then
             completed=$((completed + 1))
           fi
           if (( completed > 0 )); then
-            remaining=$((elapsed * (718577 - completed) / completed))
-            echo "[progress] ${completed}/718577 completed; estimated remaining $((remaining / 60))m $((remaining % 60))s"
+            remaining=$((elapsed * (expected_count - completed) / completed))
+            echo "[progress] ${completed}/${expected_count} completed; estimated remaining $((remaining / 60))m $((remaining % 60))s"
           fi
         fi
         systemctl show nano-mathlib-check.service \
@@ -196,8 +228,8 @@ PYPROBE
     cat "$report/failures.log"
     tail -n 3 "$report/trace.log"
     # Check the same pinned bytes after execution, before accepting the result.
-    sha256sum --check .ci/mathlib.ndjson.sha256
-    python3 - "$report" "$status" <<'PYRESULT'
+    sha256sum --check "$input.sha256"
+    python3 - "$report" "$status" "$expected_count" "$input.sha256" <<'PYRESULT'
 import json
 import re
 import sys
@@ -206,6 +238,7 @@ from pathlib import Path
 
 report = Path(sys.argv[1])
 status = int(sys.argv[2])
+expected_count = int(sys.argv[3])
 completed = 0
 pending = None
 summary = None
@@ -229,15 +262,15 @@ with (report / 'trace.log').open() as source:
             if match:
                 summary = dict(zip(('attempted', 'failures', 'fallbacks'),
                                    map(int, match.groups()[1:])))
-if (status != 0 or completed != 718577 or pending is not None
-        or summary != {'attempted': 718577, 'failures': 0, 'fallbacks': 0}
+if (status != 0 or completed != expected_count or pending is not None
+        or summary != {'attempted': expected_count, 'failures': 0, 'fallbacks': 0}
         or (report / 'failures.log').stat().st_size):
-    error = error or 'Incomplete or unsuccessful Mathlib check'
+    error = error or 'Incomplete or unsuccessful corpus check'
 result = {
     'status': 'failed' if error else 'checked',
     'declarations': completed,
     'exit_code': status,
-    'sha256': Path('.ci/mathlib.ndjson.sha256').read_text().split()[0],
+    'sha256': Path(sys.argv[4]).read_text().split()[0],
     **(summary or {}),
 }
 if error:
@@ -259,7 +292,7 @@ if perf_file.exists():
                 'event': row['event'],
                 'instructions': instructions,
                 'counter_running_percent': coverage,
-                # Never give an incomplete check a full-Mathlib score.
+                # Never give an incomplete check a complete-corpus score.
                 'virtual_cpu_seconds': None if error else instructions / 6_000_000_000,
                 'virtual_cpu_minutes': None if error else instructions / 360_000_000_000,
             }
@@ -271,5 +304,5 @@ if error:
     raise SystemExit(1)
 PYRESULT
     ;;
-  *) echo "Usage: $0 prepare|verify|check" >&2; exit 2 ;;
+  *) echo "Usage: $0 prepare|verify|check [mathlib|init-prelude|init|std]" >&2; exit 2 ;;
 esac

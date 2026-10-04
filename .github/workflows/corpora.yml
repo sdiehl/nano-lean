@@ -1,0 +1,131 @@
+name: Standard library
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpora-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check ${{ matrix.corpus }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: [init-prelude, init, std]
+    env:
+      CARGO_BUILD_JOBS: 2
+      CORPUS: ${{ matrix.corpus }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release checker
+        run: cargo build --release --locked --example nl
+      - uses: actions/cache/restore@v4
+        id: export
+        with:
+          path: |
+            .ci/${{ matrix.corpus }}.ndjson
+            .ci/${{ matrix.corpus }}.ndjson.sha256
+          key: corpus-export-v1-${{ runner.os }}-${{ matrix.corpus }}-lean-4.34.1-olean-export-0.1.0
+      - name: Generate pinned export
+        if: steps.export.outputs.cache-hit != 'true'
+        timeout-minutes: 15
+        run: |
+          started=$SECONDS
+          progress() {
+            while sleep 10; do
+              echo "[progress] preparing $CORPUS; elapsed $(( (SECONDS - started) / 60 ))m $(( (SECONDS - started) % 60 ))s"
+            done
+          }
+          progress &
+          progress_pid=$!
+          trap 'kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true' EXIT
+          trap 'sudo systemctl stop nano-mathlib-export.service || true; exit 130' INT TERM
+          bash .github/scripts/mathlib-ci.sh prepare "$CORPUS"
+      - name: Verify export checksum and coverage
+        id: verify
+        run: bash .github/scripts/mathlib-ci.sh verify "$CORPUS"
+      - name: Save verified export before checking
+        if: always() && steps.verify.outcome == 'success' && steps.export.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .ci/${{ matrix.corpus }}.ndjson
+            .ci/${{ matrix.corpus }}.ndjson.sha256
+          key: ${{ steps.export.outputs.cache-primary-key }}
+      - name: Check every declaration
+        timeout-minutes: 15
+        run: bash .github/scripts/mathlib-ci.sh check "$CORPUS"
+      - name: Report result
+        if: always()
+        run: |
+          {
+            echo "### $CORPUS — Lean 4.34.1"
+            echo 'One worker; 100M steps and 256 MiB arena per declaration; 11 GiB OS limit.'
+            echo '```text'
+            cat ".ci/$CORPUS-report/result.json" ".ci/$CORPUS-report/time.txt" 2>/dev/null || true
+            tail -n 3 ".ci/$CORPUS-report/trace.log" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.corpus }}-${{ github.sha }}
+          path: .ci/${{ matrix.corpus }}-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Optional larger corpus. Keep disabled until the pinned project supports
+  # Lean 4.34.1: this revision currently requires 4.34.0-rc2. The version check
+  # deliberately prevents silently running it with a different Lean release.
+  # navier-stokes-euler:
+  #   runs-on: ubuntu-24.04
+  #   timeout-minutes: 100
+  #   env:
+  #     CARGO_BUILD_JOBS: 2
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo build --release --locked --example nl
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         repository: openai/NavierStokesAndEuler
+  #         ref: f9e8bc5b38b6e212696e8a30e3e91517af887bbd
+  #         path: .ci/navier-stokes-euler
+  #     - name: Prepare and check pinned results
+  #       run: |
+  #         sudo systemd-run --unit=nano-navier-check --wait --pipe --collect \
+  #           --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
+  #           --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
+  #           --property=MemoryMax=14G --property=MemorySwapMax=0 \
+  #           --property=OOMPolicy=kill --property=RuntimeMaxSec=5400 \
+  #           bash -euxo pipefail <<'RUN'
+  #         root=$PWD
+  #         project="$root/.ci/navier-stokes-euler"
+  #         test "$(cat "$project/lean-toolchain")" = leanprover/lean4:v4.34.1
+  #         curl --fail --location --retry 3 https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o .ci/elan-init.sh
+  #         bash .ci/elan-init.sh -y --default-toolchain leanprover/lean4:v4.34.1
+  #         export PATH="$HOME/.elan/bin:$PATH"
+  #         cargo install olean-export --version '=0.1.0' --locked -j 2 --root "$root/.ci/exporter"
+  #         cd "$project"
+  #         lake exe cache get
+  #         lake build NavierStokes.ComparatorSolution Euler.Solution
+  #         lake env "$root/.ci/exporter/bin/olean-export" \
+  #           NavierStokes.ComparatorSolution Euler.Solution -j 2 \
+  #           -c NavierStokes.Comparator.navier_stokes_breakdown_R3 \
+  #           -c NavierStokes.Comparator.navier_stokes_breakdown_periodic \
+  #           -c Euler.euler_breakdown_R3 \
+  #           -c Euler.exists_compact_smooth_euler_singularity \
+  #           -o "$root/.ci/navier-stokes-euler.ndjson"
+  #         "$root/target/release/examples/nl" "$root/.ci/navier-stokes-euler.ndjson" 1 \
+  #           --native-only --trace --steps 100000000 --arena-mib 256
+  #         RUN
