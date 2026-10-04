@@ -55,15 +55,8 @@ impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
         Self(HashTable::new())
     }
 
-    pub fn with_capacity(n: usize) -> Self {
-        Self(HashTable::with_capacity(n))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 
@@ -235,7 +228,6 @@ names! {
     quot_ind = "Quot.ind",
     eq = "Eq",
     string = "String",
-    string_mk = "String.mk",
     string_of_list = "String.ofList",
     char = "Char",
     char_of_nat = "Char.ofNat",
@@ -293,8 +285,4 @@ pub struct Store<'a> {
     pub stats: Stats,
 }
 
-impl<'a> Store<'a> {
-    pub fn get(&self, n: NamePtr<'a>) -> Option<&super::decl::Declar<'a>> {
-        self.declars.get(n.decl_idx()? as usize)
-    }
-}
+impl<'a> Store<'a> {}

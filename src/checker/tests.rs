@@ -27,7 +27,7 @@ fn check_all(bytes: &[u8]) -> Result<usize, String> {
 #[test]
 fn foundational_signatures_and_theorems_agree_with_existing_kernel() {
     let count = check_all(FOUNDATIONS).unwrap();
-    let legacy = nano_lean::export::check_export(Cursor::new(FOUNDATIONS)).unwrap();
+    let legacy = crate::export::check_export(Cursor::new(FOUNDATIONS)).unwrap();
     assert_eq!(count, legacy.declarations);
     let arena = Arena::new();
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
@@ -49,7 +49,7 @@ fn adjacent_and_mutual_blocks_keep_exact_boundaries() {
     ] {
         assert_eq!(
             check_all(input).unwrap(),
-            nano_lean::export::check_export(Cursor::new(input))
+            crate::export::check_export(Cursor::new(input))
                 .unwrap()
                 .declarations
         );
@@ -95,7 +95,7 @@ fn export_groups_never_authorize_self_or_forward_references() {
     for self_reference in [true, false] {
         let input = forward_reference(self_reference);
         assert!(check_all(&input).unwrap_err().contains("unknown constant"));
-        assert!(nano_lean::export::check_export(Cursor::new(input)).is_err());
+        assert!(crate::export::check_export(Cursor::new(input)).is_err());
     }
 }
 
@@ -111,9 +111,7 @@ fn a_reused_checker_cannot_reuse_types_or_unfoldings_from_a_later_scope() {
     let g = tc.ctx.konst(store.declars[3].name(), levels);
     tc.infer(g, false);
     assert!(tc.unfold(g).is_some());
-    let failure = outcome::run(|| tc.check(2))
-        .err()
-        .expect("forward reference accepted");
+    let failure = outcome::run(|| tc.check(2)).expect_err("forward reference accepted");
     assert!(failure.reason().contains("unknown constant"));
     assert!(tc.unfold(g).is_none());
 }
@@ -153,7 +151,7 @@ fn malformed_foundation_theorem_is_rejected_by_both_checkers() {
     theorem["thm"]["type"] = sort_id;
     let input = lines.iter().map(|v| format!("{v}\n")).collect::<String>();
     assert!(check_all(input.as_bytes()).is_err());
-    assert!(nano_lean::export::check_export(Cursor::new(input)).is_err());
+    assert!(crate::export::check_export(Cursor::new(input)).is_err());
 }
 
 const REDUCTION: &[u8] = include_bytes!("../../tests/fixtures/reduction.ndjson");
@@ -162,7 +160,7 @@ const REDUCTION: &[u8] = include_bytes!("../../tests/fixtures/reduction.ndjson")
 fn failed_and_exhausted_congruence_probes_fall_back_to_unfolding() {
     assert_eq!(
         check_all(REDUCTION).unwrap(),
-        nano_lean::export::check_export(Cursor::new(REDUCTION))
+        crate::export::check_export(Cursor::new(REDUCTION))
             .unwrap()
             .declarations
     );
@@ -279,8 +277,7 @@ fn resource_exhaustion_is_unsupported_and_the_next_check_can_proceed() {
             })
             .check(0);
     })
-    .err()
-    .expect("zero budget must not succeed");
+    .expect_err("zero budget must not succeed");
     assert_eq!(failure.status(), "unsupported");
     assert_eq!(failure.exit_code(), 2);
     local.reset();
@@ -301,7 +298,7 @@ fn nested_and_primitive_fixtures_pass_complete_validation() {
     ] {
         assert_eq!(
             check_all(input).unwrap(),
-            nano_lean::export::check_export(Cursor::new(input))
+            crate::export::check_export(Cursor::new(input))
                 .unwrap()
                 .declarations
         );
@@ -344,7 +341,7 @@ fn forged_inductive_metadata_and_computation_rules_are_rejected() {
             check_all(bytes.as_bytes()).is_err(),
             "accepted mutation {mutation}"
         );
-        assert!(nano_lean::export::check_export(Cursor::new(bytes.as_bytes())).is_err());
+        assert!(crate::export::check_export(Cursor::new(bytes.as_bytes())).is_err());
     }
 }
 
@@ -375,23 +372,23 @@ fn universe_equivalence_agrees_with_existing_kernel() {
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
     let local = Arena::new();
     let mut tc = Tc::new(&store, &local);
-    let mut base = vec![(tc.ctx.zero(), nano_lean::Level::Nat(0))];
+    let mut base = vec![(tc.ctx.zero(), crate::Level::Nat(0))];
     for n in ["u", "v"] {
         let name = tc.ctx.str1(n);
-        base.push((tc.ctx.param(name), nano_lean::Level::Param(n.into())));
+        base.push((tc.ctx.param(name), crate::Level::Param(n.into())));
     }
     let one = tc.ctx.succ(tc.ctx.zero());
-    base.push((one, nano_lean::Level::Nat(1)));
+    base.push((one, crate::Level::Nat(1)));
     let mut levels = base.clone();
     for (a, old_a) in &base {
         for (b, old_b) in &base {
             levels.push((
                 tc.ctx.max(*a, *b),
-                nano_lean::Level::max(old_a.clone(), old_b.clone()),
+                crate::Level::max(old_a.clone(), old_b.clone()),
             ));
             levels.push((
                 tc.ctx.imax(*a, *b),
-                nano_lean::Level::imax(old_a.clone(), old_b.clone()),
+                crate::Level::imax(old_a.clone(), old_b.clone()),
             ));
         }
     }
@@ -471,7 +468,7 @@ fn arena_fallback_rechecks_the_target_body_and_reports_its_use() {
         );
         if corrupt {
             assert_eq!(
-                result.err().expect("invalid theorem accepted").status(),
+                result.expect_err("invalid theorem accepted").status(),
                 "rejected"
             );
         } else {

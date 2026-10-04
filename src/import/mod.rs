@@ -633,7 +633,6 @@ impl<'a> Importer<'a> {
             let ind = Inductive {
                 info,
                 is_rec: boolean(&t["isRec"])?,
-                is_nested: idx(&t["numNested"])? > 0,
                 num_nested: idx(&t["numNested"])? as usize,
                 is_reflexive: boolean(&t["isReflexive"])?,
                 num_params: small(&t["numParams"])?,

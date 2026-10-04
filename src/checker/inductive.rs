@@ -2,6 +2,10 @@
 //! Ordinary dependencies are conditional; the export driver checks every one.
 
 use super::Tc;
+use crate::kernel;
+use crate::kernel::export_validation::{
+    ExportDependency, ExportSession, validate_export_dependencies,
+};
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Block, Store};
@@ -9,12 +13,8 @@ use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
+use crate::{Expr as OldExpr, Level as OldLevel};
 use crate::{ensure, reject};
-use nano_lean::kernel;
-use nano_lean::kernel::export_validation::{
-    ExportDependency, ExportSession, validate_export_dependencies,
-};
-use nano_lean::{Expr as OldExpr, Level as OldLevel};
 use std::collections::BTreeSet;
 use unbound::prelude::{Name as OldName, Shared, bind};
 

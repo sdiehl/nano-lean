@@ -36,16 +36,6 @@ impl<'a> LevelPtr<'a> {
         matches!(*self, Level::Max(..) | Level::IMax(..))
     }
 
-    /// Strip successors, returning the base and how many were stripped.
-    pub fn succs(mut self) -> (LevelPtr<'a>, usize) {
-        let mut n = 0;
-        while let Level::Succ(p, _) = *self {
-            self = p;
-            n += 1;
-        }
-        (self, n)
-    }
-
     /// Every parameter occurring in `self` is one of `params`.
     pub fn params_in(self, params: LevelsPtr<'a>) -> bool {
         match *self {
@@ -65,10 +55,5 @@ impl<'a> LevelsPtr<'a> {
         self.iter()
             .enumerate()
             .all(|(i, l)| l.is_param() && !self[..i].contains(l))
-    }
-
-    pub fn has_param(self, n: NamePtr<'a>) -> bool {
-        self.iter()
-            .any(|l| matches!(**l, Level::Param(m, _) if m == n))
     }
 }

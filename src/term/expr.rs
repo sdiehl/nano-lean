@@ -107,10 +107,6 @@ impl<'a> ExprPtr<'a> {
         matches!(*self, Expr::Pi { .. })
     }
 
-    pub fn is_sort(self) -> bool {
-        matches!(*self, Expr::Sort { .. })
-    }
-
     pub fn const_name(self) -> Option<NamePtr<'a>> {
         match *self {
             Expr::Const { name, .. } => Some(name),

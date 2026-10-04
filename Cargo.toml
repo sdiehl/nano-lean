@@ -2,6 +2,7 @@
 name = "nano-lean"
 version = "0.1.0"
 edition = "2024"
+default-run = "nano-lean"
 description = "A small dependent type checker built with unbound"
 license = "MIT"
 

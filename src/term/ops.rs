@@ -4,13 +4,11 @@
 use super::ctx::Ctx;
 use super::expr::Expr;
 use super::level::Level;
-use super::name::Name;
-use super::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use super::ptr::{ExprPtr, LevelPtr, LevelsPtr};
 use crate::reject;
 
 const OP_LIFT: u32 = 1 << 24;
 const OP_INST: u32 = 2 << 24;
-const OP_LOWER: u32 = 3 << 24;
 const OP_ABST: u32 = 4 << 24;
 
 impl<'t, 'a: 't> Ctx<'t, 'a> {
@@ -188,75 +186,11 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         self.leq(l, z)
     }
 
-    pub fn is_nonzero(&mut self, l: LevelPtr<'t>) -> bool {
-        let z = self.zero();
-        let one = self.succ(z);
-        self.leq(one, l)
-    }
-
     fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
         matches!(*l, Level::Succ(p, _) if self.is_zero(p))
     }
 
     // Names
-
-    pub fn concat_name(&mut self, n1: NamePtr<'t>, n2: NamePtr<'t>) -> NamePtr<'t> {
-        match n2.kind {
-            Name::Anon => n1,
-            Name::Str(p, s, _) => {
-                let p = self.concat_name(n1, p);
-                self.str_name(p, s)
-            }
-            Name::Num(p, i, _) => {
-                let p = self.concat_name(n1, p);
-                self.num_name(p, i)
-            }
-        }
-    }
-
-    pub fn append_index_after(&mut self, n: NamePtr<'t>, idx: u64) -> NamePtr<'t> {
-        if let Name::Str(p, s, _) = n.kind {
-            let s = self.string(&format!("{}_{idx}", s.s));
-            self.str_name(p, s)
-        } else {
-            let s = self.string(&format!("_{idx}"));
-            self.str_name(n, s)
-        }
-    }
-
-    pub fn replace_pfx(
-        &mut self,
-        n: NamePtr<'t>,
-        from: NamePtr<'t>,
-        to: NamePtr<'t>,
-    ) -> NamePtr<'t> {
-        if n == from {
-            return to;
-        }
-        match n.kind {
-            Name::Anon => n,
-            Name::Str(p, s, _) => {
-                let p = self.replace_pfx(p, from, to);
-                self.str_name(p, s)
-            }
-            Name::Num(p, i, _) => {
-                let p = self.replace_pfx(p, from, to);
-                self.num_name(p, i)
-            }
-        }
-    }
-
-    pub fn is_prefix_of(&self, pfx: NamePtr<'t>, mut n: NamePtr<'t>) -> bool {
-        loop {
-            if n == pfx {
-                return true;
-            }
-            match n.kind {
-                Name::Anon => return false,
-                Name::Str(p, ..) | Name::Num(p, ..) => n = p,
-            }
-        }
-    }
 
     // Expressions
 
@@ -271,12 +205,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             Some(&(k, r)) if k == g => Some(r),
             _ => None,
         }
-    }
-
-    /// Add `amount` to every loose variable with index at least `cutoff`.
-    pub fn lift(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        let g = self.fresh();
-        self.lift_rec(e, cutoff, amount, g)
     }
 
     fn lift_rec(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16, g: u32) -> ExprPtr<'t> {
@@ -317,61 +245,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                 name, idx, e: s, ..
             } => {
                 let s = self.lift_rec(s, cutoff, amount, g);
-                self.proj(name, idx, s)
-            }
-            _ => e,
-        };
-        self.memo.insert(key, (g, r));
-        r
-    }
-
-    /// Subtract `amount` from every loose variable with index at least `cutoff`;
-    /// the caller guarantees none lies in `[cutoff, cutoff + amount)`.
-    pub fn lower(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        let g = self.fresh();
-        self.lower_rec(e, cutoff, amount, g)
-    }
-
-    fn lower_rec(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16, g: u32) -> ExprPtr<'t> {
-        if amount == 0 || e.nlb() <= cutoff {
-            return e;
-        }
-        let key = (e, OP_LOWER | u32::from(cutoff));
-        if let Some(r) = self.memo_get(key, g) {
-            return r;
-        }
-        let r = match *e {
-            Expr::Var { idx, .. } => {
-                if idx < cutoff + amount {
-                    reject!("lowering a term that mentions the removed binder");
-                }
-                self.var(idx - amount)
-            }
-            Expr::App { fun, arg, .. } => {
-                let f = self.lower_rec(fun, cutoff, amount, g);
-                let a = self.lower_rec(arg, cutoff, amount, g);
-                self.app(f, a)
-            }
-            Expr::Lam { ty, body, .. } => {
-                let t = self.lower_rec(ty, cutoff, amount, g);
-                let b = self.lower_rec(body, cutoff + 1, amount, g);
-                self.lam(t, b)
-            }
-            Expr::Pi { ty, body, .. } => {
-                let t = self.lower_rec(ty, cutoff, amount, g);
-                let b = self.lower_rec(body, cutoff + 1, amount, g);
-                self.pi(t, b)
-            }
-            Expr::Let { data, .. } => {
-                let t = self.lower_rec(data.ty, cutoff, amount, g);
-                let v = self.lower_rec(data.val, cutoff, amount, g);
-                let b = self.lower_rec(data.body, cutoff + 1, amount, g);
-                self.let_(t, v, b, data.nondep)
-            }
-            Expr::Proj {
-                name, idx, e: s, ..
-            } => {
-                let s = self.lower_rec(s, cutoff, amount, g);
                 self.proj(name, idx, s)
             }
             _ => e,
@@ -587,43 +460,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             }
         }
         self.inst(e, args)
-    }
-
-    pub fn pi_telescope_size(&self, mut e: ExprPtr<'t>) -> u16 {
-        let mut n = 0;
-        while let Expr::Pi { body, .. } = *e {
-            e = body;
-            n += 1;
-        }
-        n
-    }
-
-    /// Does `e` mention any constant for which `pred` holds.
-    pub fn find_const(
-        &mut self,
-        e: ExprPtr<'t>,
-        pred: &mut impl FnMut(NamePtr<'t>) -> bool,
-    ) -> bool {
-        Self::find_const_rec(e, pred)
-    }
-
-    fn find_const_rec(e: ExprPtr<'t>, pred: &mut impl FnMut(NamePtr<'t>) -> bool) -> bool {
-        match *e {
-            Expr::Const { name, .. } => pred(name),
-            Expr::App { fun, arg, .. } => {
-                Self::find_const_rec(fun, pred) || Self::find_const_rec(arg, pred)
-            }
-            Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-                Self::find_const_rec(ty, pred) || Self::find_const_rec(body, pred)
-            }
-            Expr::Let { data, .. } => {
-                Self::find_const_rec(data.ty, pred)
-                    || Self::find_const_rec(data.val, pred)
-                    || Self::find_const_rec(data.body, pred)
-            }
-            Expr::Proj { e, .. } => Self::find_const_rec(e, pred),
-            _ => false,
-        }
     }
 
     /// Instantiate a declaration's type with concrete universe levels.

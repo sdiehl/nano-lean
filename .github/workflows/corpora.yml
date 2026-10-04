@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release checker
-        run: cargo build --release --locked --example nl
+        run: cargo build --release --locked --bin nl
       - uses: actions/cache/restore@v4
         id: export
         with:
@@ -95,7 +95,7 @@ jobs:
   #   steps:
   #     - uses: actions/checkout@v4
   #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo build --release --locked --example nl
+  #     - run: cargo build --release --locked --bin nl
   #     - uses: actions/checkout@v4
   #       with:
   #         repository: openai/NavierStokesAndEuler
@@ -126,6 +126,6 @@ jobs:
   #           -c Euler.euler_breakdown_R3 \
   #           -c Euler.exists_compact_smooth_euler_singularity \
   #           -o "$root/.ci/navier-stokes-euler.ndjson"
-  #         "$root/target/release/examples/nl" "$root/.ci/navier-stokes-euler.ndjson" 1 \
+  #         "$root/target/release/nl" "$root/.ci/navier-stokes-euler.ndjson" 1 \
   #           --native-only --trace --steps 100000000 --arena-mib 256
   #         RUN

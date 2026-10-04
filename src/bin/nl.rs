@@ -1,13 +1,7 @@
-//! Development driver for the new term representation, importer and checker.
-
-#[path = "../src/checker/mod.rs"]
-pub mod checker;
-#[path = "../src/import/mod.rs"]
-pub mod import;
-#[path = "../src/term/mod.rs"]
-pub mod term;
+//! Check Lean exports using the interned-term checker.
 
 use indicatif::{ProgressBar, ProgressStyle};
+use nano_lean::{checker, import, term};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 #[global_allocator]

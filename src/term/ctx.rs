@@ -5,7 +5,7 @@ use super::FxHashMap;
 use super::expr::{Expr, LetData, mk};
 use super::intern::{Dag, Store};
 use super::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
-use super::name::{NUM_HASH, Name, STR_HASH as NAME_STR_HASH};
+use super::name::{Name, STR_HASH as NAME_STR_HASH};
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
 use crate::term::arena::Arena;
@@ -35,14 +35,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         }
     }
 
-    /// Forget everything allocated locally. The caller resets the arena afterwards.
-    pub fn clear(&mut self) {
-        self.dag = Dag::default();
-        self.memo.clear();
-        self.subst_cache.clear();
-        self.simp_cache.clear();
-    }
-
     pub fn anon(&self) -> NamePtr<'t> {
         self.store.anon
     }
@@ -63,10 +55,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
 
     pub fn str_name(&mut self, pfx: NamePtr<'t>, s: StringPtr<'t>) -> NamePtr<'t> {
         self.name(Name::Str(pfx, s, hash64!(NAME_STR_HASH, pfx, s)))
-    }
-
-    pub fn num_name(&mut self, pfx: NamePtr<'t>, n: u64) -> NamePtr<'t> {
-        self.name(Name::Num(pfx, n, hash64!(NUM_HASH, pfx, n)))
     }
 
     pub fn string(&mut self, s: &str) -> StringPtr<'t> {
@@ -224,10 +212,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
     pub fn nat_lit(&mut self, n: BigUint) -> ExprPtr<'t> {
         let n = self.nat(n);
         self.expr(mk::nat(n))
-    }
-
-    pub fn str_lit(&mut self, s: StringPtr<'t>) -> ExprPtr<'t> {
-        self.expr(mk::str(s))
     }
 
     pub fn local(&mut self, id: u32, ty: ExprPtr<'t>) -> ExprPtr<'t> {

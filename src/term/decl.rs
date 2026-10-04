@@ -7,16 +7,7 @@ pub enum Hint {
     Regular(u32),
 }
 
-impl Hint {
-    /// Unfold the side with the smaller hint first.
-    pub fn lt(self, o: Hint) -> bool {
-        match (self, o) {
-            (_, Hint::Opaque) | (Hint::Abbrev, _) => false,
-            (Hint::Opaque, _) | (_, Hint::Abbrev) => true,
-            (Hint::Regular(a), Hint::Regular(b)) => a < b,
-        }
-    }
-}
+impl Hint {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Info<'a> {
@@ -36,7 +27,6 @@ pub struct RecRule<'a> {
 pub struct Inductive<'a> {
     pub info: Info<'a>,
     pub is_rec: bool,
-    pub is_nested: bool,
     pub num_nested: usize,
     pub is_reflexive: bool,
     pub num_params: u16,
@@ -119,19 +109,6 @@ impl<'a> Declar<'a> {
             Declar::Def(_, v, h) => Some((*v, *h)),
             Declar::Thm(_, v) => Some((*v, Hint::Opaque)),
             _ => None,
-        }
-    }
-
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Declar::Axiom(_) => "axiom",
-            Declar::Quot(_) => "quotient",
-            Declar::Thm(..) => "theorem",
-            Declar::Def(..) => "definition",
-            Declar::Opaque(..) => "opaque",
-            Declar::Ind(_) => "inductive",
-            Declar::Ctor(_) => "constructor",
-            Declar::Rec(_) => "recursor",
         }
     }
 }
