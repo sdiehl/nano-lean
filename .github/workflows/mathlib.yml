@@ -25,8 +25,10 @@ jobs:
       - uses: actions/cache/restore@v4
         id: export
         with:
-          path: .ci/mathlib.ndjson
-          key: mathlib-export-22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6
+          path: |
+            .ci/mathlib.ndjson
+            .ci/mathlib.ndjson.sha256
+          key: mathlib-export-v2-${{ runner.os }}-lean-4.34.1-d13f23b723b8a846827a245b89c10fc7d3f11612-27347bfbf2bd2433a9cb8d622566421040ce87fd
       - name: Prepare runner disk
         run: |
           mkdir -p .ci/mathlib-report
@@ -81,14 +83,16 @@ jobs:
         with:
           path: ~/.cache/mathlib/*.ltar
           key: ${{ steps.mathlib-downloads.outputs.cache-primary-key }}
-      - name: Verify export checksum
+      - name: Verify export checksum and coverage
         id: verify-export
         run: |
-          echo '22c5de83469408950005589a3bc5ef5157c65549b5a802f85d567c29151306a6  .ci/mathlib.ndjson' | sha256sum --check
+          bash .github/scripts/mathlib-ci.sh verify
       - uses: actions/cache/save@v4
         if: always() && steps.verify-export.outcome == 'success' && steps.export.outputs.cache-hit != 'true'
         with:
-          path: .ci/mathlib.ndjson
+          path: |
+            .ci/mathlib.ndjson
+            .ci/mathlib.ndjson.sha256
           key: ${{ steps.export.outputs.cache-primary-key }}
       - name: Check all Mathlib declarations
         timeout-minutes: 300
@@ -99,7 +103,8 @@ jobs:
           {
             echo '### Mathlib'
             echo 'Lean 4.34.1 Mathlib; release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
-            echo 'Cold export generation has a separate 14 GiB OS limit; cache hits skip generation.'
+            echo 'Pinned Rust olean exporter; 14 GiB export OS limit; cache hits skip generation.'
+            echo 'Export coverage must match the pinned 718,577 declaration names.'
             echo '```text'
             cat .ci/mathlib-report/export-time.txt 2>/dev/null || true
             cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
