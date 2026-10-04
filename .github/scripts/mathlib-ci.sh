@@ -124,8 +124,42 @@ PYVERIFY
     # Keep the complete declaration trace; Actions gets a heartbeat every 10s,
     # including during import or a single unusually expensive declaration.
     sha256sum --check .ci/mathlib.ndjson.sha256
+    # Probe inside the same service/user context as the checker. Installing perf
+    # or changing permissions cannot supply a PMU hidden by the hypervisor.
+    perf_command=()
+    echo 'Instruction counting unavailable: no working hardware counter.' > "$report/perf-status.txt"
+    for perf_binary in /usr/lib/linux-tools/*/perf; do
+      [[ -x $perf_binary ]] || continue
+      for event in instructions instructions:u; do
+        if bounded nano-mathlib-perf-probe 256M 15 \
+          "$perf_binary" stat -j -o "$report/perf-probe.jsonl" -e "$event" -- \
+          python3 -c 'sum(range(100000))' 2>> "$report/perf-probe.log" \
+          && python3 - "$report/perf-probe.jsonl" <<'PYPROBE'
+import json
+import sys
+from decimal import Decimal, InvalidOperation
+with open(sys.argv[1]) as source:
+    for line in source:
+        try:
+            row = json.loads(line)
+            if (row.get('event', '').split(':')[0] == 'instructions'
+                    and Decimal(row['counter-value']) > 0):
+                raise SystemExit(0)
+        except (ValueError, KeyError, InvalidOperation):
+            pass
+raise SystemExit(1)
+PYPROBE
+        then
+          perf_command=("$perf_binary" stat -j -o "$report/perf.jsonl"
+            -e duration_time -e task-clock -e "$event" --)
+          echo "Instruction counting enabled: $event; $(uname -m); $($perf_binary --version)" > "$report/perf-status.txt"
+          break 2
+        fi
+      done
+    done
+    cat "$report/perf-status.txt"
     started=$SECONDS
-    bounded nano-mathlib-check 11G 2700 /usr/bin/time -v -o "$report/time.txt" \
+    bounded nano-mathlib-check 11G 2700 "${perf_command[@]}" /usr/bin/time -v -o "$report/time.txt" \
       "$root/target/release/examples/nl" "$root/.ci/mathlib.ndjson" 1 \
       --native-only --trace --steps 100000000 --arena-mib 256 \
       > "$report/failures.log" 2> "$report/trace.log" &
@@ -166,6 +200,7 @@ PYVERIFY
 import json
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 report = Path(sys.argv[1])
@@ -206,6 +241,29 @@ result = {
 }
 if error:
     result['error'] = error
+result['instruction_measurement'] = {'status': 'unavailable'}
+perf_file = report / 'perf.jsonl'
+if perf_file.exists():
+    for line in perf_file.read_text().splitlines():
+        try:
+            row = json.loads(line)
+            if row.get('event', '').split(':')[0] != 'instructions':
+                continue
+            instructions = int(Decimal(row['counter-value']))
+            coverage = float(row['pcnt-running'])
+            if instructions <= 0 or not 99.9 <= coverage <= 100.0:
+                continue
+            result['instruction_measurement'] = {
+                'status': 'partial' if error else 'measured',
+                'event': row['event'],
+                'instructions': instructions,
+                'counter_running_percent': coverage,
+                # Never give an incomplete check a full-Mathlib score.
+                'virtual_cpu_seconds': None if error else instructions / 6_000_000_000,
+                'virtual_cpu_minutes': None if error else instructions / 360_000_000_000,
+            }
+        except (ValueError, KeyError, InvalidOperation, OverflowError):
+            continue
 (report / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps(result))
 if error:
