@@ -56,13 +56,13 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
     pub(super) fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
-        if self.fail_cache.contains(&(t, s)) || self.small_delta_body(t) {
+        if self.fail_cache.contains(&(t, s)) {
             return false;
         }
         if self.probe_remaining.is_some() {
             return self.args_eq(t, s);
         }
-        self.probe_remaining = Some(2048);
+        self.probe_remaining = Some(if self.small_delta_body(t) { 32 } else { 2048 });
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.args_eq(t, s)));
         self.probe_remaining = None;
         let equal = match result {
@@ -85,8 +85,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         equal
     }
 
-    /// Expose small wrappers that apply or project an argument. Keep congruence
-    /// for constant-headed bodies, where unfolding can duplicate substantial work.
+    /// Give wrappers that apply or project an argument a short congruence probe
+    /// before unfolding. Even these wrappers can have cheaply equal arguments.
     fn small_delta_body(&self, e: ExprPtr<'t>) -> bool {
         let Some(name) = e.head().const_name() else {
             return false;

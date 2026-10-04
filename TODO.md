@@ -48,7 +48,7 @@ uses an explicit 100-million-step budget. Native-only completion remains below.
 - [x] Reduce adapter overhead while preserving shared inductive validation.
 - [x] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
 - [x] Avoid repeated speculative comparisons under rigid heads.
-- [x] Unfold small forwarding wrappers without expensive argument probes.
+- [x] Bound forwarding-wrapper probes while retaining cheap argument comparisons.
 - [x] Preserve unrelated shared domains during nested-inductive discovery.
 - [x] Recheck the 100,000-declaration prefix with zero unsupported declarations.
 - [x] Check 200,000 declarations without fallback using the explicit 100-million-step budget.
