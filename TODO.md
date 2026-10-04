@@ -44,7 +44,8 @@ uses an explicit 100-million-step budget. Native-only completion remains below.
 ## Phase 4 — Full Mathlib completion
 
 - [x] Eliminate fallback on the application, beta, and let ladders.
-- [ ] Eliminate fallback on the four magma stress fixtures.
+- [x] Check `magma-list-deep-n21` and `magma-list-pair-n7` natively with a 256 MiB arena.
+- [ ] Eliminate fallback on `magma-list-deep-n36` and `magma-list-pair-n21` by reducing allocation growth.
 - [x] Reduce adapter overhead while preserving shared inductive validation.
 - [x] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
 - [x] Avoid repeated speculative comparisons under rigid heads.
@@ -52,11 +53,16 @@ uses an explicit 100-million-step budget. Native-only completion remains below.
 - [x] Preserve unrelated shared domains during nested-inductive discovery.
 - [x] Recheck the 100,000-declaration prefix with zero unsupported declarations.
 - [x] Check 200,000 declarations without fallback using the explicit 100-million-step budget.
-- [ ] Increase prefix sizes incrementally, recording the first failure and peak RSS.
+- [x] Increase prefix sizes incrementally, recording the first failure and peak RSS.
+- [x] Check 400,000 declarations without fallback using 100 million steps and a 256 MiB arena limit.
 - [ ] Reduce remaining failures to single-declaration regression cases.
-- [ ] Fix reduction, universe, or allocation hotspots before increasing budgets.
-- [ ] Check the complete pinned export with zero failures or unsupported declarations.
-- [ ] Verify the input digest and all 718,577 declaration outcomes.
+- [x] Fix reduction, universe, or allocation hotspots before increasing budgets.
+- [x] Check the complete pinned export with zero failures or unsupported declarations.
+- [x] Verify the input digest and all 718,577 declaration outcomes.
+
+The full Lean 4.34.1 export passes with `--native-only --steps 100000000
+--arena-mib 256`. Inductive reconstruction still uses the shared kernel adapter;
+no whole-declaration fallback is needed. The two larger magma stress cases remain open.
 
 ## Phase 5 — Performance and shared parallel checking
 
