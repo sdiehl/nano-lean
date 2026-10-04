@@ -55,32 +55,24 @@ case ${1:-} in
     export PATH="$ELAN_HOME/bin:$PATH"
     toolchain=leanprover/lean4:v4.34.1
     elan toolchain install "$toolchain"
-    for repo in olean-export mathlib4; do
-      if [[ $repo == olean-export ]]; then
-        url=https://github.com/sdiehl/olean-export.git
-        revision=27347bfbf2bd2433a9cb8d622566421040ce87fd
-      else
-        url=https://github.com/leanprover-community/mathlib4.git
-        revision=d13f23b723b8a846827a245b89c10fc7d3f11612
-      fi
-      git init --initial-branch=main ".ci/$repo"
-      git -C ".ci/$repo" remote add origin "$url"
-      git -C ".ci/$repo" fetch --depth=1 origin "$revision"
-      git -C ".ci/$repo" checkout --detach FETCH_HEAD
-    done
-    cargo build --manifest-path .ci/olean-export/Cargo.toml --release --locked -j 2
+    git init --initial-branch=main .ci/mathlib4
+    git -C .ci/mathlib4 remote add origin https://github.com/leanprover-community/mathlib4.git
+    git -C .ci/mathlib4 fetch --depth=1 origin d13f23b723b8a846827a245b89c10fc7d3f11612
+    git -C .ci/mathlib4 checkout --detach FETCH_HEAD
+    cargo install olean-export --version '=0.1.0' --locked -j 2 --root "$root/.ci/exporter"
     (cd .ci/mathlib4 && elan run "$toolchain" lake exe cache get)
-    exporter="$root/.ci/olean-export/target/release/tiny-olean"
+    exporter="$root/.ci/exporter/bin/olean-export"
     # Check a small real 4.34.1 export before generating the large artifact.
-    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init \
+    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
       -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
-    "$root/target/release/nano-lean" --export .ci/export-smoke.ndjson \
-      > "$report/export-smoke.json"
-    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Mathlib \
+    "$root/target/release/examples/nl" .ci/export-smoke.ndjson 1 \
+      --native-only --steps 100000000 --arena-mib 256 \
+      > "$report/export-smoke.log" 2>&1
+    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Mathlib -j 2 \
       -o "$root/.ci/mathlib.ndjson.tmp")
     mv .ci/mathlib.ndjson.tmp .ci/mathlib.ndjson
     sha256sum .ci/mathlib.ndjson > .ci/mathlib.ndjson.sha256
-    rm -rf .ci/mathlib4 .ci/olean-export .ci/elan .ci/export-smoke.ndjson
+    rm -rf .ci/mathlib4 .ci/exporter .ci/elan .ci/export-smoke.ndjson
     ;;
   verify)
     sha256sum --check .ci/mathlib.ndjson.sha256
@@ -99,7 +91,8 @@ with open(sys.argv[1], 'rb') as source:
     if (metadata['format']['version'] != '3.1.0'
             or metadata['lean']['version'] != '4.34.1'
             or metadata['lean']['githash'] != '5045d0056413266e57c625dcd7c365b10e377c52'
-            or metadata['exporter']['name'] != 'tiny-olean'):
+            or metadata['exporter']['name'] != 'olean-export'
+            or metadata['exporter']['version'] != '0.1.0'):
         raise SystemExit(f'Unexpected export metadata: {metadata}')
     for line in source:
         # Expressions dominate the file; decode only names and declarations.
@@ -128,24 +121,96 @@ print(f'Verified Lean 4.34.1: {len(declarations)} declaration names; coverage {c
 PYVERIFY
     ;;
   check)
-    # Show periodic Rust progress in Actions and retain the full trace artifact.
-    bounded nano-mathlib-check 11G 18000 /usr/bin/time -v -o "$report/time.txt" \
-      env NANO_LEAN_TRACE=1 NANO_LEAN_PROGRESS=1 "$root/target/release/nano-lean" \
-      --export-parallel 1 --memory-mib 10240 "$root/.ci/mathlib.ndjson" \
-      > "$report/result.json" \
-      2> >(tee "$report/trace.jsonl" | awk '/^\[progress\]/ { print; fflush() }' >&2)
-    python3 - "$report/result.json" <<'PY'
+    # Keep the complete declaration trace; Actions gets a heartbeat every 10s,
+    # including during import or a single unusually expensive declaration.
+    sha256sum --check .ci/mathlib.ndjson.sha256
+    started=$SECONDS
+    bounded nano-mathlib-check 11G 2700 /usr/bin/time -v -o "$report/time.txt" \
+      "$root/target/release/examples/nl" "$root/.ci/mathlib.ndjson" 1 \
+      --native-only --trace --steps 100000000 --arena-mib 256 \
+      > "$report/failures.log" 2> "$report/trace.log" &
+    check_pid=$!
+    progress() {
+      while sleep 10; do
+        elapsed=$((SECONDS - started))
+        last=$(tail -n 1 "$report/trace.log")
+        echo "[progress] checking Mathlib; elapsed ${elapsed}s; $last"
+        if [[ $last =~ ^(start|end)\ ([0-9]+)\  ]]; then
+          completed=${BASH_REMATCH[2]}
+          if [[ ${BASH_REMATCH[1]} == end ]]; then
+            completed=$((completed + 1))
+          fi
+          if (( completed > 0 )); then
+            echo "[progress] ${completed}/718577 completed; estimated remaining $((elapsed * (718577 - completed) / completed))s"
+          fi
+        fi
+        systemctl show nano-mathlib-check.service \
+          --property=MemoryCurrent --property=MemoryPeak --property=CPUUsageNSec \
+          2>/dev/null || true
+      done
+    }
+    progress &
+    progress_pid=$!
+    trap 'kill "$progress_pid" 2>/dev/null || true; wait "$progress_pid" 2>/dev/null || true' EXIT
+    trap 'sudo systemctl stop nano-mathlib-check.service || true; exit 130' INT TERM
+    status=0
+    wait "$check_pid" || status=$?
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+    trap - EXIT
+    cat "$report/failures.log"
+    tail -n 3 "$report/trace.log"
+    # Check the same pinned bytes after execution, before accepting the result.
+    sha256sum --check .ci/mathlib.ndjson.sha256
+    python3 - "$report" "$status" <<'PYRESULT'
 import json
+import re
 import sys
-with open(sys.argv[1]) as source:
-    result = json.load(source)
-if result.get('status') != 'checked' or result.get('declarations') != 718577:
-    raise SystemExit(f'Incomplete Mathlib check: {result}')
-with open('.ci/mathlib.ndjson.sha256') as source:
-    expected_digest = source.read().split()[0]
-if result.get('sha256') != expected_digest:
-    raise SystemExit('Checked input digest differs from the verified Mathlib export')
-PY
+from pathlib import Path
+
+report = Path(sys.argv[1])
+status = int(sys.argv[2])
+completed = 0
+pending = None
+summary = None
+error = None
+with (report / 'trace.log').open() as source:
+    for line in source:
+        if line.startswith('start '):
+            index = int(line.split()[1])
+            if pending is not None or index != completed:
+                error = 'Missing, repeated or out-of-order declaration start'
+            pending = index
+        elif line.startswith('end '):
+            index = int(line.split()[1])
+            if pending != index or index != completed:
+                error = 'Missing, repeated or out-of-order declaration completion'
+            pending = None
+            completed += 1
+        elif line.startswith('experimental checks '):
+            match = re.fullmatch(
+                r'experimental checks (.+): (\d+) attempted, (\d+) failures, (\d+) fallbacks\n?', line)
+            if match:
+                summary = dict(zip(('attempted', 'failures', 'fallbacks'),
+                                   map(int, match.groups()[1:])))
+if (status != 0 or completed != 718577 or pending is not None
+        or summary != {'attempted': 718577, 'failures': 0, 'fallbacks': 0}
+        or (report / 'failures.log').stat().st_size):
+    error = error or 'Incomplete or unsuccessful Mathlib check'
+result = {
+    'status': 'failed' if error else 'checked',
+    'declarations': completed,
+    'exit_code': status,
+    'sha256': Path('.ci/mathlib.ndjson.sha256').read_text().split()[0],
+    **(summary or {}),
+}
+if error:
+    result['error'] = error
+(report / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+print(json.dumps(result))
+if error:
+    raise SystemExit(1)
+PYRESULT
     ;;
   *) echo "Usage: $0 prepare|verify|check" >&2; exit 2 ;;
 esac

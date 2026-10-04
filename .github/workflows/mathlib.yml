@@ -14,21 +14,21 @@ concurrency:
 jobs:
   mathlib:
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 100
     env:
       CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release checker
-        run: cargo build --release --locked
+        run: cargo build --release --locked --example nl
       - uses: actions/cache/restore@v4
         id: export
         with:
           path: |
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
-          key: mathlib-export-v2-${{ runner.os }}-lean-4.34.1-d13f23b723b8a846827a245b89c10fc7d3f11612-27347bfbf2bd2433a9cb8d622566421040ce87fd
+          key: mathlib-export-v3-${{ runner.os }}-lean-4.34.1-d13f23b723b8a846827a245b89c10fc7d3f11612-olean-export-0.1.0
       - name: Prepare runner disk
         run: |
           mkdir -p .ci/mathlib-report
@@ -95,20 +95,20 @@ jobs:
             .ci/mathlib.ndjson.sha256
           key: ${{ steps.export.outputs.cache-primary-key }}
       - name: Check all Mathlib declarations
-        timeout-minutes: 300
+        timeout-minutes: 47
         run: bash .github/scripts/mathlib-ci.sh check
       - name: Report result
         if: always()
         run: |
           {
             echo '### Mathlib'
-            echo 'Lean 4.34.1 Mathlib; release checker; one worker; 10 GiB checker budget; 11 GiB OS limit.'
-            echo 'Pinned Rust olean exporter; 14 GiB export OS limit; cache hits skip generation.'
+            echo 'Lean 4.34.1 Mathlib; experimental checker; one worker; 100M steps and 256 MiB arena per declaration; 11 GiB OS limit; 45 minute runtime cap.'
+            echo 'olean-export 0.1.0; 14 GiB export OS limit; cache hits skip generation.'
             echo 'Export coverage must match the pinned 718,577 declaration names.'
             echo '```text'
             cat .ci/mathlib-report/export-time.txt 2>/dev/null || true
             cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
-            tail -n 3 .ci/mathlib-report/trace.jsonl 2>/dev/null || true
+            tail -n 3 .ci/mathlib-report/trace.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
