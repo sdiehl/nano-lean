@@ -37,6 +37,8 @@ pub struct Inductive<'a> {
     pub info: Info<'a>,
     pub is_rec: bool,
     pub is_nested: bool,
+    pub num_nested: usize,
+    pub is_reflexive: bool,
     pub num_params: u16,
     pub num_indices: u16,
     pub all: &'a [NamePtr<'a>],
@@ -66,7 +68,10 @@ pub struct Recursor<'a> {
 
 impl Recursor<'_> {
     pub fn major_idx(&self) -> usize {
-        usize::from(self.num_params) + usize::from(self.num_motives) + usize::from(self.num_minors) + usize::from(self.num_indices)
+        usize::from(self.num_params)
+            + usize::from(self.num_motives)
+            + usize::from(self.num_minors)
+            + usize::from(self.num_indices)
     }
 }
 
@@ -85,7 +90,11 @@ pub enum Declar<'a> {
 impl<'a> Declar<'a> {
     pub fn info(&self) -> &Info<'a> {
         match self {
-            Declar::Axiom(i) | Declar::Quot(i) | Declar::Thm(i, _) | Declar::Def(i, ..) | Declar::Opaque(i, _) => i,
+            Declar::Axiom(i)
+            | Declar::Quot(i)
+            | Declar::Thm(i, _)
+            | Declar::Def(i, ..)
+            | Declar::Opaque(i, _) => i,
             Declar::Ind(d) => &d.info,
             Declar::Ctor(d) => &d.info,
             Declar::Rec(d) => &d.info,

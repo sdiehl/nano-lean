@@ -1,32 +1,343 @@
+//! Inductive validation reuses the existing kernel's reconstruction algorithms.
+//! Ordinary dependencies are conditional; the export driver checks every one.
+
 use super::Tc;
-use crate::ensure;
 use crate::term::decl::Declar;
+use crate::term::expr::Expr;
+use crate::term::intern::{Block, Store};
+use crate::term::level::Level;
+use crate::term::name::Name;
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::{FxHashMap, FxHashSet};
+use crate::{ensure, reject};
+use nano_lean::kernel;
+use nano_lean::kernel::export_validation::{ExportDependency, validate_export_dependencies};
+use nano_lean::{Expr as OldExpr, Level as OldLevel};
+use std::collections::BTreeSet;
+use unbound::prelude::{Name as OldName, Shared, bind};
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    /// Check signatures in dependency order within exactly one imported block.
-    /// Full positivity and generated-recursor validation remain separate work.
     pub(crate) fn check_inductive(&mut self, idx: u32, d: Declar<'t>) {
         let block = *self
             .ctx
             .store
             .blocks
             .get(&d.name())
-            .expect("imported inductive block");
+            .expect("imported block");
         if block.start != idx {
             return;
         }
-        for position in block.start..block.end {
-            let d = self.ctx.store.declars[position as usize];
-            self.uparams = d.uparams();
-            self.limit = if position < block.types_end {
-                block.start
-            } else if position < block.ctors_end {
-                block.types_end
-            } else {
-                block.ctors_end
-            };
-            ensure!(self.limit <= position, "invalid inductive dependency order");
-            self.check_type(d.ty());
+        self.check_existing(idx);
+    }
+
+    pub(super) fn check_existing(&mut self, idx: u32) {
+        let d = self.ctx.store.declars[idx as usize];
+        let block = self
+            .ctx
+            .store
+            .blocks
+            .get(&d.name())
+            .copied()
+            .unwrap_or(Block {
+                start: idx,
+                types_end: idx,
+                ctors_end: idx,
+                end: idx + 1,
+            });
+        let dependencies = self.inductive_dependencies(block);
+        let mut convert = Convert::default();
+        let prefix: Vec<_> = dependencies
+            .into_iter()
+            .map(|index| {
+                self.tick();
+                convert.declaration(
+                    self.ctx.store,
+                    self.ctx.store.declars[index as usize],
+                    false,
+                )
+            })
+            .collect();
+        let target = convert.declaration(self.ctx.store, d, true);
+        let work = std::rc::Rc::new(std::cell::Cell::new(self.steps_left));
+        let result = validate_export_dependencies(
+            prefix,
+            target,
+            matches!(d, Declar::Thm(..)),
+            work.clone(),
+        );
+        self.steps_left = work.get();
+        if let Err(error) = result {
+            if error.0.contains("budget exhausted") {
+                crate::unsupported!("validation work budget exhausted");
+            }
+            reject!("declaration validation: {error}");
         }
+    }
+
+    fn inductive_dependencies(&mut self, target: Block) -> BTreeSet<u32> {
+        let store = self.ctx.store;
+        let mut declarations = Vec::new();
+        let mut expressions = Vec::new();
+        let mut seen = FxHashSet::default();
+        let mut needed = BTreeSet::new();
+        for d in &store.declars[target.start as usize..target.end as usize] {
+            roots(*d, &mut expressions);
+        }
+        loop {
+            while let Some(e) = expressions.pop() {
+                self.tick();
+                if !seen.insert(e) {
+                    continue;
+                }
+                match *e {
+                    Expr::Const { name, .. } => declarations.push(name),
+                    Expr::App { fun, arg, .. } => expressions.extend([fun, arg]),
+                    Expr::Pi { ty, body, .. } | Expr::Lam { ty, body, .. } => {
+                        expressions.extend([ty, body])
+                    }
+                    Expr::Let { data, .. } => expressions.extend([data.ty, data.val, data.body]),
+                    Expr::Proj { name, e, .. } => {
+                        declarations.push(name);
+                        expressions.push(e);
+                    }
+                    Expr::NatLit { .. } => declarations.extend(self.names.nat),
+                    Expr::StrLit { .. } => declarations.extend(
+                        [
+                            self.names.string,
+                            self.names.string_of_list,
+                            self.names.char,
+                            self.names.char_of_nat,
+                            self.names.list_nil,
+                            self.names.list_cons,
+                        ]
+                        .into_iter()
+                        .flatten(),
+                    ),
+                    _ => (),
+                }
+            }
+            let Some(name) = declarations.pop() else {
+                break;
+            };
+            let index = name
+                .decl_idx()
+                .unwrap_or_else(|| reject!("unknown dependency {name}"));
+            ensure!(index < target.end, "inductive dependency is out of scope");
+            if index >= target.start {
+                continue;
+            }
+            if let Some(block) = store.blocks.get(&name) {
+                if needed.insert(block.start) {
+                    for d in &store.declars[block.start as usize..block.end as usize] {
+                        roots(*d, &mut expressions);
+                    }
+                }
+            } else if needed.insert(index) {
+                let d = store.declars[index as usize];
+                roots(d, &mut expressions);
+                if matches!(d, Declar::Quot(_)) {
+                    declarations.extend(self.names.eq);
+                    for n in [self.names.quot, self.names.quot_mk].into_iter().flatten() {
+                        if n.decl_idx().is_some_and(|i| i < index) {
+                            declarations.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        needed
+    }
+}
+
+fn roots<'a>(d: Declar<'a>, out: &mut Vec<ExprPtr<'a>>) {
+    out.push(d.ty());
+    if let Declar::Opaque(_, v) = d {
+        out.push(v);
+    }
+    if let Some((v, _)) = d.unfoldable() {
+        out.push(v);
+    }
+    if let Declar::Rec(r) = d {
+        out.extend(r.rules.iter().map(|r| r.rhs));
+    }
+}
+
+#[derive(Default)]
+struct Convert<'a> {
+    names: FxHashMap<NamePtr<'a>, String>,
+    levels: FxHashMap<LevelPtr<'a>, OldLevel>,
+    expressions: FxHashMap<ExprPtr<'a>, Shared<OldExpr>>,
+}
+
+impl<'a> Convert<'a> {
+    fn declaration(&mut self, store: &Store<'a>, d: Declar<'a>, target: bool) -> ExportDependency {
+        match d {
+            Declar::Ind(_) | Declar::Ctor(_) | Declar::Rec(_) => {
+                ExportDependency::Inductive(self.block(store, store.blocks[&d.name()]))
+            }
+            Declar::Quot(info) => ExportDependency::Quotient {
+                name: self.name(info.name),
+                params: self.params(info.uparams),
+                ty: (*self.expr(info.ty)).clone(),
+                kind: match Some(info.name) {
+                    n if n == store.names.quot => "type",
+                    n if n == store.names.quot_mk => "ctor",
+                    n if n == store.names.quot_lift => "lift",
+                    n if n == store.names.quot_ind => "ind",
+                    _ => reject!("invalid quotient dependency"),
+                },
+            },
+            _ => ExportDependency::Ordinary {
+                name: self.name(d.name()),
+                params: self.params(d.uparams()),
+                ty: (*self.expr(d.ty())).clone(),
+                value: match d {
+                    Declar::Opaque(_, v) if target => Some((*self.expr(v)).clone()),
+                    _ => d.unfoldable().map(|(v, _)| (*self.expr(v)).clone()),
+                },
+            },
+        }
+    }
+
+    fn name(&mut self, name: NamePtr<'a>) -> String {
+        self.names
+            .entry(name)
+            .or_insert_with(|| {
+                let mut segments = Vec::new();
+                let mut n = name;
+                loop {
+                    match n.kind {
+                        Name::Anon => break,
+                        Name::Str(p, s, _) => {
+                            segments.push(serde_json::Value::String(s.s.into()));
+                            n = p;
+                        }
+                        Name::Num(p, i, _) => {
+                            segments.push(serde_json::Value::from(i));
+                            n = p;
+                        }
+                    }
+                }
+                segments.reverse();
+                serde_json::to_string(&segments).expect("name encoding")
+            })
+            .clone()
+    }
+
+    fn level(&mut self, l: LevelPtr<'a>) -> OldLevel {
+        if let Some(v) = self.levels.get(&l) {
+            return v.clone();
+        }
+        let v = match *l {
+            Level::Zero => OldLevel::Nat(0),
+            Level::Param(n, _) => OldLevel::Param(self.name(n)),
+            Level::Succ(l, _) => self.level(l).succ().unwrap_or_else(|e| reject!("{e}")),
+            Level::Max(a, b, _) => OldLevel::max(self.level(a), self.level(b)),
+            Level::IMax(a, b, _) => OldLevel::imax(self.level(a), self.level(b)),
+        };
+        self.levels.insert(l, v.clone());
+        v
+    }
+
+    fn params(&mut self, levels: LevelsPtr<'a>) -> Vec<String> {
+        levels
+            .iter()
+            .map(|l| match **l {
+                Level::Param(n, _) => self.name(n),
+                _ => reject!("invalid universe parameter"),
+            })
+            .collect()
+    }
+
+    fn expr(&mut self, e: ExprPtr<'a>) -> Shared<OldExpr> {
+        if let Some(v) = self.expressions.get(&e) {
+            return v.clone();
+        }
+        stacker::maybe_grow(128 << 10, 2 << 20, || {
+            let out = match *e {
+                Expr::Var { idx, .. } => OldExpr::Var(OldName::bound(usize::from(idx), 0)),
+                Expr::Sort { level, .. } => OldExpr::Sort(self.level(level)),
+                Expr::Const { name, levels, .. } => OldExpr::Const(
+                    self.name(name),
+                    levels.iter().map(|l| self.level(*l)).collect(),
+                ),
+                Expr::App { fun, arg, .. } => OldExpr::App(self.expr(fun), self.expr(arg)),
+                Expr::Lam { ty, body, .. } => {
+                    OldExpr::Lam(self.expr(ty), bind(OldName::new("x"), self.expr(body)))
+                }
+                Expr::Pi { ty, body, .. } => {
+                    OldExpr::Pi(self.expr(ty), bind(OldName::new("x"), self.expr(body)))
+                }
+                Expr::Let { data, .. } => OldExpr::Let(
+                    self.expr(data.ty),
+                    self.expr(data.val),
+                    bind(OldName::new("x"), self.expr(data.body)),
+                ),
+                Expr::Proj { name, idx, e, .. } => {
+                    OldExpr::Proj(self.name(name), usize::from(idx), self.expr(e))
+                }
+                Expr::NatLit { n, .. } => OldExpr::nat(n.as_ref().clone()),
+                Expr::StrLit { s, .. } => OldExpr::Str(s.s.into()),
+                Expr::Local { .. } => reject!("local in imported inductive declaration"),
+            };
+            let out = Shared::new(out);
+            self.expressions.insert(e, out.clone());
+            out
+        })
+    }
+
+    fn block(&mut self, store: &Store<'a>, b: Block) -> kernel::InductiveBlock {
+        let mut out = kernel::InductiveBlock {
+            types: Vec::new(),
+            constructors: Vec::new(),
+            recursors: Vec::new(),
+        };
+        for d in &store.declars[b.start as usize..b.end as usize] {
+            match *d {
+                Declar::Ind(i) => out.types.push(kernel::InductiveType {
+                    name: self.name(i.info.name),
+                    params: self.params(i.info.uparams),
+                    ty: (*self.expr(i.info.ty)).clone(),
+                    all: i.all.iter().map(|n| self.name(*n)).collect(),
+                    constructors: i.ctors.iter().map(|n| self.name(*n)).collect(),
+                    num_params: i.num_params.into(),
+                    num_indices: i.num_indices.into(),
+                    num_nested: i.num_nested,
+                    recursive: i.is_rec,
+                    reflexive: i.is_reflexive,
+                }),
+                Declar::Ctor(c) => out.constructors.push(kernel::Constructor {
+                    name: self.name(c.info.name),
+                    params: self.params(c.info.uparams),
+                    ty: (*self.expr(c.info.ty)).clone(),
+                    inductive: self.name(c.induct),
+                    index: c.cidx.into(),
+                    num_params: c.num_params.into(),
+                    num_fields: c.num_fields.into(),
+                }),
+                Declar::Rec(r) => out.recursors.push(kernel::Recursor {
+                    name: self.name(r.info.name),
+                    params: self.params(r.info.uparams),
+                    ty: (*self.expr(r.info.ty)).clone(),
+                    all: r.all.iter().map(|n| self.name(*n)).collect(),
+                    num_params: r.num_params.into(),
+                    num_indices: r.num_indices.into(),
+                    num_motives: r.num_motives.into(),
+                    num_minors: r.num_minors.into(),
+                    k: r.is_k,
+                    rules: r
+                        .rules
+                        .iter()
+                        .map(|r| kernel::RecursorRule {
+                            constructor: self.name(r.ctor),
+                            num_fields: r.nfields.into(),
+                            rhs: (*self.expr(r.rhs)).clone(),
+                        })
+                        .collect(),
+                }),
+                _ => unreachable!("non-inductive block member"),
+            }
+        }
+        out
     }
 }

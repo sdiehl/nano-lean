@@ -8,6 +8,7 @@ use std::{
 use unbound::prelude::*;
 mod cache;
 mod eval;
+pub mod export_validation;
 mod inductive;
 mod primitive;
 mod quotient;
@@ -39,6 +40,7 @@ pub struct Environment {
     constructors: HashMap<String, Rc<Constructor>>,
     recursors: HashMap<String, Rc<Recursor>>,
     quotients: BTreeSet<String>,
+    export_work: Option<Rc<std::cell::Cell<u64>>>,
 }
 
 impl Environment {
@@ -176,6 +178,13 @@ impl<'a> Checker<'a> {
         }
     }
     fn tick(&mut self) -> Result<()> {
+        if let Some(work) = &self.env.export_work {
+            work.set(
+                work.get()
+                    .checked_sub(1)
+                    .ok_or_else(|| Error("checking budget exhausted".into()))?,
+            );
+        }
         self.fuel = self
             .fuel
             .checked_sub(1)

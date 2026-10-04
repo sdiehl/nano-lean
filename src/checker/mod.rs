@@ -35,6 +35,33 @@ impl Default for Limits {
     }
 }
 
+/// Returns whether the existing kernel was needed after native arena exhaustion.
+/// Both engines share the declaration's work budget. Rejections never retry.
+pub fn check_declaration<'a>(
+    store: &'a Store<'a>,
+    arena: &mut Arena,
+    idx: u32,
+    mut limits: Limits,
+) -> Result<bool, crate::term::outcome::Failure> {
+    use crate::term::outcome::{self, Failure};
+    let mut tc = Tc::new(store, arena).with_limits(limits);
+    let result = outcome::run(|| tc.check(idx));
+    limits.steps = tc.steps_left;
+    drop(tc);
+    match result {
+        Err(Failure::Declined(reason)) if reason == "declaration arena budget exhausted" => {
+            arena.reset();
+            outcome::run(|| {
+                Tc::new(store, arena)
+                    .with_limits(limits)
+                    .check_existing(idx)
+            })
+            .map(|()| true)
+        }
+        result => result.map(|()| false),
+    }
+}
+
 pub struct Tc<'t, 'a: 't> {
     pub ctx: Ctx<'t, 'a>,
     pub(crate) names: Names<'t>,
@@ -90,6 +117,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     /// Check the declaration at `idx`. An inductive block is checked as a whole
     /// at its first type; its other members are skipped.
     pub fn check(&mut self, idx: u32) {
+        if self.ctx.arena.allocated_bytes() > self.limits.arena_bytes {
+            crate::unsupported!("declaration arena budget exhausted");
+        }
         self.infer_cache.iter_mut().for_each(|cache| cache.clear());
         self.whnf_core_cache.clear();
         self.whnf_cache.clear();
@@ -233,59 +263,69 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 }
                 self.ctx.declar_type(&d, levels)
             }
-            Expr::App { fun, arg, .. } => {
-                if only {
-                    self.infer_app_only(e)
-                } else {
-                    let ft = self.infer(fun, false);
-                    let ft = self.ensure_pi(ft);
-                    let Expr::Pi { ty, body, .. } = *ft else {
-                        unreachable!()
-                    };
-                    let at = self.infer(arg, false);
-                    ensure!(self.def_eq(at, ty), "application type mismatch");
-                    self.ctx.inst1(body, arg)
-                }
-            }
+            Expr::App { .. } => self.infer_app(e, only),
             Expr::Lam { .. } => self.infer_lam(e, only),
             Expr::Pi { .. } => self.infer_pi(e, only),
-            Expr::Let { data, .. } => {
-                if !only {
-                    self.check_type(data.ty);
-                    let vt = self.infer(data.val, false);
-                    ensure!(self.def_eq(vt, data.ty), "let value type mismatch");
-                }
-                let b = self.ctx.inst1(data.body, data.val);
-                self.infer(b, only)
-            }
+            Expr::Let { .. } => self.infer_let(e, only),
             Expr::Proj {
                 name, idx, e: s, ..
             } => self.infer_proj(name, idx, s, only),
-            Expr::NatLit { .. } => self.konst0(self.names.nat),
-            Expr::StrLit { .. } => self.konst0(self.names.string),
+            Expr::NatLit { .. } => self.literal_type(self.names.nat),
+            Expr::StrLit { .. } => self.literal_type(self.names.string),
         };
         self.infer_cache[usize::from(only)].insert(e, r);
         r
     }
 
-    fn infer_app_only(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
+    fn literal_type(&mut self, name: Option<NamePtr<'t>>) -> ExprPtr<'t> {
+        let ty = self.konst0(name);
+        let sort = self.infer(ty, true);
+        let one = self.ctx.succ(self.ctx.zero());
+        let expected = self.ctx.sort(one);
+        ensure!(self.def_eq(sort, expected), "invalid literal type");
+        ty
+    }
+
+    fn infer_app(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
         let (f, args) = self.ctx.unfold_apps(e);
-        let mut ft = self.infer(f, true);
+        let mut ft = self.infer(f, only);
         let mut j = 0;
         for i in 0..args.len() {
-            if let Expr::Pi { body, .. } = *ft {
-                ft = body;
-            } else {
+            self.tick();
+            if !ft.is_pi() {
                 ft = self.ctx.inst(ft, &args[j..i]);
                 ft = self.ensure_pi(ft);
-                let Expr::Pi { body, .. } = *ft else {
-                    unreachable!()
-                };
-                ft = body;
                 j = i;
             }
+            let Expr::Pi { ty, body, .. } = *ft else {
+                unreachable!()
+            };
+            if !only {
+                let domain = self.ctx.inst(ty, &args[j..i]);
+                let actual = self.infer(args[i], false);
+                ensure!(self.def_eq(actual, domain), "application type mismatch");
+            }
+            ft = body;
         }
         self.ctx.inst(ft, &args[j..])
+    }
+
+    fn infer_let(&mut self, mut e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
+        let mut values = Vec::new();
+        while let Expr::Let { data, .. } = *e {
+            self.tick();
+            let value = self.ctx.inst(data.val, &values);
+            if !only {
+                let ty = self.ctx.inst(data.ty, &values);
+                self.check_type(ty);
+                let actual = self.infer(value, false);
+                ensure!(self.def_eq(actual, ty), "let value type mismatch");
+            }
+            values.push(value);
+            e = data.body;
+        }
+        let body = self.ctx.inst(e, &values);
+        self.infer(body, only)
     }
 
     fn infer_lam(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
@@ -340,6 +380,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         only: bool,
     ) -> ExprPtr<'t> {
         let st = self.infer(s, only);
+        let is_prop = self.is_prop(st);
         let st = self.whnf(st);
         let (h, args) = self.ctx.unfold_apps(st);
         let Expr::Const {
@@ -358,7 +399,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             args.len() == usize::from(ind.num_params),
             "projection of a non-structure"
         );
-        let is_prop = self.is_prop(st);
         let ct = self.ctx.declar_type(&Declar::Ctor(ctor), levels);
         let mut r = self.ctx.inst_pis(ct, &args);
         for i in 0..idx {

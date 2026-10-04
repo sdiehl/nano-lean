@@ -580,7 +580,18 @@ impl<'a> Importer<'a> {
                 }
             }
             "quot" => {
-                string(&d["kind"])?;
+                let kind = string(&d["kind"])?;
+                let expected = match kind {
+                    "type" => "Quot",
+                    "ctor" => "Quot.mk",
+                    "lift" => "Quot.lift",
+                    "ind" => "Quot.ind",
+                    _ => return invalid("invalid quotient kind"),
+                };
+                let actual = self.name(idx(&d["name"])?)?;
+                if self.dag.lookup(self.anon, expected) != Some(actual) {
+                    return invalid("quotient kind and name disagree");
+                }
                 let info = self.info(
                     idx(&d["name"])?,
                     &idxs(&d["levelParams"])?,
@@ -623,12 +634,13 @@ impl<'a> Importer<'a> {
                 info,
                 is_rec: boolean(&t["isRec"])?,
                 is_nested: idx(&t["numNested"])? > 0,
+                num_nested: idx(&t["numNested"])? as usize,
+                is_reflexive: boolean(&t["isReflexive"])?,
                 num_params: small(&t["numParams"])?,
                 num_indices: small(&t["numIndices"])?,
                 all: self.names_of(&t["all"])?,
                 ctors: self.names_of(&t["ctors"])?,
             };
-            boolean(&t["isReflexive"])?;
             self.add_declar(Declar::Ind(ind))?;
         }
         if types.is_empty() {

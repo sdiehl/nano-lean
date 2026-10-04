@@ -5,7 +5,9 @@ use crate::{ensure, reject};
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
     fn c(&mut self, n: Option<NamePtr<'t>>, ls: &[LevelPtr<'t>]) -> ExprPtr<'t> {
-        let Some(n) = n else { reject!("quotient requires its builtin constants") };
+        let Some(n) = n else {
+            reject!("quotient requires its builtin constants")
+        };
         let ls = self.ctx.levels(ls);
         self.ctx.konst(n, ls)
     }
@@ -30,24 +32,49 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn check_eq(&mut self) {
-        let Some(eq) = self.names.eq else { reject!("quotient requires Eq") };
-        let Some(Declar::Ind(i)) = self.declar(eq) else { reject!("quotient requires the Eq inductive") };
-        ensure!(i.info.uparams.len() == 1 && i.ctors.len() == 1, "Eq has an unexpected shape");
+        let Some(eq) = self.names.eq else {
+            reject!("quotient requires Eq")
+        };
+        let Some(Declar::Ind(i)) = self.declar(eq) else {
+            reject!("quotient requires the Eq inductive")
+        };
+        ensure!(
+            i.info.uparams.len() == 1 && i.ctors.len() == 1,
+            "Eq has an unexpected shape"
+        );
         let u = i.info.uparams.as_ref()[0];
         let s = self.ctx.sort(u);
         let (v0, v1, p) = (self.v(0), self.v(1), self.ctx.prop());
         let want = self.pis(&[s, v0, v1], p);
         ensure!(self.def_eq(want, i.info.ty), "Eq has an unexpected type");
-        let Some(Declar::Ctor(k)) = self.declar(i.ctors[0]) else { reject!("Eq has an unexpected shape") };
+        let Some(Declar::Ctor(k)) = self.declar(i.ctors[0]) else {
+            reject!("Eq has an unexpected shape")
+        };
         let e = self.c(Some(eq), &[k.info.uparams.as_ref()[0]]);
         let (v0, v1) = (self.v(0), self.v(1));
         let b = self.ctx.apps(e, &[v1, v0, v0]);
         let s = self.ctx.sort(k.info.uparams.as_ref()[0]);
         let want = self.pis(&[s, v0], b);
-        ensure!(self.def_eq(want, k.info.ty), "Eq.refl has an unexpected type");
+        ensure!(
+            self.def_eq(want, k.info.ty),
+            "Eq.refl has an unexpected type"
+        );
     }
 
     pub(crate) fn check_quot(&mut self, i: Info<'t>) {
+        let prerequisites: &[Option<NamePtr<'t>>] = if Some(i.name) == self.names.quot {
+            &[]
+        } else if Some(i.name) == self.names.quot_mk {
+            &[self.names.quot]
+        } else {
+            &[self.names.quot, self.names.quot_mk]
+        };
+        for &prerequisite in prerequisites {
+            ensure!(
+                prerequisite.is_some_and(|name| matches!(self.declar(name), Some(Declar::Quot(_)))),
+                "missing quotient primitive"
+            );
+        }
         self.check_eq();
         let ps = i.uparams.as_ref();
         let n = Some(i.name);
@@ -96,6 +123,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         } else {
             reject!("unexpected quotient declaration {}", i.name.as_ref())
         };
-        ensure!(self.def_eq(want, i.ty), "quotient declaration {} has an unexpected type", i.name.as_ref());
+        ensure!(
+            self.def_eq(want, i.ty),
+            "quotient declaration {} has an unexpected type",
+            i.name.as_ref()
+        );
     }
 }

@@ -19,9 +19,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             return r;
         }
         let r = match *e {
-            Expr::Let { data, .. } => {
-                let b = self.ctx.inst1(data.body, data.val);
-                self.whnf_core(b, cheap)
+            Expr::Let { .. } => {
+                let mut values = Vec::new();
+                let mut body = e;
+                while let Expr::Let { data, .. } = *body {
+                    self.tick();
+                    values.push(self.ctx.inst(data.val, &values));
+                    body = data.body;
+                }
+                let body = self.ctx.inst(body, &values);
+                self.whnf_core(body, cheap)
             }
             Expr::App { .. } => {
                 let (f0, args) = self.ctx.unfold_apps(e);

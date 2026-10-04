@@ -1,81 +1,73 @@
-# TODO
+# Roadmap to full Mathlib
 
-- [x] Pin comparison revision, Lean/exporter versions, Mathlib input, and all fixtures
-- [x] Record the baseline and add reproducible fixture comparison with regression detection
-- [x] Import arbitrary-size natural number literals
-- [x] Infer natural number literal types
-- [x] Compare natural literals with constructor forms
-- [x] Reduce natural recursors over literals
-- [x] Implement Lean's primitive natural number operations
-- [x] Import string literals with Unicode preserved
-- [x] Infer string literal types
-- [x] Compare string literals with constructor forms
-- [x] Validate quotient primitive declaration signatures
-- [x] Implement quotient lift reduction
-- [x] Implement quotient induction reduction
-- [x] Test malformed quotient declarations are rejected
-- [x] Audit unsafe declaration handling against Lean
-- [x] Audit partial declaration handling against Lean
-- [x] Export and check a primitive regression fixture with large literals, Nat recursion, and quotient lifting
-- [x] Test Unicode import, natural arithmetic edge cases, and literal/quotient reclamation
-- [x] Export an ordinary inductive regression fixture
-- [x] Export a mutual inductive regression fixture
-- [x] Test higher-order recursive field reduction
-- [x] Test indexed recursor computation
-- [x] Test rejection of negative recursive occurrences
-- [x] Test rejection of forged recursor rules
-- [x] Test rejection of incorrect constructor metadata
-- [x] Test forbidden large elimination from Prop
-- [x] Test rollback after rejected inductive blocks
-- [x] Test dependent projection type inference
-- [x] Test forbidden data projections from Prop
-- [x] Test structure eta on neutral terms
-- [x] Test proof recursor K reduction
-- [x] Export a minimal nested inductive fixture
-- [x] Separate recursor generation from export validation
-- [x] Detect nested recursive type applications
-- [x] Generate auxiliary mutual types for nesting
-- [x] Specialize auxiliary constructors with nested parameters
-- [x] Restore nested types in generated recursors
-- [x] Validate exported nested recursor signatures
-- [x] Validate exported nested computation rules
-- [x] Handle differing nested recursor parameter counts
-- [x] Test rejection of invalid nested parameters
-- [x] Resolve nested-unused-param.ndjson rejection through nested-parameter validation
-- [x] Check init-prelude.ndjson beyond its nested-inductive block
-- [x] Check grind-ring-5.ndjson beyond its nested-inductive block
-- [x] Profile and fix Lean.ParserDescr checking exhaustion in init-prelude.ndjson
-- [x] Profile and fix Lean.Grind.Semiring checking exhaustion in grind-ring-5.ndjson
-- [x] Profile and fix List.zipWith.eq_def checking exhaustion in Init
-- [x] Profile and fix List.perm_inv_core checking exhaustion in Mathlib
-- [x] Profile and fix refute-cheap-last.ndjson exhaustion
-- [x] Profile and fix church-numerals.ndjson exhaustion
-- [x] Profile and fix folded-constant-first.ndjson exhaustion
-- [x] Profile and fix folded-constant-last.ndjson exhaustion
-- [x] Profile and fix irrelevance-before-evaluation.ndjson exhaustion
-- [x] Profile and fix shared-subterm.ndjson exhaustion
-- [x] Fix app-lam.ndjson stack overflow
-- [x] Profile and fix beta-ladder.ndjson timeout
-- [x] Profile and fix let-ladder.ndjson timeout
-- [x] Profile and fix fueled-chain.ndjson exhaustion
-- [x] Profile and fix magma-list-deep-n21.ndjson exhaustion
-- [x] Profile and fix magma-list-deep-n36.ndjson exhaustion
-- [x] Profile and fix magma-list-pair-n21.ndjson exhaustion
-- [x] Profile and fix magma-list-pair-n7.ndjson exhaustion
-- [x] Profile and fix shift-cascade.ndjson exhaustion
-- [x] Count projection references during importer prepass
-- [x] Count inductive references during importer prepass
-- [x] Test reclamation across inductive declaration boundaries
-- [x] Compare streaming and reclaimed import results
-- [x] Rerun all 193 export fixtures
-- [x] Split remaining failures into individual tasks
-- [x] Resolve checking exhaustion in Init `_private.Init.Data.Char.Ordinal.0.Char.succ?_eq._proof_1_10` at export line 3,681,944
-- [x] Continue the full Mathlib check beyond the 120-second exploratory run
-- [x] Retain theorem bodies for kernel reduction; resolve `Rat.instEncodable` at Mathlib export line 7,963,318
-- [x] Try K reduction before evaluating proofs and avoid forcing empty eliminators
-- [x] Prevent proof reuse from looping during reduction; resolve `Fin.insertNth_apply_succAbove`
-- [x] Quote deep closures iteratively and reuse computed numerals; resolve `Std.Time.Week.Offset.ofMilliseconds._proof_1`
-- [x] Add process-based parallel export checking with complete partition verification and a total memory budget
-- [ ] Check all 718,574 Mathlib declarations from Lean 4.34.1 in CI
-- [ ] Record checking time and peak memory
-- [ ] Confirm zero Mathlib errors and timeouts
+## Phase 1 — Foundational correctness and reproducible inputs
+
+- [x] Preserve exact inductive block boundaries and declaration visibility.
+- [x] Reject self references and unauthorized forward references.
+- [x] Prevent inference caches from bypassing declaration visibility.
+- [x] Compare proposition universes semantically rather than by pointer identity.
+- [x] Check foundational declarations, including `Eq.symm` and `congrArg`.
+- [x] Add small differential fixtures and malformed-input regression tests.
+- [x] Reconcile the pinned export count: 718,577 declarations.
+- [x] Track the experimental source and tests in a local checkpoint.
+
+## Phase 2 — Bounded memory and single-threaded Init
+
+- [x] Isolate the Int32 reduction blowup to one declaration.
+- [x] Resolve projections before prematurely unfolding arithmetic operations.
+- [x] Bound speculative congruence attempts and fall back after exhaustion.
+- [x] Free big-integer heap buffers when a declaration's arena is reset.
+- [x] Release oversized bump chunks between declarations.
+- [x] Add configurable declaration work and arena budgets.
+- [x] Report resource exhaustion as unsupported with a nonzero process exit.
+- [x] Verify that checking continues after a declaration exhausts its budget.
+- [x] Add declaration tracing and terminal progress with an ETA.
+- [x] Complete single-threaded Init under external memory, time, and pressure guards.
+- [x] Exercise bounded Mathlib prefixes and identify the next hotspot.
+
+## Phase 3 — Complete kernel validation
+
+- [x] Validate inductive parameters, indices, constructor types, and metadata.
+- [x] Enforce strict positivity and permitted elimination from Prop.
+- [x] Reconstruct and validate recursor signatures and computation rules.
+- [x] Handle mutual and nested inductive declarations without trusting export metadata.
+- [x] Audit projection typing, structure eta, and proof recursor K reduction.
+- [x] Audit quotient signatures, primitive reduction, and universe comparison.
+- [x] Run all 193 external export fixtures against the new checker.
+- [x] Add regressions for every mismatch with the existing kernel.
+- [x] Verify malformed exports cannot be accepted through caches or speculative paths.
+
+Inductive reconstruction reuses the existing kernel. Seven positive stress
+fixtures require a counted retry after native arena exhaustion; the fixture gate
+uses an explicit 100-million-step budget. Native-only completion remains below.
+
+## Phase 4 — Full Mathlib completion
+
+- [ ] Eliminate fallback on the application/beta/let ladders and four magma stress fixtures.
+- [ ] Reduce adapter overhead while preserving shared inductive validation.
+- [ ] Isolate and fix `AlgebraicGeometry.ΓSpec.adjunction._proof_3`.
+- [ ] Recheck the 100,000-declaration prefix with zero unsupported declarations.
+- [ ] Increase prefix sizes incrementally, recording the first failure and peak RSS.
+- [ ] Reduce remaining failures to single-declaration regression cases.
+- [ ] Fix reduction, universe, or allocation hotspots before increasing budgets.
+- [ ] Check the complete pinned export with zero failures or unsupported declarations.
+- [ ] Verify the input digest and all 718,577 declaration outcomes.
+
+## Phase 5 — Performance and shared parallel checking
+
+- [ ] Profile the successful full run to rank remaining costs.
+- [ ] Optimize measured conversion, substitution, interning, and cache hotspots.
+- [ ] Avoid reconstructing terms or environments unnecessarily during unfolding.
+- [ ] Evaluate allocator and release-profile changes with comparable runs.
+- [ ] Validate shared-store threaded checking against single-threaded outcomes.
+- [ ] Measure scaling under a total memory budget, including worker-local arenas.
+- [ ] Preserve correctness regressions and report import and checking time separately.
+
+## Phase 6 — CI and supported integration
+
+- [ ] Integrate the new checker into the supported CLI after correctness gates pass.
+- [ ] Run its regression suite and full pinned Mathlib check in CI.
+- [ ] Preserve dependency and export caches even when checking fails.
+- [ ] Keep progress, resource-exhaustion diagnostics, and final counts visible in CI.
+- [ ] Make success require every declaration and the expected input digest.
+- [ ] Document supported behavior, remaining limitations, and reproduction commands.

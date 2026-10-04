@@ -65,7 +65,11 @@ fn main() {
         Ok(store) => store,
         Err(e) => {
             println!("{e}");
-            std::process::exit(2);
+            let code = match e {
+                import::ImportError::Invalid(_) => 1,
+                import::ImportError::Unsupported(_) => 2,
+            };
+            std::process::exit(code);
         }
     };
     let s = store.stats;
@@ -101,6 +105,7 @@ fn main() {
     let t = std::time::Instant::now();
     let next = AtomicU32::new(0);
     let fails = AtomicUsize::new(0);
+    let fallbacks = AtomicUsize::new(0);
     let n = indices.len() as u32;
     let exit = AtomicUsize::new(0);
     let progress = if trace {
@@ -128,11 +133,10 @@ fn main() {
                         if trace {
                             eprintln!("start {idx} {}", store.declars[idx as usize].name());
                         }
-                        let r = term::outcome::run(|| {
-                            checker::Tc::new(&store, &local)
-                                .with_limits(limits)
-                                .check(idx)
-                        });
+                        let r = checker::check_declaration(&store, &mut local, idx, limits);
+                        if matches!(r, Ok(true)) {
+                            fallbacks.fetch_add(1, Relaxed);
+                        }
                         if trace {
                             eprintln!(
                                 "end {idx} elapsed {:?} arena {} bytes",
@@ -161,10 +165,11 @@ fn main() {
     });
     progress.finish_and_clear();
     eprintln!(
-        "experimental signature/body checks {:.2?}: {} attempted, {} failures; inductive validation incomplete",
+        "experimental checks {:.2?}: {} attempted, {} failures, {} fallbacks",
         t.elapsed(),
         n,
-        fails.load(Relaxed)
+        fails.load(Relaxed),
+        fallbacks.load(Relaxed)
     );
     if exit.load(Relaxed) != 0 {
         std::process::exit(exit.load(Relaxed) as i32);

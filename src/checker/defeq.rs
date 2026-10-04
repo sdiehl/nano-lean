@@ -157,14 +157,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         {
             return true;
         }
+        // Proof equality depends on types, not on evaluating proof bodies.
+        if let Some(r) = self.proof_irrel(t, s) {
+            return r;
+        }
         let tn = self.whnf_core(t, true);
         let sn = self.whnf_core(s, true);
         if (tn != t || sn != s)
             && let Some(r) = self.quick(tn, sn)
         {
-            return r;
-        }
-        if let Some(r) = self.proof_irrel(tn, sn) {
             return r;
         }
         let (tn, sn) = match self.lazy_delta(tn, sn) {
