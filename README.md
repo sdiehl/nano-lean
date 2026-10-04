@@ -31,6 +31,22 @@ Set `NANO_LEAN_TRACE=1` to log each declaration to stderr during a long export c
 Build with `--features profile` to emit evaluator allocation counts and inclusive
 timings to stderr after each export check. Profiling is disabled in normal builds.
 
+The experimental arena checker is available separately:
+
+```sh
+cargo run --release --example nl -- FILE.ndjson
+cargo test --example nl
+```
+
+It defaults to one worker and displays terminal progress with an ETA. Use
+`--declaration NAME` or `--limit N` to isolate work, and `--trace` for declaration
+names, timings, and arena sizes. Per-declaration defaults are 10 million work
+steps and 64 MiB of term storage; adjust with `--steps N` and `--arena-mib N`.
+These are cooperative checker budgets, not process RSS limits. Exhaustion is
+reported as unsupported and causes a nonzero exit, while remaining declarations
+are still attempted. Inductive validation is incomplete, so a successful run of
+this driver is not full kernel verification.
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.

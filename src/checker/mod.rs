@@ -11,13 +11,29 @@ mod whnf;
 
 use crate::term::FxHashMap;
 use crate::term::FxHashSet;
+use crate::term::arena::Arena;
 use crate::term::ctx::Ctx;
 use crate::term::decl::{Constructor, Declar, Inductive};
 use crate::term::expr::Expr;
 use crate::term::intern::{Names, Store};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
-use bumpalo::Bump;
+
+/// Resource exhaustion is unsupported, never a successful check or a rejection.
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub steps: u64,
+    pub arena_bytes: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            steps: 10_000_000,
+            arena_bytes: 64 << 20,
+        }
+    }
+}
 
 pub struct Tc<'t, 'a: 't> {
     pub ctx: Ctx<'t, 'a>,
@@ -26,6 +42,11 @@ pub struct Tc<'t, 'a: 't> {
     /// Declarations at or past this index are not yet in scope.
     pub(crate) limit: u32,
     next_local: u32,
+    probe_remaining: Option<u32>,
+    limits: Limits,
+    steps_left: u64,
+    #[cfg(test)]
+    probe_exhaustions: usize,
     infer_cache: [FxHashMap<ExprPtr<'t>, ExprPtr<'t>>; 2],
     pub(crate) whnf_core_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
@@ -34,7 +55,7 @@ pub struct Tc<'t, 'a: 't> {
 }
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    pub fn new(store: &'a Store<'a>, arena: &'t Bump) -> Self {
+    pub fn new(store: &'a Store<'a>, arena: &'t Arena) -> Self {
         let ctx = Ctx::new(store, arena);
         let uparams = ctx
             .store
@@ -47,12 +68,23 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             uparams,
             limit: 0,
             next_local: 0,
+            probe_remaining: None,
+            limits: Limits::default(),
+            steps_left: Limits::default().steps,
+            #[cfg(test)]
+            probe_exhaustions: 0,
             infer_cache: Default::default(),
             whnf_core_cache: FxHashMap::default(),
             whnf_cache: FxHashMap::default(),
             eq_cache: FxHashSet::default(),
             fail_cache: FxHashSet::default(),
         }
+    }
+
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self.steps_left = limits.steps;
+        self
     }
 
     /// Check the declaration at `idx`. An inductive block is checked as a whole
@@ -63,6 +95,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.whnf_cache.clear();
         self.eq_cache.clear();
         self.fail_cache.clear();
+        self.probe_remaining = None;
+        self.steps_left = self.limits.steps;
         let d: Declar<'t> = self.ctx.store.declars[idx as usize];
         self.uparams = d.uparams();
         self.limit = idx;
@@ -166,6 +200,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub fn infer(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
+        self.tick();
         if let Some(&r) = self.infer_cache[0].get(&e) {
             return r;
         }

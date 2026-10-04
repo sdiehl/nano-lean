@@ -3,7 +3,7 @@ use super::level::Level;
 use super::name::{Name, NameNode, NatRed, StrNode};
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
-use bumpalo::Bump;
+use crate::term::arena::Arena;
 use hashbrown::HashTable;
 use num_bigint::BigUint;
 
@@ -109,7 +109,7 @@ impl<'a> Dag<'a> {
             .map(NamePtr::new)
     }
 
-    pub fn add_name(&mut self, arena: &'a Bump, n: Name<'a>) -> NamePtr<'a> {
+    pub fn add_name(&mut self, arena: &'a Arena, n: Name<'a>) -> NamePtr<'a> {
         NamePtr::new(self.names.insert(arena.alloc(NameNode::new(n))))
     }
 
@@ -119,7 +119,7 @@ impl<'a> Dag<'a> {
             .map(StringPtr::new)
     }
 
-    pub fn add_str(&mut self, arena: &'a Bump, s: &str) -> StringPtr<'a> {
+    pub fn add_str(&mut self, arena: &'a Arena, s: &str) -> StringPtr<'a> {
         let hash = hash64!(s);
         let s = arena.alloc_str(s);
         StringPtr::new(self.strings.insert(arena.alloc(StrNode { s, hash })))
@@ -137,7 +137,7 @@ impl<'a> Dag<'a> {
             .map(LevelPtr::new)
     }
 
-    pub fn add_level(&mut self, arena: &'a Bump, l: Level<'a>) -> LevelPtr<'a> {
+    pub fn add_level(&mut self, arena: &'a Arena, l: Level<'a>) -> LevelPtr<'a> {
         LevelPtr::new(self.levels.insert(arena.alloc(l)))
     }
 
@@ -153,7 +153,7 @@ impl<'a> Dag<'a> {
             .map(LevelsPtr::new)
     }
 
-    pub fn add_levels(&mut self, arena: &'a Bump, ls: &[LevelPtr<'a>]) -> LevelsPtr<'a> {
+    pub fn add_levels(&mut self, arena: &'a Arena, ls: &[LevelPtr<'a>]) -> LevelsPtr<'a> {
         LevelsPtr::new(self.level_lists.insert(arena.alloc_slice_copy(ls)))
     }
 
@@ -169,7 +169,7 @@ impl<'a> Dag<'a> {
             .map(|r| ExprPtr::new(r, meta_of(r)))
     }
 
-    pub fn add_expr(&mut self, arena: &'a Bump, e: Expr<'a>, meta: u16) -> ExprPtr<'a> {
+    pub fn add_expr(&mut self, arena: &'a Arena, e: Expr<'a>, meta: u16) -> ExprPtr<'a> {
         ExprPtr::new(self.exprs.insert(arena.alloc(e)), meta)
     }
 
@@ -177,8 +177,8 @@ impl<'a> Dag<'a> {
         self.nats.find(hash64!(n), |s| s == n).map(BigUintPtr::new)
     }
 
-    pub fn add_nat(&mut self, arena: &'a Bump, n: BigUint) -> BigUintPtr<'a> {
-        BigUintPtr::new(self.nats.insert(arena.alloc(n)))
+    pub fn add_nat(&mut self, arena: &'a Arena, n: BigUint) -> BigUintPtr<'a> {
+        BigUintPtr::new(self.nats.insert(arena.alloc_nat(n)))
     }
 
     /// Resolve a dotted name against the interned names, without allocating.

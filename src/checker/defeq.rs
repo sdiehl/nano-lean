@@ -16,6 +16,7 @@ fn unfold_order(t: Hint, s: Hint) -> Ordering {
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
     pub fn def_eq(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
+        self.tick();
         if t == s || self.eq_cache.contains(&(t, s)) {
             return true;
         }
@@ -25,6 +26,44 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             self.eq_cache.insert((s, t));
         }
         r
+    }
+
+    pub(crate) fn tick(&mut self) {
+        if self.steps_left == 0 {
+            crate::unsupported!("declaration work budget exhausted");
+        }
+        self.steps_left -= 1;
+        if self.steps_left & 1023 == 0 && self.ctx.arena.allocated_bytes() > self.limits.arena_bytes
+        {
+            crate::unsupported!("declaration arena budget exhausted");
+        }
+        if let Some(remaining) = &mut self.probe_remaining {
+            if *remaining == 0 {
+                std::panic::panic_any(crate::term::outcome::ProbeExhausted);
+            }
+            *remaining -= 1;
+        }
+    }
+
+    /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
+    fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
+        if self.probe_remaining.is_some() {
+            return self.args_eq(t, s);
+        }
+        self.probe_remaining = Some(2048);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.args_eq(t, s)));
+        self.probe_remaining = None;
+        match result {
+            Ok(equal) => equal,
+            Err(p) if p.is::<crate::term::outcome::ProbeExhausted>() => {
+                #[cfg(test)]
+                {
+                    self.probe_exhaustions += 1;
+                }
+                false
+            }
+            Err(p) => std::panic::resume_unwind(p),
+        }
     }
 
     fn quick(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
@@ -95,6 +134,26 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             && !t.has_local()
             && s.const_name() == Some(bt)
             && self.whnf(t).const_name() == Some(bt)
+        {
+            return true;
+        }
+        if t.num_args() == s.num_args()
+            && t.num_args() > 0
+            && let (
+                Expr::Const {
+                    name: a,
+                    levels: la,
+                    ..
+                },
+                Expr::Const {
+                    name: b,
+                    levels: lb,
+                    ..
+                },
+            ) = (*t.head(), *s.head())
+            && a == b
+            && self.ctx.levels_eq(la, lb)
+            && self.probe_args(t, s)
         {
             return true;
         }
@@ -235,7 +294,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                             && a == b
                             && !self.fail_cache.contains(&(t, s))
                         {
-                            if self.ctx.levels_eq(la, lb) && self.args_eq(t, s) {
+                            if self.ctx.levels_eq(la, lb) && self.probe_args(t, s) {
                                 return Ok(true);
                             }
                             self.fail_cache.insert((t, s));

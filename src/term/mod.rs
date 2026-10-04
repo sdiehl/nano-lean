@@ -1,5 +1,6 @@
 //! Arena-allocated, hash-consed de Bruijn terms shared by the importer and the checker.
 
+pub mod arena;
 pub mod ctx;
 pub mod decl;
 pub mod expr;

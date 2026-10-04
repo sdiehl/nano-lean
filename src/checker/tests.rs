@@ -6,10 +6,10 @@ use std::io::Cursor;
 const FOUNDATIONS: &[u8] = include_bytes!("../../tests/fixtures/foundations.ndjson");
 
 fn check_all(bytes: &[u8]) -> Result<usize, String> {
-    let arena = Bump::new();
+    let arena = Arena::new();
     let store = import_bytes(&arena, bytes).map_err(|e| e.to_string())?;
     for index in 0..store.declars.len() {
-        let local = Bump::new();
+        let local = Arena::new();
         outcome::run(|| Tc::new(&store, &local).check(index as u32))
             .map_err(|e| format!("{}: {}", store.declars[index].name(), e.reason()))?;
     }
@@ -21,7 +21,7 @@ fn foundational_signatures_and_theorems_agree_with_existing_kernel() {
     let count = check_all(FOUNDATIONS).unwrap();
     let legacy = nano_lean::export::check_export(Cursor::new(FOUNDATIONS)).unwrap();
     assert_eq!(count, legacy.declarations);
-    let arena = Bump::new();
+    let arena = Arena::new();
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
     for name in [
         "Nat", "Or", "Eq", "List", "Array", "Subtype", "Eq.symm", "congrArg",
@@ -45,7 +45,7 @@ fn adjacent_and_mutual_blocks_keep_exact_boundaries() {
                 .unwrap()
                 .declarations
         );
-        let arena = Bump::new();
+        let arena = Arena::new();
         let store = import_bytes(&arena, input).unwrap();
         for (index, d) in store.declars.iter().enumerate() {
             if let Some(block) = store.blocks.get(&d.name()) {
@@ -94,9 +94,9 @@ fn export_groups_never_authorize_self_or_forward_references() {
 #[test]
 fn a_reused_checker_cannot_reuse_types_from_a_later_scope() {
     let input = forward_reference(false);
-    let arena = Bump::new();
+    let arena = Arena::new();
     let store = import_bytes(&arena, &input).unwrap();
-    let local = Bump::new();
+    let local = Arena::new();
     let mut tc = Tc::new(&store, &local);
     tc.limit = store.declars.len() as u32;
     let levels = tc.empty_levels();
@@ -110,9 +110,9 @@ fn a_reused_checker_cannot_reuse_types_from_a_later_scope() {
 
 #[test]
 fn proposition_detection_compares_universes_semantically() {
-    let arena = Bump::new();
+    let arena = Arena::new();
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
-    let local = Bump::new();
+    let local = Arena::new();
     let mut tc = Tc::new(&store, &local);
     let name = tc.ctx.str1("u");
     let u = tc.ctx.param(name);
@@ -144,4 +144,86 @@ fn malformed_foundation_theorem_is_rejected_by_both_checkers() {
     let input = lines.iter().map(|v| format!("{v}\n")).collect::<String>();
     assert!(check_all(input.as_bytes()).is_err());
     assert!(nano_lean::export::check_export(Cursor::new(input)).is_err());
+}
+
+const REDUCTION: &[u8] = include_bytes!("../../tests/fixtures/reduction.ndjson");
+
+#[test]
+fn failed_and_exhausted_congruence_probes_fall_back_to_unfolding() {
+    assert_eq!(
+        check_all(REDUCTION).unwrap(),
+        nano_lean::export::check_export(Cursor::new(REDUCTION))
+            .unwrap()
+            .declarations
+    );
+    let arena = Arena::new();
+    let store = import_bytes(&arena, REDUCTION).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let body = |name| {
+        store
+            .declars
+            .iter()
+            .find_map(|d| match *d {
+                Declar::Def(info, value, _) if info.name.to_string() == name => Some(value),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!(tc.def_eq(body("PhaseTwo.erasedCostly"), body("PhaseTwo.erasedOne")));
+    assert!(tc.probe_remaining.is_none());
+    assert!(tc.probe_exhaustions > 0);
+    let one = tc.ctx.nat_lit(1u32.into());
+    let two = tc.ctx.nat_lit(2u32.into());
+    assert!(!tc.def_eq(one, two));
+    assert!(local.allocated_bytes() < 2 << 20);
+}
+
+#[test]
+fn projections_expose_operations_before_expensive_natural_reduction() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, REDUCTION).unwrap();
+    let local = Arena::new();
+    let mut tc = Tc::new(&store, &local);
+    tc.limit = store.declars.len() as u32;
+    let body = |name| {
+        store
+            .declars
+            .iter()
+            .find_map(|d| match *d {
+                Declar::Def(info, value, _) if info.name.to_string() == name => Some(value),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let direct = body("PhaseTwo.direct");
+    let projected = body("PhaseTwo.projected");
+    // Bound the regression itself: the old reduction order traversed billions
+    // of successors. Exhaustion here must fail the test, not hang the suite.
+    tc.probe_remaining = Some(10_000);
+    outcome::run(|| assert!(tc.def_eq(direct, projected)))
+        .unwrap_or_else(|e| panic!("{}", e.reason()));
+    assert!(local.allocated_bytes() < 1 << 20);
+}
+
+#[test]
+fn resource_exhaustion_is_unsupported_and_the_next_check_can_proceed() {
+    let arena = Arena::new();
+    let store = import_bytes(&arena, REDUCTION).unwrap();
+    let mut local = Arena::new();
+    let failure = outcome::run(|| {
+        Tc::new(&store, &local)
+            .with_limits(Limits {
+                steps: 0,
+                arena_bytes: 1 << 20,
+            })
+            .check(0);
+    })
+    .err()
+    .expect("zero budget must not succeed");
+    assert_eq!(failure.status(), "unsupported");
+    assert_eq!(failure.exit_code(), 2);
+    local.reset();
+    outcome::run(|| Tc::new(&store, &local).check(0)).unwrap_or_else(|e| panic!("{}", e.reason()));
 }

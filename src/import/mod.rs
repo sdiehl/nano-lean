@@ -5,13 +5,13 @@ mod scan;
 
 use crate::hash64;
 use crate::term::FxHashMap;
+use crate::term::arena::Arena;
 use crate::term::decl::{Constructor, Declar, Hint, Inductive, Info, RecRule, Recursor};
 use crate::term::expr::{Expr, LetData, mk};
 use crate::term::intern::{Block, Dag, Names, Stats, Store};
 use crate::term::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::term::name::{NUM_HASH, Name, STR_HASH};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
-use bumpalo::Bump;
 use num_bigint::BigUint;
 use scan::Line;
 use serde_json::Value;
@@ -45,7 +45,7 @@ fn unsupported<T>(s: impl Into<String>) -> Result<T> {
 }
 
 struct Importer<'a> {
-    arena: &'a Bump,
+    arena: &'a Arena,
     dag: Dag<'a>,
     anon: NamePtr<'a>,
     zero: LevelPtr<'a>,
@@ -78,7 +78,7 @@ fn put<T>(v: &mut Vec<Option<T>>, i: u32, x: T) -> Result<()> {
 }
 
 impl<'a> Importer<'a> {
-    fn new(arena: &'a Bump, bytes: usize) -> Self {
+    fn new(arena: &'a Arena, bytes: usize) -> Self {
         let mut dag = Dag::default();
         let anon = dag.add_name(arena, Name::Anon);
         let zero = dag.add_level(arena, Level::Zero);
@@ -754,7 +754,7 @@ fn boolean(v: &Value) -> Result<bool> {
 }
 
 /// Import an export file into `arena`, streaming it so the file is never resident.
-pub fn import<'a>(arena: &'a Bump, path: impl AsRef<Path>) -> Result<Store<'a>> {
+pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>> {
     use std::io::BufRead;
     let io = |e: std::io::Error| ImportError::Invalid(e.to_string());
     let file = std::fs::File::open(path).map_err(io)?;
@@ -788,7 +788,7 @@ fn at(e: ImportError, n: usize) -> ImportError {
     }
 }
 
-pub fn import_bytes<'a>(arena: &'a Bump, bytes: &[u8]) -> Result<Store<'a>> {
+pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
     let mut im = Importer::new(arena, bytes.len());
     let mut n = 0usize;
     for line in bytes.split(|&c| c == b'\n') {

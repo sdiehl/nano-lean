@@ -8,12 +8,12 @@ use super::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use super::name::{NUM_HASH, Name, STR_HASH as NAME_STR_HASH};
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
-use bumpalo::Bump;
+use crate::term::arena::Arena;
 use num_bigint::BigUint;
 
 pub struct Ctx<'t, 'a: 't> {
     pub store: &'a Store<'a>,
-    pub arena: &'t Bump,
+    pub arena: &'t Arena,
     pub dag: Dag<'t>,
     /// Memo for one traversal: key (expr, op and offset) to (generation, result).
     pub(crate) memo: FxHashMap<(ExprPtr<'t>, u32), (u32, ExprPtr<'t>)>,
@@ -23,7 +23,7 @@ pub struct Ctx<'t, 'a: 't> {
 }
 
 impl<'t, 'a: 't> Ctx<'t, 'a> {
-    pub fn new(store: &'a Store<'a>, arena: &'t Bump) -> Self {
+    pub fn new(store: &'a Store<'a>, arena: &'t Arena) -> Self {
         Self {
             store,
             arena,
@@ -178,11 +178,27 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         self.expr(mk::pi(ty, body))
     }
 
-    pub fn let_(&mut self, ty: ExprPtr<'t>, val: ExprPtr<'t>, body: ExprPtr<'t>, nondep: bool) -> ExprPtr<'t> {
-        let probe = LetData { ty, val, body, nondep };
+    pub fn let_(
+        &mut self,
+        ty: ExprPtr<'t>,
+        val: ExprPtr<'t>,
+        body: ExprPtr<'t>,
+        nondep: bool,
+    ) -> ExprPtr<'t> {
+        let probe = LetData {
+            ty,
+            val,
+            body,
+            nondep,
+        };
         let (hash, nlb) = mk::let_(probe);
         let e = Expr::Let { data: &probe, hash };
-        if let Some(p) = self.store.dag.find_expr(&e).or_else(|| self.dag.find_expr(&e)) {
+        if let Some(p) = self
+            .store
+            .dag
+            .find_expr(&e)
+            .or_else(|| self.dag.find_expr(&e))
+        {
             return p;
         }
         let data = self.arena.alloc(probe);

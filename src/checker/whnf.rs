@@ -11,6 +11,7 @@ const BIG_EXP: u64 = 1 << 24;
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
     pub fn whnf_core(&mut self, e: ExprPtr<'t>, cheap: bool) -> ExprPtr<'t> {
+        self.tick();
         if !matches!(*e, Expr::App { .. } | Expr::Let { .. } | Expr::Proj { .. }) {
             return e;
         }
@@ -47,7 +48,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     self.whnf_core(r, cheap)
                 }
             }
-            Expr::Proj { idx, e: s, .. } => match self.reduce_proj(idx, s, cheap) {
+            Expr::Proj { idx, e: s, .. } => match self.reduce_proj(idx, s) {
                 Some(r) => self.whnf_core(r, cheap),
                 None => e,
             },
@@ -77,6 +78,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
         let mut t = e;
         let r = loop {
+            self.tick();
             let t1 = self.whnf_core(t, false);
             if let Some(v) = self.reduce_nat(t1) {
                 break v;
@@ -118,12 +120,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Some(self.ctx.apps(v, &args))
     }
 
-    fn reduce_proj(&mut self, idx: u16, s: ExprPtr<'t>, cheap: bool) -> Option<ExprPtr<'t>> {
-        let mut c = if cheap {
-            self.whnf_core(s, cheap)
-        } else {
-            self.whnf(s)
-        };
+    fn reduce_proj(&mut self, idx: u16, s: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
+        // Expose the structure even during cheap reduction. Otherwise a hidden
+        // operation can make conversion unfold its visible counterpart too early.
+        let mut c = self.whnf(s);
         if let Expr::StrLit { s, .. } = *c {
             let x = self.str_to_ctor(s);
             c = self.whnf(x);

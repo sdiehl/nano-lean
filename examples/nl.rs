@@ -7,6 +7,7 @@ pub mod import;
 #[path = "../src/term/mod.rs"]
 pub mod term;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 #[global_allocator]
@@ -14,13 +15,15 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args
-        .next()
-        .expect("usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only]");
+    let path = args.next().expect(
+        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N]",
+    );
     let mut threads = 1usize;
     let mut selected = None;
     let mut limit = usize::MAX;
     let mut import_only = false;
+    let mut trace = false;
+    let mut limits = checker::Limits::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--declaration" => selected = Some(args.next().expect("missing declaration name")),
@@ -32,6 +35,23 @@ fn main() {
                     .expect("invalid limit")
             }
             "--import-only" => import_only = true,
+            "--trace" => trace = true,
+            "--steps" => {
+                limits.steps = args
+                    .next()
+                    .expect("missing steps")
+                    .parse()
+                    .expect("invalid steps")
+            }
+            "--arena-mib" => {
+                limits.arena_bytes = args
+                    .next()
+                    .expect("missing arena limit")
+                    .parse::<usize>()
+                    .expect("invalid arena limit")
+                    .checked_mul(1 << 20)
+                    .expect("arena limit overflow")
+            }
             _ => threads = arg.parse().expect("invalid thread count or option"),
         }
     }
@@ -40,7 +60,7 @@ fn main() {
         "thread count must be between 1 and 64"
     );
     let t = std::time::Instant::now();
-    let arena = bumpalo::Bump::new();
+    let arena = term::arena::Arena::new();
     let store = match import::import(&arena, &path) {
         Ok(store) => store,
         Err(e) => {
@@ -83,20 +103,45 @@ fn main() {
     let fails = AtomicUsize::new(0);
     let n = indices.len() as u32;
     let exit = AtomicUsize::new(0);
+    let progress = if trace {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(u64::from(n))
+    };
+    progress.set_style(ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise}"
+    ).expect("valid progress template"));
+    progress.enable_steady_tick(std::time::Duration::from_millis(250));
     std::thread::scope(|sc| {
         for _ in 0..threads {
             std::thread::Builder::new()
                 .stack_size(64 << 20)
                 .spawn_scoped(sc, || {
-                    let mut local = bumpalo::Bump::new();
+                    let mut local = term::arena::Arena::new();
                     loop {
                         let job = next.fetch_add(1, Relaxed);
                         if job >= n {
                             break;
                         }
                         let idx = indices[job as usize];
-                        let r = term::outcome::run(|| checker::Tc::new(&store, &local).check(idx));
+                        let started = std::time::Instant::now();
+                        if trace {
+                            eprintln!("start {idx} {}", store.declars[idx as usize].name());
+                        }
+                        let r = term::outcome::run(|| {
+                            checker::Tc::new(&store, &local)
+                                .with_limits(limits)
+                                .check(idx)
+                        });
+                        if trace {
+                            eprintln!(
+                                "end {idx} elapsed {:?} arena {} bytes",
+                                started.elapsed(),
+                                local.allocated_bytes()
+                            );
+                        }
                         local.reset();
+                        progress.inc(1);
                         if let Err(f) = r {
                             exit.fetch_max(f.exit_code() as usize, Relaxed);
                             let k = fails.fetch_add(1, Relaxed);
@@ -114,6 +159,7 @@ fn main() {
                 .unwrap();
         }
     });
+    progress.finish_and_clear();
     eprintln!(
         "experimental signature/body checks {:.2?}: {} attempted, {} failures; inductive validation incomplete",
         t.elapsed(),

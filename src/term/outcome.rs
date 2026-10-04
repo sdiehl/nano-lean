@@ -7,6 +7,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub struct Reject(pub String);
 pub struct Decline(pub String);
 
+/// Internal control flow: an inconclusive speculative comparison.
+pub(crate) struct ProbeExhausted;
+
 #[macro_export]
 macro_rules! reject {
     ($($a:tt)+) => { ::std::panic::panic_any($crate::term::outcome::Reject(::std::format!($($a)+))) };
@@ -76,7 +79,7 @@ pub fn install_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let p = info.payload();
-        if !p.is::<Reject>() && !p.is::<Decline>() {
+        if !p.is::<Reject>() && !p.is::<Decline>() && !p.is::<ProbeExhausted>() {
             prev(info);
         }
     }));
