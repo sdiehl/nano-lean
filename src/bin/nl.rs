@@ -2,7 +2,9 @@
 
 use indicatif::{ProgressBar, ProgressStyle};
 use nano_lean::{checker, import, term};
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::mpsc;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -110,62 +112,101 @@ fn main() {
         ProgressBar::new(u64::from(n))
     };
     progress.set_style(ProgressStyle::with_template(
-        "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise}"
+        "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}"
     ).expect("valid progress template"));
+    let tally = || {
+        format!(
+            "{} fail, {} fallback",
+            fails.load(Relaxed),
+            fallbacks.load(Relaxed)
+        )
+    };
+    progress.set_message(tally());
     progress.enable_steady_tick(std::time::Duration::from_millis(250));
+    let (stop, stopped) = mpsc::channel::<()>();
     std::thread::scope(|sc| {
-        for _ in 0..threads {
-            std::thread::Builder::new()
-                .stack_size(64 << 20)
-                .spawn_scoped(sc, || {
-                    let mut local = term::arena::Arena::new();
-                    let mut adapter = checker::Adapter::new(&store);
-                    loop {
-                        let job = next.fetch_add(1, Relaxed);
-                        if job >= n {
-                            break;
-                        }
-                        let idx = indices[job as usize];
-                        let started = std::time::Instant::now();
-                        if trace {
-                            eprintln!("start {idx} {}", store.declars[idx as usize].name());
-                        }
-                        let r = checker::check_with_adapter(
-                            &store,
-                            &mut local,
-                            idx,
-                            limits,
-                            Some(&mut adapter),
-                            native_only,
-                        );
-                        if matches!(r, Ok(true)) {
-                            fallbacks.fetch_add(1, Relaxed);
-                        }
-                        if trace {
-                            eprintln!(
-                                "end {idx} elapsed {:?} arena {} bytes",
-                                started.elapsed(),
-                                local.allocated_bytes()
+        // Stop the reporter even if joining a worker unwinds.
+        let stop = stop;
+        if !trace && !std::io::stderr().is_terminal() {
+            let (progress, tally) = (&progress, &tally);
+            sc.spawn(move || {
+                while let Err(mpsc::RecvTimeoutError::Timeout) =
+                    stopped.recv_timeout(std::time::Duration::from_secs(10))
+                {
+                    let eta = progress.eta().as_secs();
+                    eprintln!(
+                        "[progress] {}/{n} checked; {:.0}/s; estimated remaining {}m {}s; {}",
+                        progress.position(),
+                        progress.per_sec(),
+                        eta / 60,
+                        eta % 60,
+                        tally()
+                    );
+                }
+            });
+        }
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .stack_size(64 << 20)
+                    .spawn_scoped(sc, || {
+                        let mut local = term::arena::Arena::new();
+                        let mut adapter = checker::Adapter::new(&store);
+                        loop {
+                            let job = next.fetch_add(1, Relaxed);
+                            if job >= n {
+                                break;
+                            }
+                            let idx = indices[job as usize];
+                            let started = std::time::Instant::now();
+                            if trace {
+                                eprintln!("start {idx} {}", store.declars[idx as usize].name());
+                            }
+                            let r = checker::check_with_adapter(
+                                &store,
+                                &mut local,
+                                idx,
+                                limits,
+                                Some(&mut adapter),
+                                native_only,
                             );
-                        }
-                        local.reset();
-                        progress.inc(1);
-                        if let Err(f) = r {
-                            exit.fetch_max(f.exit_code() as usize, Relaxed);
-                            let k = fails.fetch_add(1, Relaxed);
-                            if k < 30 {
-                                println!(
-                                    "{} {}: {}",
-                                    store.declars[idx as usize].name().as_ref(),
-                                    f.status(),
-                                    f.reason()
+                            if matches!(r, Ok(true)) {
+                                fallbacks.fetch_add(1, Relaxed);
+                                progress.set_message(tally());
+                            }
+                            if trace {
+                                eprintln!(
+                                    "end {idx} elapsed {:?} arena {} bytes",
+                                    started.elapsed(),
+                                    local.allocated_bytes()
                                 );
                             }
+                            local.reset();
+                            progress.inc(1);
+                            if let Err(f) = r {
+                                exit.fetch_max(f.exit_code() as usize, Relaxed);
+                                let k = fails.fetch_add(1, Relaxed);
+                                progress.set_message(tally());
+                                if k < 30 {
+                                    progress.suspend(|| {
+                                        println!(
+                                            "{} {}: {}",
+                                            store.declars[idx as usize].name().as_ref(),
+                                            f.status(),
+                                            f.reason()
+                                        )
+                                    });
+                                }
+                            }
                         }
-                    }
-                })
-                .unwrap();
+                    })
+                    .unwrap()
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
         }
+        drop(stop);
     });
     progress.finish_and_clear();
     eprintln!(

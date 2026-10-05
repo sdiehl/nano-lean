@@ -127,5 +127,5 @@ jobs:
   #           -c Euler.exists_compact_smooth_euler_singularity \
   #           -o "$root/.ci/navier-stokes-euler.ndjson"
   #         "$root/target/release/nl" "$root/.ci/navier-stokes-euler.ndjson" 1 \
-  #           --native-only --trace --steps 100000000 --arena-mib 256
+  #           --native-only --trace
   #         RUN

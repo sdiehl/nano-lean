@@ -27,11 +27,12 @@ pub struct Limits {
     pub arena_bytes: usize,
 }
 
+/// Defaults check the full pinned Mathlib export natively.
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            steps: 10_000_000,
-            arena_bytes: 64 << 20,
+            steps: 100_000_000,
+            arena_bytes: 256 << 20,
         }
     }
 }

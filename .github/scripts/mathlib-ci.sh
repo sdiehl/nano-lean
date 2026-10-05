@@ -94,7 +94,7 @@ case ${1:-} in
       (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
         -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
       "$root/target/release/nl" .ci/export-smoke.ndjson 1 \
-        --native-only --steps 100000000 --arena-mib 256 \
+        --native-only \
         > "$report/export-smoke.log" 2>&1
       (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" "$module" -j 2 \
         -o "$input.tmp")
@@ -193,7 +193,7 @@ PYPROBE
     started=$SECONDS
     bounded nano-mathlib-check 11G 2700 "${perf_command[@]}" /usr/bin/time -v -o "$report/time.txt" \
       "$root/target/release/nl" "$input" 1 \
-      --native-only --trace --steps 100000000 --arena-mib 256 \
+      --native-only --trace \
       > "$report/failures.log" 2> "$report/trace.log" &
     check_pid=$!
     progress() {
