@@ -561,7 +561,15 @@ mod tests {
                 assert!(ctx.inst_cache.len() <= 4096);
             }
             // A failed traversal must not publish a result for its root.
-            let near_limit = ctx.var(32766);
+            // Construct an invalid boundary variable deliberately: lifting it
+            // must hit checked arithmetic in both debug and release builds.
+            let near_limit = ExprPtr::new(
+                arena.alloc(Expr::Var {
+                    idx: u16::MAX,
+                    hash: 0,
+                }),
+                1,
+            );
             let mut nested = ctx.var(3);
             for _ in 0..3 {
                 nested = ctx.lam(prop, nested);
