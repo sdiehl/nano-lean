@@ -260,8 +260,27 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if subs.is_empty() || e.closed() {
             return e;
         }
+        // A closed replacement needs no lifting. Exact syntax pointers capture
+        // all inputs; this cache contains no typing or declaration-validity facts.
+        let key = match subs {
+            [s] if s.closed() => Some((e, *s)),
+            _ => None,
+        };
+        if let Some(key) = key
+            && let Some(&result) = self.inst_cache.get(&key)
+        {
+            return result;
+        }
         let g = self.fresh();
-        self.inst_rec(e, subs, 0, g)
+        let result = self.inst_rec(e, subs, 0, g);
+        if let Some(key) = key {
+            // Bound auxiliary retention; clearing affects performance only.
+            if self.inst_cache.len() == 4096 {
+                self.inst_cache.clear();
+            }
+            self.inst_cache.insert(key, result);
+        }
+        result
     }
 
     pub fn inst1(&mut self, e: ExprPtr<'t>, s: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -469,5 +488,93 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         levels: LevelsPtr<'t>,
     ) -> ExprPtr<'t> {
         self.subst_expr_levels(d.ty(), d.uparams(), levels)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::import::import_bytes;
+    use crate::term::arena::Arena;
+
+    #[test]
+    fn cached_instantiation_matches_traversal_across_binders_and_arguments() {
+        let imported = Arena::new();
+        let store = import_bytes(
+            &imported,
+            include_bytes!("../../tests/fixtures/foundations.ndjson"),
+        )
+        .unwrap();
+        let arena = Arena::new();
+        let mut ctx = Ctx::new(&store, &arena);
+        let prop = ctx.prop();
+        let v0 = ctx.var(0);
+        let v1 = ctx.var(1);
+        let v2 = ctx.var(2);
+        let app = ctx.app(v0, v1);
+        let lam = ctx.lam(prop, app);
+        let pi = ctx.pi(v0, lam);
+        let let_ = ctx.let_(prop, v1, pi, false);
+        let proj = ctx.proj(ctx.anon(), 0, let_);
+        let local = ctx.local(0, prop);
+        let other_local = ctx.local(1, prop);
+        for expression in [v0, v1, v2, app, lam, pi, let_, proj] {
+            for substitutions in [
+                vec![prop],
+                vec![local],
+                vec![other_local],
+                vec![v1],
+                vec![prop, local],
+            ] {
+                let generation = ctx.fresh();
+                let expected = ctx.inst_rec(expression, &substitutions, 0, generation);
+                assert_eq!(ctx.inst(expression, &substitutions), expected);
+                // Interleave a different environment before requesting the same one.
+                ctx.inst(expression, &[other_local, prop]);
+                assert_eq!(ctx.inst(expression, &substitutions), expected);
+            }
+        }
+        let body = ctx.app(v0, v1);
+        let abstraction = ctx.lam(prop, body);
+        let expected_body = ctx.app(v0, v2);
+        let expected = ctx.lam(prop, expected_body);
+        assert_eq!(ctx.inst1(abstraction, v1), expected);
+    }
+
+    #[test]
+    fn substitution_cache_is_bounded_and_dropped_before_arena_reset() {
+        let imported = Arena::new();
+        let store = import_bytes(
+            &imported,
+            include_bytes!("../../tests/fixtures/foundations.ndjson"),
+        )
+        .unwrap();
+        let mut arena = Arena::new();
+        for round in 0..2 {
+            let mut ctx = Ctx::new(&store, &arena);
+            assert!(ctx.inst_cache.is_empty());
+            let prop = ctx.prop();
+            let var = ctx.var(0);
+            for id in 0..5000 {
+                let local = ctx.local(id + round * 5000, prop);
+                assert_eq!(ctx.inst1(var, local), local);
+                assert!(ctx.inst_cache.len() <= 4096);
+            }
+            // A failed traversal must not publish a result for its root.
+            let near_limit = ctx.var(32766);
+            let mut nested = ctx.var(3);
+            for _ in 0..3 {
+                nested = ctx.lam(prop, nested);
+            }
+            let before = ctx.inst_cache.len();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ctx.inst1(nested, near_limit)
+            }));
+            assert!(result.is_err());
+            assert_eq!(ctx.inst_cache.len(), before);
+            assert_eq!(ctx.inst1(var, prop), prop);
+            drop(ctx);
+            arena.reset();
+        }
     }
 }

@@ -18,6 +18,8 @@ pub struct Ctx<'t, 'a: 't> {
     /// Memo for one traversal: key (expr, op and offset) to (generation, result).
     pub(crate) memo: FxHashMap<(ExprPtr<'t>, u32), (u32, ExprPtr<'t>)>,
     pub(crate) generation: u32,
+    /// Pure single-argument substitutions, scoped to this context and its arena.
+    pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, ExprPtr<'t>), ExprPtr<'t>>,
     pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
     pub(crate) simp_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
 }
@@ -30,6 +32,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             dag: Dag::default(),
             memo: FxHashMap::default(),
             generation: 0,
+            inst_cache: FxHashMap::default(),
             subst_cache: FxHashMap::default(),
             simp_cache: FxHashMap::default(),
         }
