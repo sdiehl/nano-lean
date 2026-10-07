@@ -242,6 +242,10 @@ pending = None
 summary = None
 error = None
 timing = {}
+units = {'ns': 1e-9, 'µs': 1e-6, 'us': 1e-6, 'ms': 1e-3, 's': 1.0}
+def seconds(text):
+    match = re.fullmatch(r'([0-9.]+)(ns|µs|us|ms|s)', text)
+    return float(match.group(1)) * units[match.group(2)] if match else None
 with (report / 'trace.log').open() as source:
     for line in source:
         if line.startswith('start '):
@@ -256,17 +260,18 @@ with (report / 'trace.log').open() as source:
             pending = None
             completed += 1
         elif line.startswith('import '):
-            match = re.match(r'import ([0-9.]+)s', line)
-            if match:
-                timing['import_seconds'] = float(match.group(1))
+            value = seconds(line.split()[1])
+            if value is not None:
+                timing['import_seconds'] = value
         elif line.startswith('experimental checks '):
             match = re.fullmatch(
                 r'experimental checks (.+): (\d+) attempted, (\d+) failures, (\d+) fallbacks\n?', line)
             if match:
                 summary = dict(zip(('attempted', 'failures', 'fallbacks'),
                                    map(int, match.groups()[1:])))
-                if match.group(1).endswith('s'):
-                    timing['check_seconds'] = float(match.group(1)[:-1])
+                value = seconds(match.group(1))
+                if value is not None:
+                    timing['check_seconds'] = value
 if (status != 0 or completed != expected_count or pending is not None
         or summary != {'attempted': expected_count, 'failures': 0, 'fallbacks': 0}
         or (report / 'failures.log').stat().st_size):
