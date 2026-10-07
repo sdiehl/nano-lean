@@ -1,0 +1,19 @@
+-- identity
+
+def id : forall (A : Type), A -> A :=
+  fun (A : Type) (x : A) => x
+
+axiom A : Type -- a type
+axiom a : A
+equal id A a == a
+
+eval let
+  T : Type := A
+  x : T := let
+    y : T := a
+  in y
+in x
+eval let
+	T : Type := A
+	x : T := a
+in x

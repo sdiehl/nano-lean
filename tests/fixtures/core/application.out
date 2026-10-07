@@ -1,0 +1,13 @@
+axiom A
+axiom a
+axiom b
+axiom B
+axiom f
+checked (@f @a) : (@B @a)
+error: type mismatch:
+  expected: (@B @b)
+  inferred: (@B @a)
+error: type mismatch:
+  expected: @A
+  inferred: (Sort 2)
+error: expected a function

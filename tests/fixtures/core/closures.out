@@ -1,0 +1,7 @@
+axiom A
+axiom a
+axiom b
+(fun (z : @A) => @a)
+(fun (z : @A) => @b)
+(fun (x : @A) => x)
+@a

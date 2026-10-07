@@ -1,0 +1,10 @@
+-- Rejected declarations leave the environment untouched.
+axiom A : Type
+axiom a : A
+
+def bad : A := Type
+infer bad
+def loop : A := loop
+axiom A : Prop
+axiom badType : a
+check a : A

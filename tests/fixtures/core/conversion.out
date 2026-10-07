@@ -1,0 +1,20 @@
+axiom A
+axiom a
+axiom b
+axiom f
+axiom P
+axiom Q
+axiom p
+axiom q
+axiom r
+equal
+equal
+error: terms are not definitionally equal
+error: terms are not definitionally equal
+error: terms are not definitionally equal
+error: unknown constant: missing
+defined erase
+equal
+error: type mismatch:
+  expected: @A
+  inferred: (Sort 2)

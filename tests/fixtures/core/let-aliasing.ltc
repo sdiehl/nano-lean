@@ -1,0 +1,11 @@
+-- Cached open terms do not alias different let values.
+axiom A : Type
+axiom a : A
+axiom b : A
+axiom P : A -> Type
+axiom pa : P a
+axiom pb : P b
+axiom f : P a -> P b -> A
+
+check f (let x : A := a in (fun (p : P x) => p) pa) (let x : A := b in (fun (p : P x) => p) pb) : A
+infer f (let x : A := a in (fun (p : P x) => p) pa) (let x : A := b in (fun (p : P x) => p) pa)

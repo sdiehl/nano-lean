@@ -1,0 +1,22 @@
+axiom A : Type
+axiom a : A
+axiom b : A
+axiom f : forall (x : A), A
+axiom P : Prop
+axiom Q : Prop
+axiom p : P
+axiom q : P
+axiom r : Q
+
+-- Eta and proof irrelevance, but not proposition irrelevance.
+equal f == fun (x : A) => f x
+equal p == q
+equal p == r
+equal P == Q
+equal a == b
+equal missing == missing
+
+-- Lazy unfolding may discard unequal arguments.
+def erase : A -> A := fun (x : A) => a
+equal erase a == erase b
+infer erase Type

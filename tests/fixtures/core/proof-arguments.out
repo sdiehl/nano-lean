@@ -1,0 +1,15 @@
+axiom P
+axiom Q
+axiom p
+axiom p2
+axiom q
+axiom F
+equal
+error: terms are not definitionally equal
+error: type mismatch:
+  expected: @P
+  inferred: @Q
+error: type mismatch:
+  expected: @P
+  inferred: (Sort 2)
+error: terms are not definitionally equal

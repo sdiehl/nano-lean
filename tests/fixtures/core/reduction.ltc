@@ -1,0 +1,11 @@
+axiom A : Type
+axiom a : A
+axiom b : A
+def id : forall (T : Type), forall (x : T), T := fun (T : Type) => fun (x : T) => x
+
+eval id A a
+equal (let T : Type := A in let x : T := a in x) == a
+equal (fun (x : A) => fun (x : A) => x) a b == b
+infer let x : A := Type in a
+infer fun (x : a) => x
+eval fun (x : A) => (fun (y : A) => fun (x : A) => y) x

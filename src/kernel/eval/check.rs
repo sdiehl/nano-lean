@@ -877,17 +877,6 @@ mod tests {
     }
 
     #[test]
-    fn proof_summaries_never_bypass_argument_or_proposition_checks() {
-        let mut env = Environment::new();
-        run("axiom P : Prop; axiom Q : Prop; axiom p : P; axiom p2 : P; axiom q : Q; axiom F : (forall (T : Prop), forall (h : T), Type)", &mut env).unwrap();
-        assert!(env.def_eq(&expr("F P p"), &expr("F P p2")).unwrap());
-        assert!(!env.def_eq(&expr("F P p"), &expr("F Q q")).unwrap());
-        assert!(env.infer(&expr("F P q")).is_err());
-        assert!(env.infer(&expr("F P Type")).is_err());
-        assert!(!env.def_eq(&expr("p"), &expr("q")).unwrap());
-    }
-
-    #[test]
     fn dependent_inference_and_conversion_keep_closures() {
         let mut env = Environment::new();
         run("axiom A : Type; axiom a : A; axiom B : (forall (x : A), Type); axiom f : (forall (x : A), B x)", &mut env).unwrap();

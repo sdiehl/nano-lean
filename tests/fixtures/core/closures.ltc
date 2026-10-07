@@ -1,0 +1,9 @@
+-- Suspended arguments keep their lexical context.
+axiom A : Type
+axiom a : A
+axiom b : A
+
+eval (fun (x : A) => (fun (y : A) => fun (z : A) => x) b) a
+eval (fun (x : A) => (fun (y : A) => fun (z : A) => y) x) b
+eval (fun (T : Type) => fun (x : T) => x) A
+eval let T : Type := A in let x : T := a in (fun (y : T) => x) b

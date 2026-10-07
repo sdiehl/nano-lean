@@ -1,0 +1,13 @@
+-- Proof summaries never bypass argument or proposition checks.
+axiom P : Prop
+axiom Q : Prop
+axiom p : P
+axiom p2 : P
+axiom q : Q
+axiom F : forall (T : Prop), forall (h : T), Type
+
+equal F P p == F P p2
+equal F P p == F Q q
+infer F P q
+infer F P Type
+equal p == q

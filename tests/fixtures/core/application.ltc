@@ -1,0 +1,10 @@
+axiom A : Type
+axiom a : A
+axiom b : A
+axiom B : forall (x : A), Type
+axiom f : forall (x : A), B x
+
+check f a : B a
+check f a : B b
+infer f Type
+infer a a

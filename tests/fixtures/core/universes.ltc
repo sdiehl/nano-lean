@@ -1,0 +1,8 @@
+axiom A : Type
+
+infer Prop
+check Type : Type
+check A : Sort 2
+infer Sort 4294967295
+check (forall (T : Sort 3), forall (p : Prop), p) : Prop
+check (forall (T : Sort 3), Type) : Sort 4

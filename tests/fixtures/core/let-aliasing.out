@@ -1,0 +1,11 @@
+axiom A
+axiom a
+axiom b
+axiom P
+axiom pa
+axiom pb
+axiom f
+checked ((@f (let x : @A := @a in ((fun (p : (@P x)) => p) @pa))) (let x : @A := @b in ((fun (p : (@P x)) => p) @pb))) : @A
+error: type mismatch:
+  expected: (@P @b)
+  inferred: (@P @a)

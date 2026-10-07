@@ -1,0 +1,10 @@
+axiom A
+axiom a
+error: type mismatch:
+  expected: @A
+  inferred: (Sort 2)
+error: unknown constant: bad
+error: unknown constant: loop
+error: duplicate declaration: A
+error: expected a type
+checked @a : @A

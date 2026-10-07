@@ -1,0 +1,11 @@
+axiom A
+Prop : Type
+error: type mismatch:
+  expected: Type
+  inferred: (Sort 2)
+error: type mismatch:
+  expected: (Sort 2)
+  inferred: Type
+error: universe overflow
+checked (forall (T : (Sort 3)), (forall (p : Prop), p)) : Prop
+checked (forall (T : (Sort 3)), Type) : (Sort 4)

@@ -1,0 +1,10 @@
+axiom A : Type;
+axiom a : A;
+def id : (
+forall (T : Type),
+T -> T
+) := (
+fun (T : Type) (x : T) =>
+x
+);
+equal id A a == a;

@@ -1,0 +1,12 @@
+axiom A
+axiom a
+axiom b
+defined id
+@a
+equal
+equal
+error: type mismatch:
+  expected: @A
+  inferred: (Sort 2)
+error: expected a type
+(fun (x : @A) => (fun (x1 : @A) => x))

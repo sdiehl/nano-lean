@@ -88,45 +88,58 @@ pub fn parse_expr(source: &str) -> Result<Expr, Error> {
         .map_err(|e| Error(e.to_string()))
 }
 
-pub fn run(source: &str, env: &mut Environment) -> Result<Vec<String>, Error> {
-    let commands = grammar::ProgramParser::new()
+fn program(source: &str) -> Result<Vec<Command>, Error> {
+    grammar::ProgramParser::new()
         .parse(lex(source, true))
-        .map_err(|e| Error(e.to_string()))?;
-    commands
+        .map_err(|e| Error(e.to_string()))
+}
+
+fn execute(command: Command, env: &mut Environment) -> Result<String, Error> {
+    let resolve = |t: Term| t.resolve(&mut Vec::new());
+    match command {
+        Command::Axiom(n, ty) => {
+            env.axiom(&n, resolve(ty))?;
+            Ok(format!("axiom {n}"))
+        }
+        Command::Define(n, ty, value) => {
+            env.define(&n, resolve(ty), resolve(value))?;
+            Ok(format!("defined {n}"))
+        }
+        Command::Infer(e) => {
+            let e = resolve(e);
+            Ok(format!("{e} : {}", env.infer(&e)?))
+        }
+        Command::Check(e, ty) => {
+            let e = resolve(e);
+            let ty = resolve(ty);
+            env.check(&e, &ty)?;
+            Ok(format!("checked {e} : {ty}"))
+        }
+        Command::Eval(e) => Ok(env.normalize(&resolve(e))?.to_string()),
+        Command::Equal(a, b) => {
+            if !env.def_eq(&resolve(a), &resolve(b))? {
+                return Err(Error("terms are not definitionally equal".into()));
+            }
+            Ok("equal".into())
+        }
+    }
+}
+
+/// Runs every command, stopping at the first failure.
+pub fn run(source: &str, env: &mut Environment) -> Result<Vec<String>, Error> {
+    program(source)?
         .into_iter()
         .enumerate()
         .map(|(i, command)| {
-            let resolve = |t: Term| t.resolve(&mut Vec::new());
-            let execute = || -> Result<String, Error> {
-                match command {
-                    Command::Axiom(n, ty) => {
-                        env.axiom(&n, resolve(ty))?;
-                        Ok(format!("axiom {n}"))
-                    }
-                    Command::Define(n, ty, value) => {
-                        env.define(&n, resolve(ty), resolve(value))?;
-                        Ok(format!("defined {n}"))
-                    }
-                    Command::Infer(e) => {
-                        let e = resolve(e);
-                        Ok(format!("{e} : {}", env.infer(&e)?))
-                    }
-                    Command::Check(e, ty) => {
-                        let e = resolve(e);
-                        let ty = resolve(ty);
-                        env.check(&e, &ty)?;
-                        Ok(format!("checked {e} : {ty}"))
-                    }
-                    Command::Eval(e) => Ok(env.normalize(&resolve(e))?.to_string()),
-                    Command::Equal(a, b) => {
-                        if !env.def_eq(&resolve(a), &resolve(b))? {
-                            return Err(Error("terms are not definitionally equal".into()));
-                        }
-                        Ok("equal".into())
-                    }
-                }
-            };
-            execute().map_err(|e| Error(format!("command {}: {e}", i + 1)))
+            execute(command, env).map_err(|e| Error(format!("command {}: {e}", i + 1)))
         })
         .collect()
+}
+
+/// Runs every command, keeping going past rejected ones.
+pub fn session(source: &str, env: &mut Environment) -> Result<Vec<Result<String, Error>>, Error> {
+    Ok(program(source)?
+        .into_iter()
+        .map(|command| execute(command, env))
+        .collect())
 }
