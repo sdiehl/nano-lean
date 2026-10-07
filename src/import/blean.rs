@@ -169,8 +169,9 @@ pub fn import<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
 /// Every record of a blean file, before the tables are filled; `bytes` is not kept.
 pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
     let c = blean::counts(bytes).map_err(corrupt)?;
-    // Importer sizes its tables from NDJSON bytes at 56 per line.
-    let records = c.names as usize + c.levels as usize + c.exprs as usize;
+    // Importer sizes its tables from NDJSON bytes at 56 per line. Every record takes at
+    // least a byte, so a damaged tail cannot ask for more than the file holds.
+    let records = (c.names as usize + c.levels as usize + c.exprs as usize).min(bytes.len());
     let mut im = Importer::new(arena, records * 56);
     let mut cur = Cur {
         b: &bytes[MAGIC.len()..],
