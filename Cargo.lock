@@ -430,6 +430,7 @@ dependencies = [
  "rustc-hash",
  "serde_json",
  "sha2",
+ "smallvec",
  "stacker",
  "unbound",
 ]

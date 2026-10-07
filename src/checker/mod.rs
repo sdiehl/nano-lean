@@ -4,6 +4,7 @@
 mod contextual;
 mod defeq;
 mod inductive;
+mod native_inductive;
 pub use inductive::Adapter;
 mod quot;
 #[cfg(test)]
@@ -57,12 +58,8 @@ pub fn check_with_adapter<'a>(
     native_only: bool,
 ) -> Result<bool, crate::term::outcome::Failure> {
     use crate::term::outcome::{self, Failure};
-    let mut tc = Tc::new(store, arena)
-        .with_limits(limits)
-        .with_adapter(adapter.as_deref_mut());
-    let result = outcome::run(|| tc.check(idx));
-    limits.steps = tc.steps_left;
-    drop(tc);
+    let (result, steps) = check_shared(store, arena, idx, limits, adapter.as_deref_mut());
+    limits.steps = steps;
     match result {
         Err(Failure::Declined(reason))
             if !native_only && reason == "declaration arena budget exhausted" =>
@@ -78,6 +75,37 @@ pub fn check_with_adapter<'a>(
         }
         result => result.map(|()| false),
     }
+}
+
+/// One attempt that never resets the arena; returns the steps left for a retry.
+pub fn check_shared<'a>(
+    store: &'a Store<'a>,
+    arena: &Arena,
+    idx: u32,
+    limits: Limits,
+    adapter: Option<&mut Adapter<'a>>,
+) -> (Result<(), crate::term::outcome::Failure>, u64) {
+    let mut tc = Tc::new(store, arena)
+        .with_limits(limits)
+        .with_adapter(adapter);
+    let result = crate::term::outcome::run(|| tc.check(idx));
+    (result, tc.steps_left)
+}
+
+/// Check with the existing kernel only, as after native arena exhaustion.
+pub fn check_existing_only<'a>(
+    store: &'a Store<'a>,
+    arena: &mut Arena,
+    idx: u32,
+    limits: Limits,
+    adapter: Option<&mut Adapter<'a>>,
+) -> Result<(), crate::term::outcome::Failure> {
+    crate::term::outcome::run(|| {
+        Tc::new(store, arena)
+            .with_limits(limits)
+            .with_adapter(adapter)
+            .check_existing(idx)
+    })
 }
 
 type ContextKey<'t> = (ExprPtr<'t>, Vec<ExprPtr<'t>>);

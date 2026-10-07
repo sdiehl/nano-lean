@@ -46,7 +46,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if block.start != idx {
             return;
         }
-        self.check_existing(idx);
+        if std::env::var_os("NL_LEGACY_IND").is_none() && self.native_block(block) {
+            self.check_block(block);
+        } else {
+            self.check_existing(idx);
+        }
     }
 
     pub(super) fn check_existing(&mut self, idx: u32) {

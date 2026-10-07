@@ -9,10 +9,13 @@ use std::sync::mpsc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Arena bytes a value-core session may accumulate before it is reset.
+const SESSION_BYTES: usize = 64 << 20;
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect(
-        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N] [--native-only]",
+        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N] [--native-only] [--value-core]",
     );
     let mut threads = 1usize;
     let mut selected = None;
@@ -20,6 +23,7 @@ fn main() {
     let mut import_only = false;
     let mut trace = false;
     let mut native_only = false;
+    let mut value_core = false;
     let mut limits = checker::Limits::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -34,6 +38,7 @@ fn main() {
             "--import-only" => import_only = true,
             "--trace" => trace = true,
             "--native-only" => native_only = true,
+            "--value-core" => value_core = true,
             "--steps" => {
                 limits.steps = args
                     .next()
@@ -150,7 +155,7 @@ fn main() {
                 std::thread::Builder::new()
                     .stack_size(64 << 20)
                     .spawn_scoped(sc, || {
-                        let mut local = term::arena::Arena::new();
+                        let mut session = nano_lean::value_checker::Session::new(&store);
                         let mut adapter = checker::Adapter::new(&store);
                         loop {
                             let job = next.fetch_add(1, Relaxed);
@@ -162,14 +167,18 @@ fn main() {
                             if trace {
                                 eprintln!("start {idx} {}", store.declars[idx as usize].name());
                             }
-                            let r = checker::check_with_adapter(
-                                &store,
-                                &mut local,
-                                idx,
-                                limits,
-                                Some(&mut adapter),
-                                native_only,
-                            );
+                            let r = if value_core {
+                                session.check(idx, limits, Some(&mut adapter), native_only)
+                            } else {
+                                checker::check_with_adapter(
+                                    &store,
+                                    session.arena_mut(),
+                                    idx,
+                                    limits,
+                                    Some(&mut adapter),
+                                    native_only,
+                                )
+                            };
                             if matches!(r, Ok(true)) {
                                 fallbacks.fetch_add(1, Relaxed);
                                 progress.set_message(tally());
@@ -178,10 +187,15 @@ fn main() {
                                 eprintln!(
                                     "end {idx} elapsed {:?} arena {} bytes",
                                     started.elapsed(),
-                                    local.allocated_bytes()
+                                    session.arena().allocated_bytes()
                                 );
                             }
-                            local.reset();
+                            if !value_core
+                                || r.is_err()
+                                || session.arena().allocated_bytes() > SESSION_BYTES
+                            {
+                                session.reset();
+                            }
                             progress.inc(1);
                             if let Err(f) = r {
                                 exit.fetch_max(f.exit_code() as usize, Relaxed);
@@ -194,7 +208,8 @@ fn main() {
                                             store.declars[idx as usize].name().as_ref(),
                                             f.status(),
                                             f.reason()
-                                        )
+                                        );
+                                        let _ = std::io::Write::flush(&mut std::io::stdout());
                                     });
                                 }
                             }
@@ -216,6 +231,16 @@ fn main() {
         fails.load(Relaxed),
         fallbacks.load(Relaxed)
     );
+    if value_core {
+        let b = &nano_lean::value_checker::BRIDGED;
+        eprintln!(
+            "bridged quot {} ind {} ctor {} rec {}",
+            b[0].load(Relaxed),
+            b[1].load(Relaxed),
+            b[2].load(Relaxed),
+            b[3].load(Relaxed)
+        );
+    }
     if exit.load(Relaxed) != 0 {
         std::process::exit(exit.load(Relaxed) as i32);
     }

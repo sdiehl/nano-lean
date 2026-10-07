@@ -12,6 +12,7 @@ pub struct Arena {
     // Boxes keep references stable when the ownership vector grows.
     #[allow(clippy::vec_box)]
     nats: RefCell<Vec<Box<BigUint>>>,
+    epoch: u64,
 }
 
 impl Arena {
@@ -39,7 +40,13 @@ impl Arena {
             .saturating_add(self.nat_bytes.get())
     }
 
+    /// Bumped by every reset; anything keyed to this arena is stale once it changes.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     pub fn reset(&mut self) {
+        self.epoch += 1;
         self.nats.get_mut().clear();
         self.nat_bytes.set(0);
         // Bump::reset retains its largest chunk. Avoid carrying a large

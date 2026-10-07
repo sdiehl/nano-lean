@@ -9,6 +9,7 @@ pub mod parser;
 mod profile;
 pub mod syntax;
 pub mod term;
+pub mod value_checker;
 
 pub use kernel::{Environment, Error};
 pub use level::Level;
