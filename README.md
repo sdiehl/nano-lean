@@ -56,6 +56,18 @@ nl-fast mathlib.ndjson
 lake env olean-export Mathlib -q | nl-fast
 ```
 
+### Performance
+
+Checking all of Mathlib on an Apple M5 from the blean binary export:
+
+|                       | `-j 1`  | `-j 10` |
+| --------------------- | ------- | ------- |
+| Wall time             | 57.4 s  | 16.7 s  |
+| Kernel check          | 53.5 s  | 12.5 s  |
+| Instructions          | 708.5 G | 746.5 G |
+| Cycles                | 247.7 G | 385.6 G |
+| Peak memory footprint | 7.5 GB  | 9.2 GB  |
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
