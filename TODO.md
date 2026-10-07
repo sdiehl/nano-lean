@@ -60,7 +60,7 @@ uses an explicit 100-million-step budget. Native-only completion remains below.
 - [x] Check the complete pinned export with zero failures or unsupported declarations.
 - [x] Verify the input digest and all 718,577 declaration outcomes.
 
-The full Lean 4.34.1 export passes with `--native-only --steps 100000000
+The full Lean 4.34.1 export passes with `nl-fast --steps 100000000
 --arena-mib 256`. Inductive reconstruction still uses the shared kernel adapter;
 no whole-declaration fallback is needed. The two larger magma stress cases remain open.
 

@@ -81,7 +81,7 @@ fn main() -> ExitCode {
     }
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "Usage: nano-lean [FILE|-]\n       nano-lean --export FILE.ndjson\n       nano-lean --export-stream FILE.ndjson\n       nano-lean --export-parallel JOBS [--memory-mib MIB] FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
+            "Usage: nl-ref [FILE|-]\n       nl-ref --export FILE.ndjson\n       nl-ref --export-stream FILE.ndjson\n       nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
         );
         return ExitCode::SUCCESS;
     }
@@ -95,7 +95,7 @@ fn main() -> ExitCode {
                 io::stdin().read_to_string(&mut source)?;
             }
             [path] => source = fs::read_to_string(path)?,
-            _ => return Err("usage: nano-lean [FILE|-]".into()),
+            _ => return Err("usage: nl-ref [FILE|-]".into()),
         }
         for line in parser::run(&source, &mut Environment::new())? {
             println!("{line}");

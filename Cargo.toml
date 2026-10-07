@@ -2,9 +2,13 @@
 name = "nano-lean"
 version = "0.1.0"
 edition = "2024"
-default-run = "nano-lean"
+default-run = "nl-ref"
 description = "A small dependent type checker built with unbound"
 license = "MIT"
+
+[[bin]]
+name = "nl-ref"
+path = "src/main.rs"
 
 [features]
 profile = []

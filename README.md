@@ -2,20 +2,48 @@
 
 A minimalist (but complete) Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
 
-Aims to support the full Lean kernel with the full theory, including universe polymorphism, inductive types, and quotients.
+Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
+
+- `nl-fast`: fast interned-term checker for Lean NDJSON exports.
+- `nl-ref`: reference kernel for core-syntax files and exports.
 
 ```sh
-cargo run -- examples/core.ltc
+# Install nl-fast and nl-ref
+cargo install --git https://github.com/sdiehl/nano-lean
+
+# Check a Lean NDJSON export
+nl-fast FILE.ndjson [-j THREADS]
+
+# Check a core-syntax file
+nl-ref examples/core.ltc
+
+# Check an export with the reference kernel, optionally in parallel
+nl-ref --export FILE.ndjson
+nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson
+
+# Run the tests
 cargo test
 ```
 
-The interned-term checker used by CI is available with `cargo run --release --bin nl -- FILE.ndjson [THREADS] --native-only`. Its `checker`, `import`, and `term` modules are part of the library and their unit tests run with `cargo test`. Inductive validation still uses the existing kernel.
+## Checking Mathlib
 
-Lean NDJSON exports can be checked with `cargo run --release -- --export FILE.ndjson`.
-The importer accepts safe proof exports and rejects unsafe or partial declarations.
-Natural/string literals and quotient primitives are supported
+Exports come from [olean-export](https://crates.io/crates/olean-export), run inside a Mathlib checkout so `lake env` can find its oleans.
 
-Parallel export checking is available with `cargo run --release -- --export-parallel JOBS [--memory-mib MIB] FILE.ndjson`.
+```sh
+# Install the exporter
+cargo install olean-export
+
+# Fetch Mathlib and its prebuilt oleans (no compile)
+git clone --depth 1 https://github.com/leanprover-community/mathlib4 && cd mathlib4
+lake exe cache get
+
+# Export Mathlib to a file, then check it
+lake env olean-export Mathlib -o mathlib.ndjson
+nl-fast mathlib.ndjson
+
+# Or pipe it straight through
+lake env olean-export Mathlib -q | nl-fast
+```
 
 ## License
 

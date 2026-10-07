@@ -766,11 +766,19 @@ fn boolean(v: &Value) -> Result<bool> {
 
 /// Import an export file into `arena`, streaming it so the file is never resident.
 pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>> {
-    use std::io::BufRead;
     let io = |e: std::io::Error| ImportError::Invalid(e.to_string());
     let file = std::fs::File::open(path).map_err(io)?;
     let len = file.metadata().map_err(io)?.len() as usize;
-    let mut r = std::io::BufReader::with_capacity(1 << 20, file);
+    import_reader(arena, std::io::BufReader::with_capacity(1 << 20, file), len)
+}
+
+/// Import an export stream; `len` is a size hint in bytes, zero if unknown.
+pub fn import_reader<'a>(
+    arena: &'a Arena,
+    mut r: impl std::io::BufRead,
+    len: usize,
+) -> Result<Store<'a>> {
+    let io = |e: std::io::Error| ImportError::Invalid(e.to_string());
     let mut im = Importer::new(arena, len);
     let mut buf = Vec::with_capacity(1 << 16);
     let mut n = 0usize;

@@ -13,49 +13,47 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const SESSION_BYTES: usize = 64 << 20;
 
 fn main() {
+    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--value-core] [--declaration NAME] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect(
-        "usage: nl FILE [THREADS] [--declaration NAME] [--limit N] [--import-only] [--trace] [--steps N] [--arena-mib N] [--native-only] [--value-core]",
-    );
+    let mut path = None;
     let mut threads = 1usize;
     let mut selected = None;
     let mut limit = usize::MAX;
     let mut import_only = false;
     let mut trace = false;
-    let mut native_only = false;
+    let mut native_only = true;
     let mut value_core = false;
     let mut limits = checker::Limits::default();
+    let usage = || -> ! {
+        eprintln!("{USAGE}");
+        std::process::exit(2)
+    };
+    let value = |args: &mut std::iter::Skip<std::env::Args>| args.next().unwrap_or_else(|| usage());
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--declaration" => selected = Some(args.next().expect("missing declaration name")),
-            "--limit" => {
-                limit = args
-                    .next()
-                    .expect("missing limit")
-                    .parse()
-                    .expect("invalid limit")
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return;
             }
+            "-j" | "--threads" => threads = value(&mut args).parse().unwrap_or_else(|_| usage()),
+            "--declaration" => selected = Some(value(&mut args)),
+            "--limit" => limit = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--import-only" => import_only = true,
             "--trace" => trace = true,
-            "--native-only" => native_only = true,
+            "--fallback" => native_only = false,
             "--value-core" => value_core = true,
-            "--steps" => {
-                limits.steps = args
-                    .next()
-                    .expect("missing steps")
-                    .parse()
-                    .expect("invalid steps")
-            }
+            "--steps" => limits.steps = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--arena-mib" => {
-                limits.arena_bytes = args
-                    .next()
-                    .expect("missing arena limit")
+                limits.arena_bytes = value(&mut args)
                     .parse::<usize>()
-                    .expect("invalid arena limit")
-                    .checked_mul(1 << 20)
-                    .expect("arena limit overflow")
+                    .ok()
+                    .and_then(|m| m.checked_mul(1 << 20))
+                    .unwrap_or_else(|| usage())
             }
-            _ => threads = arg.parse().expect("invalid thread count or option"),
+            "-" => path = None,
+            a if a.starts_with('-') => usage(),
+            _ if path.is_none() => path = Some(arg),
+            _ => usage(),
         }
     }
     assert!(
@@ -64,7 +62,15 @@ fn main() {
     );
     let t = std::time::Instant::now();
     let arena = term::arena::Arena::new();
-    let store = match import::import(&arena, &path) {
+    let imported = match &path {
+        Some(p) => import::import(&arena, p),
+        None => import::import_reader(
+            &arena,
+            std::io::BufReader::with_capacity(1 << 20, std::io::stdin().lock()),
+            0,
+        ),
+    };
+    let store = match imported {
         Ok(store) => store,
         Err(e) => {
             println!("{e}");

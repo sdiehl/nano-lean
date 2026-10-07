@@ -5,7 +5,7 @@ use std::{
 
 #[test]
 fn example_runs_from_file() {
-    let result = Command::new(env!("CARGO_BIN_EXE_nano-lean"))
+    let result = Command::new(env!("CARGO_BIN_EXE_nl-ref"))
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/core.ltc"))
         .output()
         .unwrap();
@@ -19,7 +19,7 @@ fn example_runs_from_file() {
 
 #[test]
 fn bad_stdin_exits_nonzero_with_diagnostic() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nano-lean"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nl-ref"))
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -38,7 +38,7 @@ fn bad_stdin_exits_nonzero_with_diagnostic() {
 }
 
 fn export_command(args: &[&str]) -> (bool, serde_json::Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_nano-lean"))
+    let output = Command::new(env!("CARGO_BIN_EXE_nl-ref"))
         .args(args)
         .output()
         .unwrap();
@@ -138,7 +138,7 @@ fn progress_stays_on_stderr_and_preserves_json_results() {
         "/tests/fixtures/theorem-reduction.ndjson"
     );
     for enabled in ["1", "0"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_nano-lean"))
+        let output = Command::new(env!("CARGO_BIN_EXE_nl-ref"))
             .args(["--export-parallel", "2", path])
             .env("NANO_LEAN_PROGRESS", enabled)
             .env_remove("NANO_LEAN_TRACE")

@@ -93,8 +93,7 @@ case ${1:-} in
       # Check a small real 4.34.1 export before generating the large artifact.
       (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
         -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
-      "$root/target/release/nl" .ci/export-smoke.ndjson 1 \
-        --native-only \
+      "$root/target/release/nl-fast" .ci/export-smoke.ndjson \
         > "$report/export-smoke.log" 2>&1
       (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" "$module" -j 2 \
         -o "$input.tmp")
@@ -192,8 +191,7 @@ PYPROBE
     cat "$report/perf-status.txt"
     started=$SECONDS
     bounded nano-mathlib-check 11G 2700 "${perf_command[@]}" /usr/bin/time -v -o "$report/time.txt" \
-      "$root/target/release/nl" "$input" 1 \
-      --native-only --trace \
+      "$root/target/release/nl-fast" "$input" --trace \
       > "$report/failures.log" 2> "$report/trace.log" &
     check_pid=$!
     progress() {
