@@ -12,9 +12,7 @@ pub const STR_HASH: u64 = 1493;
 pub const NAT_HASH: u64 = 1583;
 pub const LOCAL_HASH: u64 = 1201;
 
-/// A term node. Children are pointers into the same or an enclosing arena, so
-/// structural equality of hash-consed nodes is pointer equality of children.
-/// Loose bound variable count and a has-locals flag live in the pointer.
+/// Hash-consed, so structural equality is pointer equality of children.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Expr<'a> {
     Var {
@@ -68,7 +66,6 @@ pub enum Expr<'a> {
         s: StringPtr<'a>,
         hash: u64,
     },
-    /// A free variable introduced by the checker when it goes under a binder.
     Local {
         id: u32,
         ty: ExprPtr<'a>,
@@ -119,7 +116,6 @@ impl<'a> ExprPtr<'a> {
         }
     }
 
-    /// Head of an application spine.
     pub fn head(mut self) -> ExprPtr<'a> {
         while let Expr::App { fun, .. } = *self {
             self = fun;
@@ -141,6 +137,7 @@ const _: () = assert!(std::mem::size_of::<Expr<'_>>() == 32);
 
 /// Loose bound variables below 32 as a bitmask, or `WIDE` when unknown.
 pub const WIDE: u32 = u32::MAX;
+const SUP_BITS: u16 = u32::BITS as u16;
 
 impl ExprPtr<'_> {
     #[inline]
@@ -149,7 +146,7 @@ impl ExprPtr<'_> {
             return 0;
         }
         match *self {
-            Expr::Var { idx, .. } if idx < 32 => 1 << idx,
+            Expr::Var { idx, .. } if idx < SUP_BITS => 1 << idx,
             Expr::App { sup, .. }
             | Expr::Lam { sup, .. }
             | Expr::Pi { sup, .. }
@@ -162,7 +159,7 @@ impl ExprPtr<'_> {
 
 #[inline]
 fn sup_join(parts: &[u32], nlb: u16) -> u32 {
-    if nlb > 32 || parts.contains(&WIDE) {
+    if nlb > SUP_BITS || parts.contains(&WIDE) {
         WIDE
     } else {
         parts.iter().fold(0, |a, &b| a | b)
@@ -180,6 +177,7 @@ fn sup_under(body: ExprPtr<'_>) -> u32 {
 /// Pointer metadata: loose bound variable count in the low 15 bits, has-locals on top.
 pub type Meta = u16;
 pub const HAS_LOCAL: Meta = 1 << 15;
+pub const NLB_MASK: Meta = HAS_LOCAL - 1;
 
 #[inline]
 fn join(a: ExprPtr<'_>, b: ExprPtr<'_>) -> Meta {
@@ -191,13 +189,12 @@ fn under(ty: ExprPtr<'_>, body: ExprPtr<'_>) -> Meta {
     ty.nlb().max(body.nlb().saturating_sub(1)) | ((ty.meta() | body.meta()) & HAS_LOCAL)
 }
 
-/// Pure node builders: the node plus its pointer metadata.
 pub mod mk {
     use super::*;
     use crate::hash64;
 
     pub fn var<'a>(idx: u16) -> (Expr<'a>, Meta) {
-        debug_assert!(idx < HAS_LOCAL - 1);
+        debug_assert!(idx < NLB_MASK);
         (
             Expr::Var {
                 idx,
@@ -234,7 +231,7 @@ pub mod mk {
                 fun,
                 arg,
                 hash: hash64!(APP_HASH, fun, arg),
-                sup: sup_join(&[fun.sup(), arg.sup()], join(fun, arg) & 0x7fff),
+                sup: sup_join(&[fun.sup(), arg.sup()], join(fun, arg) & NLB_MASK),
             },
             join(fun, arg),
         )
@@ -246,7 +243,7 @@ pub mod mk {
                 ty,
                 body,
                 hash: hash64!(LAM_HASH, ty, body),
-                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & 0x7fff),
+                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & NLB_MASK),
             },
             under(ty, body),
         )
@@ -258,13 +255,12 @@ pub mod mk {
                 ty,
                 body,
                 hash: hash64!(PI_HASH, ty, body),
-                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & 0x7fff),
+                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & NLB_MASK),
             },
             under(ty, body),
         )
     }
 
-    /// Hash, support and metadata of a let node; the caller allocates the payload on a miss.
     pub fn let_(d: LetData<'_>) -> (u64, u32, Meta) {
         let hash = hash64!(LET_HASH, d.ty, d.val, d.body, d.nondep);
         let nlb =

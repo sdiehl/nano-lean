@@ -1,8 +1,10 @@
-//! Type inference and conversion over suspended terms. A lambda's type stores
-//! an inference closure; applying it extends the environment without opening or
-//! substituting syntax. Quotation is reserved for public results, errors, and
-//! adapters to the existing neutral projection and recursor reduction rules.
 use super::*;
+use crate::{syntax::Binder, term::names::*};
+use rustc_hash::FxHashSet;
+mod conv;
+mod summary;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone)]
 enum Type {
@@ -53,7 +55,7 @@ struct Session<'b, 'a> {
     variables: HashMap<Name<Expr>, Thunk>,
     equal: HashMap<(usize, usize, bool), bool>,
     sorts: HashMap<usize, Level>,
-    relevance_active: rustc_hash::FxHashSet<(String, Vec<Level>)>,
+    relevance_active: FxHashSet<(String, Vec<Level>)>,
     proof_status: HashMap<usize, Option<bool>>,
     previous_semantic: bool,
 }
@@ -105,9 +107,7 @@ impl<'b, 'a> Session<'b, 'a> {
         let previous_semantic = tc.semantic;
         tc.semantic = false;
         let mut ev = Evaluator::new(tc);
-        // A semantic session spans several binder scopes. Proof equality is
-        // handled by conversion, never by replacing a proof with a variable
-        // from another scope during evaluation.
+        // A session spans binder scopes, so a proof from another scope must not be reused.
         ev.reuse_proofs = false;
         let variables = ev
             .tc
@@ -122,7 +122,7 @@ impl<'b, 'a> Session<'b, 'a> {
             variables,
             equal: HashMap::default(),
             sorts: HashMap::default(),
-            relevance_active: rustc_hash::FxHashSet::default(),
+            relevance_active: FxHashSet::default(),
             proof_status: HashMap::default(),
             previous_semantic,
         }
@@ -132,89 +132,6 @@ impl<'b, 'a> Session<'b, 'a> {
         self.variables.insert(name.clone(), domain.clone());
         self.ev.variables.push((name.clone(), domain.clone()));
         self.ev.term(Expr::Var(name), None)
-    }
-    fn summary(&mut self, name: &str, levels: &[Level]) -> Result<Summary> {
-        let declaration = self.ev.tc.decl(name)?;
-        // Cached facts cannot authorize universe arguments in a new checker.
-        self.ev.tc.level_arguments(&declaration.params, levels)?;
-        if let Some((_, summary)) = declaration
-            .relevance
-            .borrow()
-            .iter()
-            .find(|(us, _)| us == levels)
-        {
-            return Ok(*summary);
-        }
-        let key = (name.to_owned(), levels.to_vec());
-        if !self.relevance_active.insert(key.clone()) {
-            return Ok(Summary::default());
-        }
-        let result = self.compute_summary(name, levels);
-        self.relevance_active.remove(&key);
-        let summary = result?;
-        // Owned by the declaration, so rollback or replacement cannot leave a
-        // stale name-keyed entry. Store no session values or fresh variables.
-        let mut cached = declaration.relevance.borrow_mut();
-        if cached.len() >= 16 {
-            cached.clear();
-        }
-        cached.push((key.1, summary));
-        Ok(summary)
-    }
-    fn compute_summary(&mut self, name: &str, levels: &[Level]) -> Result<Summary> {
-        #[cfg(feature = "profile")]
-        crate::profile::count("relevance_summaries");
-        let head = self
-            .ev
-            .term(Expr::Const(name.into(), levels.to_vec()), None);
-        let mut ty = self.infer(&head, false)?;
-        let mut domains = Vec::new();
-        let mut summary = Summary::default();
-        loop {
-            match self.view(&ty, true)? {
-                View::Pi(domain, body) if domains.len() < 64 => {
-                    let level = self.sort(&domain, false)?;
-                    if level.equivalent(&Level::Nat(0))? {
-                        summary.proofs |= 1 << domains.len();
-                    }
-                    domains.push(level);
-                    let x = self.fresh(&domain);
-                    ty = self.apply_body(&body, &x)?;
-                }
-                View::Pi(..) => break,
-                View::Value(_) => {
-                    let mut level = self.type_sort(&ty)?;
-                    summary.set_result(domains.len(), &level)?;
-                    for (arity, domain) in domains.into_iter().enumerate().rev() {
-                        level = Level::imax(domain, level);
-                        summary.set_result(arity, &level)?;
-                    }
-                    break;
-                }
-            }
-        }
-        Ok(summary)
-    }
-    fn known_proof(&mut self, term: &Thunk) -> Result<Option<bool>> {
-        if let Some(status) = self.proof_status.get(&term.id) {
-            return Ok(*status);
-        }
-        let mut head = term.clone();
-        let mut arity = 0;
-        while let Expr::App(f, _) = &*head.expr {
-            arity += 1;
-            head = self.child(f, &head);
-        }
-        let status = match &*head.expr {
-            Expr::Const(name, levels) => self.summary(name, levels)?.result(arity),
-            Expr::Sort(_) | Expr::Pi(..) | Expr::Nat(_) | Expr::Str(_) if arity == 0 => Some(false),
-            _ => None,
-        };
-        if self.proof_status.len() >= 16_384 {
-            self.proof_status.clear();
-        }
-        self.proof_status.insert(term.id, status);
-        Ok(status)
     }
     fn child(&mut self, expr: &Shared<Expr>, parent: &Thunk) -> Thunk {
         self.ev.term_at(expr.clone(), parent.context.clone(), 0)
@@ -240,12 +157,7 @@ impl<'b, 'a> Session<'b, 'a> {
             Ok(Type::Term(term))
         }
     }
-    fn body(
-        &self,
-        binder: &crate::syntax::Binder,
-        context: Option<Rc<Frame>>,
-        infer: bool,
-    ) -> Body {
+    fn body(&self, binder: &Binder, context: Option<Rc<Frame>>, infer: bool) -> Body {
         Body {
             expr: binder.body().clone(),
             context,
@@ -268,7 +180,7 @@ impl<'b, 'a> Session<'b, 'a> {
         }
     }
     fn quote_type(&mut self, ty: &Type) -> Result<Expr> {
-        stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.quote_type_core(ty))
+        grow(|| self.quote_type_core(ty))
     }
     fn quote_type_core(&mut self, ty: &Type) -> Result<Expr> {
         match ty {
@@ -298,7 +210,7 @@ impl<'b, 'a> Session<'b, 'a> {
         if let Some(level) = self.sorts.get(&ty.id()) {
             return Ok(level.clone());
         }
-        let level = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.type_sort_core(ty))?;
+        let level = grow(|| self.type_sort_core(ty))?;
         self.sorts.insert(ty.id(), level.clone());
         Ok(level)
     }
@@ -331,17 +243,15 @@ impl<'b, 'a> Session<'b, 'a> {
         if !checking && let Some(ty) = self.inferred.get(&(e.id, true)) {
             return Ok(ty.clone());
         }
-        let ty = stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || {
-            self.infer_core(e, checking)
-        })?;
+        let ty = grow(|| self.infer_core(e, checking))?;
         self.inferred.insert(key, ty.clone());
         Ok(ty)
     }
     fn infer_core(&mut self, e: &Thunk, checking: bool) -> Result<Type> {
         self.ev.tc.tick()?;
         let ty = match &*e.expr {
-            Expr::Nat(_) => self.ev.tc.literal_type("Nat")?,
-            Expr::Str(_) => self.ev.tc.literal_type("String")?,
+            Expr::Nat(_) => self.ev.tc.literal_type(NAT)?,
+            Expr::Str(_) => self.ev.tc.literal_type(STRING)?,
             Expr::Sort(u) => {
                 self.ev.tc.valid_level(u)?;
                 Expr::Sort(u.clone().succ()?)
@@ -499,8 +409,7 @@ impl<'b, 'a> Session<'b, 'a> {
             let dependent = match self.ev.tc.cache.bound_support(body_id) {
                 Some(bits) => bits.first().is_some_and(|w| w & 1 != 0),
                 None => {
-                    // The compact support bitmap omits very deep indices.
-                    // Preserve the exact projection rule in that rare case.
+                    // The support bitmap omits very deep indices, so test free variables exactly.
                     let (name, opened) = bind(Name::<Expr>::new("_"), body.expr.clone()).unbind();
                     opened.fv().contains(&name.to_any().unwrap())
                 }
@@ -518,441 +427,5 @@ impl<'b, 'a> Session<'b, 'a> {
             field = self.apply_body(&body, &arg)?;
         }
         unreachable!()
-    }
-
-    fn conv(&mut self, a: &Type, b: &Type, types: bool) -> Result<bool> {
-        if a.id() == b.id() {
-            return Ok(true);
-        }
-        let key = (a.id().min(b.id()), a.id().max(b.id()), types);
-        if let Some(result) = self.equal.get(&key) {
-            return Ok(*result);
-        }
-        let result =
-            stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.conv_core(a, b, types))?;
-        self.equal.insert(key, result);
-        Ok(result)
-    }
-    fn conv_terms(&mut self, a: &Thunk, b: &Thunk, types: bool) -> Result<bool> {
-        self.conv(&Type::Term(a.clone()), &Type::Term(b.clone()), types)
-    }
-    fn conv_core(&mut self, a: &Type, b: &Type, types: bool) -> Result<bool> {
-        if let Some(fuel) = &mut self.ev.tc.probe_fuel {
-            *fuel = fuel
-                .checked_sub(1)
-                .ok_or_else(|| Error("conversion probe exhausted".into()))?;
-        }
-        self.ev.tc.tick()?;
-        #[cfg(feature = "profile")]
-        crate::profile::count("semantic_conversions");
-        if !types && let (Type::Term(at), Type::Term(bt)) = (a, b) {
-            let status = self.known_proof(at)?;
-            if status != Some(false) {
-                let ta = self.infer(at, false)?;
-                let proof =
-                    status == Some(true) || self.type_sort(&ta)?.equivalent(&Level::Nat(0))?;
-                self.proof_status.insert(at.id, Some(proof));
-                if proof {
-                    let tb = self.infer(bt, false)?;
-                    return self.conv(&ta, &tb, true);
-                }
-            }
-        }
-        let av = self.view(a, false)?;
-        let bv = self.view(b, false)?;
-        match (&av, &bv) {
-            (View::Pi(ad, ab), View::Pi(bd, bb)) => {
-                if !self.conv_terms(ad, bd, true)? {
-                    return Ok(false);
-                }
-                let x = self.fresh(ad);
-                let at = self.apply_body(ab, &x)?;
-                let bt = self.apply_body(bb, &x)?;
-                return self.conv(&at, &bt, true);
-            }
-            (View::Value(av), View::Value(bv)) if self.congruent(av, bv)? => return Ok(true),
-            _ => {}
-        }
-        // Unfold the newer declaration first, keeping arguments suspended.
-        let da = self.delta(&av)?;
-        let db = self.delta(&bv)?;
-        match (da, db) {
-            (Some((ao, at)), Some((bo, bt))) => {
-                return if ao > bo {
-                    self.conv(&at, b, types)
-                } else if bo > ao {
-                    self.conv(a, &bt, types)
-                } else {
-                    self.conv(&at, &bt, types)
-                };
-            }
-            (Some((_, at)), None) => return self.conv(&at, b, types),
-            (None, Some((_, bt))) => return self.conv(a, &bt, types),
-            _ => {}
-        }
-        let (View::Value(av), View::Value(bv)) = (av, bv) else {
-            return Ok(false);
-        };
-        let (Type::Term(at), Type::Term(bt)) = (a, b) else {
-            return Ok(false);
-        };
-        if let Expr::Nat(n) = &av.head {
-            return self.nat_eq(&n.0, &bv);
-        }
-        if let Expr::Nat(n) = &bv.head {
-            return self.nat_eq(&n.0, &av);
-        }
-        if let Expr::Str(s) = &av.head {
-            let expanded = self.ev.tc.string_constructor(s)?;
-            let expanded = self.ev.term(expanded, None);
-            return self.conv_terms(&expanded, bt, false);
-        }
-        if let Expr::Str(s) = &bv.head {
-            let expanded = self.ev.tc.string_constructor(s)?;
-            let expanded = self.ev.term(expanded, None);
-            return self.conv_terms(at, &expanded, false);
-        }
-        if let Expr::Lam(d, binder) = &av.head {
-            let domain = self.ev.term_at(d.clone(), av.context.clone(), 0);
-            let bty = self.infer(bt, false)?;
-            if let View::Pi(bdomain, _) = self.view(&bty, true)? {
-                if !self.conv_terms(&domain, &bdomain, true)? {
-                    return Ok(false);
-                }
-                let x = self.fresh(&domain);
-                let body = self.body(binder, av.context.clone(), false);
-                let lhs = self.apply_body(&body, &x)?;
-                let rhs = Type::Term(self.app(bt, &x));
-                return self.conv(&lhs, &rhs, false);
-            }
-        }
-        if matches!(bv.head, Expr::Lam(..)) {
-            return self.conv(b, a, types);
-        }
-        if !types {
-            let ta = self.infer(at, false)?;
-            if let View::Value(tv) = self.view(&ta, true)?
-                && let Expr::Const(n, _) = &tv.head
-                && self.ev.tc.structure(n).is_some_and(|c| c.num_fields == 0)
-            {
-                let tb = self.infer(bt, false)?;
-                return self.conv(&ta, &tb, true);
-            }
-            if self.eta(at, bt, &bv)? || self.eta(bt, at, &av)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-    fn congruent(&mut self, a: &Value, b: &Value) -> Result<bool> {
-        if a.id == b.id {
-            return Ok(true);
-        }
-        if a.args.len() != b.args.len() {
-            return Ok(false);
-        }
-        let heads = match (&a.head, &b.head) {
-            (Expr::Sort(a), Expr::Sort(b)) => a.equivalent(b)?,
-            (Expr::Nat(a), Expr::Nat(b)) => a == b,
-            (Expr::Str(a), Expr::Str(b)) => a == b,
-            (Expr::Var(a), Expr::Var(b)) => a == b,
-            (Expr::Const(an, au), Expr::Const(bn, bu)) if an == bn && au.len() == bu.len() => {
-                let mut equal = true;
-                for (a, b) in au.iter().zip(bu) {
-                    if !a.equivalent(b)? {
-                        equal = false;
-                        break;
-                    }
-                }
-                equal
-            }
-            (Expr::Proj(an, ai, ae), Expr::Proj(bn, bi, be)) if an == bn && ai == bi => {
-                let ae = self.ev.term_at(ae.clone(), a.context.clone(), 0);
-                let be = self.ev.term_at(be.clone(), b.context.clone(), 0);
-                self.conv_terms(&ae, &be, false)?
-            }
-            (Expr::Lam(ad, ab), Expr::Lam(bd, bb)) => {
-                let ad = self.ev.term_at(ad.clone(), a.context.clone(), 0);
-                let bd = self.ev.term_at(bd.clone(), b.context.clone(), 0);
-                if !self.conv_terms(&ad, &bd, true)? {
-                    return Ok(false);
-                }
-                let x = self.fresh(&ad);
-                let ab = self.body(ab, a.context.clone(), false);
-                let bb = self.body(bb, b.context.clone(), false);
-                let at = self.apply_body(&ab, &x)?;
-                let bt = self.apply_body(&bb, &x)?;
-                self.conv(&at, &bt, false)?
-            }
-            _ => false,
-        };
-        if !heads {
-            return Ok(false);
-        }
-        let summary = if let Expr::Const(name, levels) = &a.head {
-            self.summary(name, levels)?
-        } else {
-            Summary::default()
-        };
-        let unfoldable = matches!(&a.head, Expr::Const(name, _)
-            if self.ev.tc.env.declarations.get(name).is_some_and(|d| d.value.is_some()));
-        for (i, (a, b)) in a.args.iter().zip(&b.args).enumerate() {
-            if summary.proof_argument(i) {
-                #[cfg(feature = "profile")]
-                crate::profile::count("proof_arguments_skipped");
-                continue;
-            }
-            // Bound each speculative argument separately. Sharing one limit
-            // across the whole spine can needlessly unfold large functions.
-            let probe = self.ev.tc.probe_fuel.is_none() && unfoldable;
-            if probe {
-                self.ev.tc.probe_fuel = Some(2048);
-            }
-            let result = self.conv_terms(a, b, false);
-            if probe {
-                self.ev.tc.probe_fuel = None;
-            }
-            match result {
-                // An interrupted comparison is not a cached inequality.
-                Err(e) if probe && e.0 == "conversion probe exhausted" => return Ok(false),
-                Err(e) => return Err(e),
-                Ok(false) => return Ok(false),
-                Ok(true) => {}
-            }
-        }
-        Ok(true)
-    }
-    fn delta(&mut self, view: &View) -> Result<Option<(usize, Type)>> {
-        let View::Value(v) = view else {
-            return Ok(None);
-        };
-        let Expr::Const(n, us) = &v.head else {
-            return Ok(None);
-        };
-        let d = self.ev.tc.decl(n)?;
-        let Some(body) = &d.value else {
-            return Ok(None);
-        };
-        let subst = self.ev.tc.level_arguments(&d.params, us)?;
-        let body = self.ev.tc.substitute_levels(body, &subst)?;
-        let mut term = self.ev.term(body, None);
-        for arg in &v.args {
-            term = self.app(&term, arg);
-        }
-        Ok(Some((d.order, Type::Term(term))))
-    }
-    fn nat_eq(&mut self, n: &num_bigint::BigUint, value: &Value) -> Result<bool> {
-        use num_traits::{One, Zero};
-        let mut n = n.clone();
-        let mut value = value.clone();
-        loop {
-            match &value.head {
-                Expr::Nat(m) => return Ok(value.args.is_empty() && n == m.0),
-                Expr::Const(c, us)
-                    if us.is_empty() && *c == self.ev.tc.builtin_name("Nat.zero") =>
-                {
-                    return Ok(value.args.is_empty() && n.is_zero());
-                }
-                Expr::Const(c, us)
-                    if us.is_empty()
-                        && *c == self.ev.tc.builtin_name("Nat.succ")
-                        && value.args.len() == 1
-                        && !n.is_zero() =>
-                {
-                    n -= num_bigint::BigUint::one();
-                    value = self.ev.eval(&value.args[0], true)?;
-                }
-                _ => return Ok(false),
-            }
-        }
-    }
-    fn eta(&mut self, a: &Thunk, b: &Thunk, bv: &Value) -> Result<bool> {
-        let Expr::Const(n, _) = &bv.head else {
-            return Ok(false);
-        };
-        let Some(ctor) = self.ev.tc.env.constructors.get(n).cloned() else {
-            return Ok(false);
-        };
-        if self.ev.tc.structure(&ctor.inductive).is_none()
-            || bv.args.len() != ctor.num_params + ctor.num_fields
-        {
-            return Ok(false);
-        }
-        let at = self.infer(a, false)?;
-        let bt = self.infer(b, false)?;
-        if !self.conv(&at, &bt, true)? {
-            return Ok(false);
-        }
-        for (i, field) in bv.args[ctor.num_params..].iter().enumerate() {
-            let proj = self.projection(&ctor.inductive, i, a);
-            if !self.conv_terms(&proj, field, false)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::{parse_expr, run};
-
-    fn expr(source: &str) -> Expr {
-        parse_expr(source).unwrap()
-    }
-    #[test]
-    fn relevance_respects_universes_and_unknown_telescope_tails() {
-        let mut env = Environment::new();
-        let a = Name::new("A");
-        let x = Name::new("x");
-        env.declare(
-            "poly".into(),
-            vec!["u".into()],
-            Expr::pi(
-                a.clone(),
-                Expr::Sort(Level::Param("u".into())),
-                Expr::pi(x, Expr::Var(a.clone()), Expr::Var(a)),
-            ),
-            None,
-            true,
-        )
-        .unwrap();
-        run("axiom P : Prop", &mut env).unwrap();
-        let mut ty = Expr::constant("P");
-        for _ in 0..65 {
-            ty = Expr::pi(Name::new("h"), Expr::constant("P"), ty);
-        }
-        env.axiom("many", ty).unwrap();
-        let mut tc = Checker::new(&env);
-        tc.uparams.insert("u".into());
-        let mut s = Session::new(&mut tc);
-        let prop = s.summary("poly", &[Level::Nat(0)]).unwrap();
-        let data = s.summary("poly", &[Level::Nat(1)]).unwrap();
-        let unknown = s.summary("poly", &[Level::Param("u".into())]).unwrap();
-        assert!(prop.proof_argument(1));
-        assert_eq!(prop.result(2), Some(true));
-        assert!(!data.proof_argument(1));
-        assert_eq!(data.result(2), Some(false));
-        assert!(!unknown.proof_argument(1));
-        assert_eq!(unknown.result(2), None);
-        let many = s.summary("many", &[]).unwrap();
-        assert!(many.proof_argument(63));
-        assert!(!many.proof_argument(64));
-        assert_eq!(many.result(65), None);
-        drop(s);
-        let mut undeclared = Checker::new(&env);
-        let mut undeclared = Session::new(&mut undeclared);
-        assert!(
-            undeclared
-                .summary("poly", &[Level::Param("u".into())])
-                .is_err()
-        );
-    }
-    #[test]
-    fn speculative_comparison_falls_back_without_caching_failure() {
-        let mut env = Environment::new();
-        run("axiom A : Type; axiom a : A; axiom b : A; def hold : (forall (x : A), A) := fun (x : A) => a", &mut env).unwrap();
-        let mut previous = Expr::constant("a");
-        for i in 0..2200 {
-            let name = format!("d{i}");
-            env.define(&name, Expr::constant("A"), previous).unwrap();
-            previous = Expr::constant(name);
-        }
-        let mut tc = Checker::new(&env);
-        let mut s = Session::new(&mut tc);
-        let slow = s.ev.term(previous, None);
-        let fast = s.ev.term(Expr::constant("a"), None);
-        let hold = s.ev.term(Expr::constant("hold"), None);
-        let left = s.app(&hold, &slow);
-        let right = s.app(&hold, &fast);
-        let lv = s.ev.eval(&left, false).unwrap();
-        let rv = s.ev.eval(&right, false).unwrap();
-        assert!(!s.congruent(&lv, &rv).unwrap());
-        assert!(s.ev.tc.probe_fuel.is_none());
-        assert!(s.conv_terms(&left, &right, false).unwrap());
-        assert!(s.conv_terms(&slow, &fast, false).unwrap());
-        let different = s.ev.term(Expr::constant("b"), None);
-        assert!(!s.conv_terms(&slow, &different, false).unwrap());
-    }
-
-    #[test]
-    fn dependent_inference_and_conversion_keep_closures() {
-        let mut env = Environment::new();
-        run("axiom A : Type; axiom a : A; axiom B : (forall (x : A), Type); axiom f : (forall (x : A), B x)", &mut env).unwrap();
-        let mut tc = Checker::new(&env);
-        let mut s = Session::new(&mut tc);
-        let value = s.ev.term(expr("fun (T : Type) => fun (x : T) => x"), None);
-        let expected =
-            s.ev.term(expr("forall (T : Type), forall (x : T), T"), None);
-        let actual = s.infer(&value, true).unwrap();
-        s.check_type(&actual, &expected).unwrap();
-        let value =
-            s.ev.term(expr("(fun (g : (forall (x : A), B x)) => g a) f"), None);
-        let expected = s.ev.term(expr("B a"), None);
-        let actual = s.infer(&value, true).unwrap();
-        s.check_type(&actual, &expected).unwrap();
-        assert!(s.ev.state.quoted.is_empty());
-    }
-
-    #[test]
-    fn unchecked_inference_does_not_validate_discarded_arguments() {
-        let mut env = Environment::new();
-        run("axiom A : Type; axiom a : A", &mut env).unwrap();
-        let mut tc = Checker::new(&env);
-        let mut s = Session::new(&mut tc);
-        for source in ["(fun (x : A) => a) Type", "let x : A := Type in a"] {
-            let value = s.ev.term(expr(source), None);
-            assert!(s.infer(&value, false).is_ok());
-            assert!(s.infer(&value, true).is_err());
-        }
-    }
-
-    #[test]
-    fn inference_closures_do_not_capture_sibling_binders() {
-        let env = Environment::new();
-        for source in [
-            "fun (T : Type) => fun (x : T) => x",
-            "fun (T : Type) => fun (U : Type) => fun (x : T) => fun (y : U) => x",
-            "fun (T : Type) => let U : Type := T in fun (x : U) => x",
-        ] {
-            let e = expr(source);
-            let actual = env.infer(&e).unwrap();
-            let mut legacy = Checker::new(&env);
-            legacy.semantic = false;
-            let expected = legacy.infer(&e).unwrap();
-            assert!(actual.fv().is_empty());
-            assert!(legacy.conv(&actual, &expected).unwrap());
-            env.check(&e, &actual).unwrap();
-        }
-    }
-
-    #[test]
-    fn semantic_conversion_agrees_with_syntax_kernel() {
-        let mut env = Environment::new();
-        run("axiom A : Type; axiom a : A; axiom b : A; axiom P : Prop; axiom p : P; axiom q : P; axiom f : (forall (x : A), A); def id : (forall (x : A), A) := fun (x : A) => x", &mut env).unwrap();
-        let terms = [
-            "a",
-            "b",
-            "id a",
-            "let x : A := a in x",
-            "f a",
-            "p",
-            "q",
-            "f",
-            "fun (x : A) => f x",
-            "fun (x : A) => x",
-            "fun (x : A) => a",
-        ];
-        for a in terms.map(expr) {
-            for b in terms.map(expr) {
-                let mut legacy = Checker::new(&env);
-                legacy.semantic = false;
-                let ta = legacy.infer(&a).unwrap();
-                let tb = legacy.infer(&b).unwrap();
-                let expected = legacy.conv(&ta, &tb).unwrap() && legacy.conv(&a, &b).unwrap();
-                assert_eq!(env.def_eq(&a, &b).unwrap(), expected, "{a} vs {b}");
-            }
-        }
     }
 }

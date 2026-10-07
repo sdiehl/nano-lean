@@ -1,6 +1,3 @@
-//! Hand scanner for the hot export line shapes. Returns None on anything it does
-//! not recognise exactly; the caller then falls back to serde_json.
-
 pub enum Line<'b> {
     Str(u32, u32, &'b str),
     Num(u32, u32, u64),
@@ -10,7 +7,6 @@ pub enum Line<'b> {
     App(u32, u32, u32),
     Bvar(u32, u64),
     Sort(u32, u32),
-    /// Universe arguments are left in the caller's scratch buffer.
     Const(u32, u32),
     Binder(u32, u32, u32, u32, bool),
     Let(u32, u32, u32, u32, u32, bool),
@@ -29,7 +25,7 @@ fn digits(b: &[u8]) -> Option<(u64, usize)> {
     (m < 8).then(|| (hi * 10u64.pow(m as u32) + lo, 8 + m))
 }
 
-/// One in every byte lane of a word; multiplying broadcasts a byte to all lanes.
+/// Multiplying by this broadcasts a byte to all lanes.
 const LANES: u64 = 0x0101_0101_0101_0101;
 const LOW_NIBBLES: u64 = 0x0f * LANES;
 const HIGH_NIBBLES: u64 = 0xf0 * LANES;
@@ -43,7 +39,6 @@ const BYTE_PAIRS: u64 = 0x00ff_00ff_00ff_00ff;
 const HALF_WORDS: u64 = 0x0000_ffff_0000_ffff;
 const LOW_WORD: u64 = 0x0000_0000_ffff_ffff;
 
-/// Value and length of the leading digit run in an eight-byte little-endian word.
 #[inline]
 fn chunk(b: &[u8]) -> Option<(u64, usize)> {
     let word = u64::from_le_bytes(*b.first_chunk::<8>()?);
@@ -120,7 +115,7 @@ impl<'b> Cur<'b> {
             match *self.b.get(self.i)? {
                 b'"' => break,
                 b'\\' => return None,
-                c if c < 0x20 => return None,
+                c if c < b' ' => return None,
                 c => {
                     ascii &= c.is_ascii();
                     self.i += 1;

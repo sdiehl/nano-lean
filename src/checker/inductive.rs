@@ -1,11 +1,9 @@
-//! Inductive validation reuses the existing kernel's reconstruction algorithms.
-//! Ordinary dependencies are conditional; the export driver checks every one.
-
 use super::Tc;
 use crate::kernel;
 use crate::kernel::export_validation::{
     ExportDependency, ExportSession, validate_export_dependencies,
 };
+use crate::resource::Budget;
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Block, Store};
@@ -14,11 +12,21 @@ use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
 use crate::{Expr as OldExpr, Level as OldLevel};
-use crate::{ensure, reject};
+use crate::{ensure, reject, unsupported};
+use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::ptr;
+use std::rc::Rc;
+#[cfg(feature = "vstats")]
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+#[cfg(feature = "vstats")]
+use std::time::Instant;
 use unbound::prelude::{Name as OldName, Shared, bind};
 
-/// A worker's adapter belongs to exactly one immutable imported store.
+const CONVERT_CACHE_LIMIT: usize = 65536;
+const STACK_RED_ZONE: usize = 128 << 10;
+const STACK_GROWTH: usize = 2 << 20;
+
 pub struct Adapter<'a> {
     store: &'a Store<'a>,
     session: ExportSession,
@@ -35,18 +43,15 @@ impl<'a> Adapter<'a> {
     }
 }
 
-/// Inductive blocks by path, native then legacy: count and nanoseconds.
 #[cfg(feature = "vstats")]
-pub static BLOCKS: [[std::sync::atomic::AtomicU64; 2]; 2] =
-    [const { [const { std::sync::atomic::AtomicU64::new(0) }; 2] }; 2];
+pub static BLOCKS: [[AtomicU64; 2]; 2] = [const { [const { AtomicU64::new(0) }; 2] }; 2];
 
 #[cfg(feature = "vstats")]
-struct BlockTimer(usize, std::time::Instant);
+struct BlockTimer(usize, Instant);
 
 #[cfg(feature = "vstats")]
 impl Drop for BlockTimer {
     fn drop(&mut self) {
-        use std::sync::atomic::Ordering::Relaxed;
         let [n, t] = &BLOCKS[self.0];
         n.fetch_add(1, Relaxed);
         t.fetch_add(self.1.elapsed().as_nanos() as u64, Relaxed);
@@ -64,9 +69,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if block.start != idx {
             return;
         }
-        let native = std::env::var_os("NL_LEGACY_IND").is_none() && self.native_block(block);
+        let native = self.native_block(block);
         #[cfg(feature = "vstats")]
-        let _timer = BlockTimer(usize::from(!native), std::time::Instant::now());
+        let _timer = BlockTimer(usize::from(!native), Instant::now());
         if native {
             self.check_block(block);
         } else {
@@ -90,23 +95,23 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             });
         if let Some(adapter) = self.adapter.as_mut() {
             assert!(
-                std::ptr::eq(adapter.store, self.ctx.store),
+                ptr::eq(adapter.store, self.ctx.store),
                 "adapter belongs to another export"
             );
             adapter.session.begin(idx);
         }
         let dependencies = self.inductive_dependencies(block);
+        let theorem = matches!(d, Declar::Thm(..));
         if let Some(adapter) = self.adapter.as_mut() {
             let prefix: Vec<_> = dependencies
                 .into_iter()
                 .map(|index| {
+                    let dependency = adapter.store.declars[index as usize];
                     (
                         index,
-                        adapter.convert.declaration(
-                            adapter.store,
-                            adapter.store.declars[index as usize],
-                            false,
-                        ),
+                        adapter
+                            .convert
+                            .declaration(adapter.store, dependency, false),
                     )
                 })
                 .collect();
@@ -115,52 +120,28 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 adapter.store.declars[idx as usize],
                 true,
             );
-            let work = std::rc::Rc::new(std::cell::Cell::new(self.steps_left));
-            let result = adapter.session.validate(
-                prefix,
-                target,
-                matches!(d, Declar::Thm(..)),
-                work.clone(),
-            );
-            self.steps_left = work.get();
-            if adapter.convert.expressions.len() > 65536 {
+            let result = with_work(&mut self.steps_left, |work| {
+                adapter.session.validate(prefix, target, theorem, work)
+            });
+            if adapter.convert.expressions.len() > CONVERT_CACHE_LIMIT {
                 adapter.convert = Convert::default();
             }
-            if let Err(error) = result {
-                if error.0.contains("budget exhausted") {
-                    crate::unsupported!("validation: {error}");
-                }
-                reject!("declaration validation: {error}");
-            }
-            return;
+            return accept(result);
         }
         let mut convert = Convert::default();
+        let store = self.ctx.store;
         let prefix: Vec<_> = dependencies
             .into_iter()
             .map(|index| {
                 self.tick();
-                convert.declaration(
-                    self.ctx.store,
-                    self.ctx.store.declars[index as usize],
-                    false,
-                )
+                convert.declaration(store, store.declars[index as usize], false)
             })
             .collect();
-        let target = convert.declaration(self.ctx.store, d, true);
-        let work = std::rc::Rc::new(std::cell::Cell::new(self.steps_left));
-        let result = validate_export_dependencies(
-            prefix,
-            target,
-            matches!(d, Declar::Thm(..)),
-            work.clone(),
-        );
-        self.steps_left = work.get();
-        if let Err(error) = result {
-            if error.0.contains("budget exhausted") {
-                crate::unsupported!("validation: {error}");
-            }
-            reject!("declaration validation: {error}");
-        }
+        let target = convert.declaration(store, d, true);
+        let result = with_work(&mut self.steps_left, |work| {
+            validate_export_dependencies(prefix, target, theorem, work)
+        });
+        accept(result);
     }
 
     fn inductive_dependencies(&mut self, target: Block) -> BTreeSet<u32> {
@@ -246,10 +227,28 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 }
 
+fn with_work(
+    steps_left: &mut u64,
+    validate: impl FnOnce(Rc<Cell<u64>>) -> Result<(), kernel::Error>,
+) -> Result<(), kernel::Error> {
+    let work = Rc::new(Cell::new(*steps_left));
+    let result = validate(work.clone());
+    *steps_left = work.get();
+    result
+}
+
+fn accept(result: Result<(), kernel::Error>) {
+    if let Err(error) = result {
+        if Budget::exhausted(&error.0) {
+            unsupported!("validation: {error}");
+        }
+        reject!("declaration validation: {error}");
+    }
+}
+
 fn roots<'a>(d: Declar<'a>, out: &mut Vec<ExprPtr<'a>>, target: bool) {
     out.push(d.ty());
-    // Opaque dependency bodies cannot participate in reduction. Their own
-    // declaration checks validate those bodies separately.
+    // Opaque dependency bodies cannot reduce and are validated by their own checks.
     if target && let Declar::Opaque(_, v) = d {
         out.push(v);
     }
@@ -352,7 +351,7 @@ impl<'a> Convert<'a> {
         if let Some(v) = self.expressions.get(&e) {
             return v.clone();
         }
-        stacker::maybe_grow(128 << 10, 2 << 20, || {
+        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROWTH, || {
             let out = match *e {
                 Expr::Var { idx, .. } => OldExpr::Var(OldName::bound(usize::from(idx), 0)),
                 Expr::Sort { level, .. } => OldExpr::Sort(self.level(level)),

@@ -1,9 +1,8 @@
-//! Locally nameless type checker over the interned term store. Inference carries
-//! fresh typed locals in a binder context; conversion operates on closed terms.
-
 mod contextual;
 mod defeq;
+pub(crate) mod env;
 mod inductive;
+pub(crate) mod nat;
 mod native_inductive;
 pub use inductive::Adapter;
 #[cfg(feature = "vstats")]
@@ -13,24 +12,26 @@ mod quot;
 mod tests;
 mod whnf;
 
-use crate::term::FxHashMap;
-use crate::term::FxHashSet;
+use crate::resource::Budget;
 use crate::term::arena::Arena;
 use crate::term::ctx::Ctx;
-use crate::term::decl::{Constructor, Declar, Inductive};
+use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Names, Store};
+use crate::term::outcome::{self, Failure};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
+use env::Decls;
+use std::cell::Cell;
+use std::rc::Rc;
 
-/// Resource exhaustion is unsupported, never a successful check or a rejection.
 #[derive(Clone, Copy)]
 pub struct Limits {
     pub steps: u64,
     pub arena_bytes: usize,
 }
 
-/// Defaults check the full pinned Mathlib export natively.
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -40,14 +41,13 @@ impl Default for Limits {
     }
 }
 
-/// Returns whether the existing kernel was needed after native arena exhaustion.
-/// Both engines share the declaration's work budget. Rejections never retry.
+/// Both engines share the work budget and rejections never retry.
 pub fn check_declaration<'a>(
     store: &'a Store<'a>,
     arena: &mut Arena,
     idx: u32,
     limits: Limits,
-) -> Result<bool, crate::term::outcome::Failure> {
+) -> Result<bool, Failure> {
     check_with_adapter(store, arena, idx, limits, None, false)
 }
 
@@ -58,51 +58,40 @@ pub fn check_with_adapter<'a>(
     mut limits: Limits,
     mut adapter: Option<&mut Adapter<'a>>,
     native_only: bool,
-) -> Result<bool, crate::term::outcome::Failure> {
-    use crate::term::outcome::{self, Failure};
+) -> Result<bool, Failure> {
     let (result, steps) = check_shared(store, arena, idx, limits, adapter.as_deref_mut());
     limits.steps = steps;
     match result {
-        Err(Failure::Declined(reason))
-            if !native_only && reason == "declaration arena budget exhausted" =>
-        {
+        Err(Failure::Declined(reason)) if !native_only && reason == Budget::Arena.message() => {
             arena.reset();
-            outcome::run(|| {
-                Tc::new(store, arena)
-                    .with_limits(limits)
-                    .with_adapter(adapter)
-                    .check_existing(idx)
-            })
-            .map(|()| true)
+            check_existing_only(store, arena, idx, limits, adapter).map(|()| true)
         }
         result => result.map(|()| false),
     }
 }
 
-/// One attempt that never resets the arena; returns the steps left for a retry.
 pub fn check_shared<'a>(
     store: &'a Store<'a>,
     arena: &Arena,
     idx: u32,
     limits: Limits,
     adapter: Option<&mut Adapter<'a>>,
-) -> (Result<(), crate::term::outcome::Failure>, u64) {
+) -> (Result<(), Failure>, u64) {
     let mut tc = Tc::new(store, arena)
         .with_limits(limits)
         .with_adapter(adapter);
-    let result = crate::term::outcome::run(|| tc.check(idx));
+    let result = outcome::run(|| tc.check(idx));
     (result, tc.steps_left)
 }
 
-/// Check with the existing kernel only, as after native arena exhaustion.
 pub fn check_existing_only<'a>(
     store: &'a Store<'a>,
     arena: &mut Arena,
     idx: u32,
     limits: Limits,
     adapter: Option<&mut Adapter<'a>>,
-) -> Result<(), crate::term::outcome::Failure> {
-    crate::term::outcome::run(|| {
+) -> Result<(), Failure> {
+    outcome::run(|| {
         Tc::new(store, arena)
             .with_limits(limits)
             .with_adapter(adapter)
@@ -117,11 +106,10 @@ pub struct Tc<'t, 'a: 't> {
     pub ctx: Ctx<'t, 'a>,
     pub(crate) names: Names<'t>,
     pub(crate) uparams: LevelsPtr<'t>,
-    /// Declarations at or past this index are not yet in scope.
     pub(crate) limit: u32,
     adapter: Option<&'t mut Adapter<'a>>,
     next_local: u32,
-    conversion_depth: std::rc::Rc<std::cell::Cell<usize>>,
+    conversion_depth: Rc<Cell<usize>>,
     conversion_locals: FxHashMap<(usize, ExprPtr<'t>), ExprPtr<'t>>,
     probe_remaining: Option<u32>,
     limits: Limits,
@@ -129,9 +117,9 @@ pub struct Tc<'t, 'a: 't> {
     #[cfg(test)]
     probe_exhaustions: usize,
     open_infer_cache: [FxHashMap<ContextKey<'t>, ExprPtr<'t>>; 2],
-    support_cache: FxHashMap<ExprPtr<'t>, std::rc::Rc<[u16]>>,
+    support_cache: FxHashMap<ExprPtr<'t>, Rc<[u16]>>,
     infer_cache: [FxHashMap<ExprPtr<'t>, ExprPtr<'t>>; 2],
-    pub(crate) argument_support: FxHashMap<(NamePtr<'t>, usize), std::rc::Rc<[bool]>>,
+    pub(crate) argument_support: FxHashMap<(NamePtr<'t>, usize), Rc<[bool]>>,
     pub(crate) rec_cache: FxHashMap<RecKey<'t>, ExprPtr<'t>>,
     pub(crate) whnf_core_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     /// Unfolding results are valid only within the current declaration scope.
@@ -187,11 +175,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self
     }
 
-    /// Check the declaration at `idx`. An inductive block is checked as a whole
-    /// at its first type; its other members are skipped.
     pub fn check(&mut self, idx: u32) {
         if self.ctx.arena.allocated_bytes() > self.limits.arena_bytes {
-            crate::unsupported!("declaration arena budget exhausted");
+            Budget::Arena.decline();
         }
         self.infer_cache.iter_mut().for_each(|cache| cache.clear());
         self.open_infer_cache
@@ -239,27 +225,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     fn check_value(&mut self, v: ExprPtr<'t>, ty: ExprPtr<'t>) {
         let vt = self.infer(v, false);
         ensure!(self.def_eq(vt, ty), "declaration type mismatch");
-    }
-
-    pub(crate) fn declar(&self, n: NamePtr<'t>) -> Option<Declar<'t>> {
-        let i = n.decl_idx()?;
-        (i < self.limit).then(|| self.ctx.store.declars[i as usize])
-    }
-
-    pub(crate) fn structure_like(
-        &self,
-        n: NamePtr<'t>,
-    ) -> Option<(Inductive<'t>, Constructor<'t>)> {
-        let Some(Declar::Ind(i)) = self.declar(n) else {
-            return None;
-        };
-        if i.ctors.len() != 1 || i.num_indices != 0 || i.is_rec {
-            return None;
-        }
-        match self.declar(i.ctors[0]) {
-            Some(Declar::Ctor(c)) => Some((i, c)),
-            _ => None,
-        }
     }
 
     pub(crate) fn fresh_local(&mut self, ty: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -346,9 +311,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 self.ctx.declar_type(&d, levels)
             }
             Expr::App { .. } => self.infer_app(e, only),
-            Expr::Lam { .. } => self.infer_lam(e, only),
-            Expr::Pi { .. } => self.infer_pi(e, only),
-            Expr::Let { .. } => self.infer_let(e, only),
+            Expr::Lam { .. } | Expr::Pi { .. } | Expr::Let { .. } => {
+                self.infer_contextual(e, &mut Vec::new(), only)
+            }
             Expr::Proj {
                 name, idx, e: s, ..
             } => self.infer_proj(name, idx, s, only),
@@ -392,18 +357,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.ctx.inst(ft, &args[j..])
     }
 
-    fn infer_let(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        self.infer_contextual(e, &mut Vec::new(), only)
-    }
-
-    fn infer_lam(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        self.infer_contextual(e, &mut Vec::new(), only)
-    }
-
-    fn infer_pi(&mut self, e: ExprPtr<'t>, only: bool) -> ExprPtr<'t> {
-        self.infer_contextual(e, &mut Vec::new(), only)
-    }
-
     fn infer_proj(
         &mut self,
         name: NamePtr<'t>,
@@ -424,7 +377,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             reject!("projection of a non-structure")
         };
         ensure!(iname == name, "projection type mismatch");
-        let Some((ind, ctor)) = self.structure_like(name).or_else(|| self.single_ctor(name)) else {
+        let Some((ind, ctor)) = self.single_ctor(name) else {
             reject!("projection of a non-structure")
         };
         ensure!(
@@ -453,19 +406,17 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         ensure!(!is_prop || self.is_prop(ty), "invalid projection");
         ty
     }
+}
 
-    /// Projections are allowed on any single-constructor inductive without
-    /// indices, recursive or not.
-    fn single_ctor(&self, n: NamePtr<'t>) -> Option<(Inductive<'t>, Constructor<'t>)> {
-        let Some(Declar::Ind(i)) = self.declar(n) else {
-            return None;
-        };
-        if i.ctors.len() != 1 || i.num_indices != 0 {
-            return None;
-        }
-        match self.declar(i.ctors[0]) {
-            Some(Declar::Ctor(c)) => Some((i, c)),
-            _ => None,
-        }
+impl<'t, 'a: 't> Decls<'t> for Tc<'t, 'a> {
+    #[inline]
+    fn declar(&self, n: NamePtr<'t>) -> Option<Declar<'t>> {
+        let i = n.decl_idx()?;
+        (i < self.limit).then(|| self.ctx.store.declars[i as usize])
+    }
+
+    #[inline]
+    fn names(&self) -> &Names<'t> {
+        &self.names
     }
 }

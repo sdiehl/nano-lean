@@ -1,9 +1,9 @@
-//! Term storage with owned heap buffers for big integers.
-
 use bumpalo::Bump;
 use num_bigint::BigUint;
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
+
+const RETAINED_CHUNK_LIMIT: usize = 16 << 20;
 
 #[derive(Default)]
 pub struct Arena {
@@ -22,25 +22,23 @@ impl Arena {
 
     pub fn alloc_nat(&self, value: BigUint) -> &BigUint {
         self.nat_bytes.set(self.nat_bytes.get().saturating_add(
-            std::mem::size_of::<BigUint>() + (value.bits().div_ceil(64) as usize).saturating_mul(8),
+            size_of::<BigUint>() + (value.bits().div_ceil(64) as usize).saturating_mul(8),
         ));
         let value = Box::new(value);
         let ptr = &*value as *const BigUint;
         self.nats.borrow_mut().push(value);
-        // SAFETY: boxes never move their contents. The vector only appends through
-        // shared references; reset requires exclusive access to the whole arena.
+        // SAFETY: boxes never move their contents, and reset needs exclusive access.
         // The returned reference cannot outlive this arena or cross a reset.
         unsafe { &*ptr }
     }
 
-    /// Bump chunks plus the live integer payloads (excluding allocator overhead).
     pub fn allocated_bytes(&self) -> usize {
         self.bump
             .allocated_bytes()
             .saturating_add(self.nat_bytes.get())
     }
 
-    /// Bumped by every reset; anything keyed to this arena is stale once it changes.
+    /// Bumped by every reset, so anything keyed to an older value is stale.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -49,9 +47,8 @@ impl Arena {
         self.epoch += 1;
         self.nats.get_mut().clear();
         self.nat_bytes.set(0);
-        // Bump::reset retains its largest chunk. Avoid carrying a large
-        // declaration's high-water allocation through every subsequent check.
-        if self.bump.allocated_bytes() > 16 << 20 {
+        // Bump::reset keeps its largest chunk, so drop one a large declaration left behind.
+        if self.bump.allocated_bytes() > RETAINED_CHUNK_LIMIT {
             self.bump = Bump::new();
         } else {
             self.bump.reset();
@@ -86,6 +83,6 @@ mod tests {
         }
         arena.alloc_slice_fill_copy(17 << 20, 0u8);
         arena.reset();
-        assert!(arena.allocated_bytes() < 16 << 20);
+        assert!(arena.allocated_bytes() < RETAINED_CHUNK_LIMIT);
     }
 }

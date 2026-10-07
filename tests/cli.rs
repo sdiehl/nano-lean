@@ -156,8 +156,6 @@ fn progress_stays_on_stderr_and_preserves_json_results() {
     }
 }
 
-/// Unfolding `Nat.add` defeats literal acceleration, so conversion recurses
-/// deeply; the binary's worker stack must give up cleanly, not overflow.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "needs release speed")]
 fn deep_conversion_exhausts_budget_without_overflow() {

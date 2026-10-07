@@ -1,13 +1,15 @@
+use super::intern::Ptrs;
 use super::value::*;
 use super::{R, Vc, stat};
+use crate::checker::env::Decls;
 use crate::term::decl::Declar;
 use crate::term::expr::{Expr, WIDE};
-use crate::term::ptr::ExprPtr;
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
+use std::slice::Iter;
 
-/// Node chains up to this depth are kept as they are when dense.
 const SHALLOW: u32 = 8;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
@@ -79,11 +81,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 .get(idx)
                 .unwrap_or_else(|| reject!("unexpected bound variable")),
             Expr::Sort { level, .. } => {
-                let l = if sub.is_id() {
-                    level
-                } else {
-                    self.ctx.subst_level(level, sub.ks, sub.vs)
-                };
+                let l = self.subst_level(sub, level);
                 self.mk(K::Sort(l), false)
             }
             Expr::Const { name, levels, .. } => {
@@ -97,8 +95,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     args.push(arg);
                     f = fun;
                 }
-                // A constant head under the identity substitution is its own
-                // neutral, so the spine is interned without evaluating it.
+                // Under the identity substitution a constant head is its own neutral.
                 let head = match *f {
                     Expr::Const { name, levels, .. } if sub.is_id() => {
                         Err(Head::Const(name, levels))
@@ -186,8 +183,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(v)
     }
 
-    /// Keep only the slots `e` reads, so closures equal up to unused
-    /// captures share one value.
+    /// Keep only the slots `e` reads, so closures equal up to unused captures share one value.
     pub(crate) fn trim(&mut self, env: Env<'t>, e: ExprPtr<'t>) -> Env<'t> {
         stat!(self, trims);
         let sup = self.slots(e);
@@ -244,7 +240,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, frame_req);
         let open = vals.iter().any(|v| v.open);
         let o = usize::from(open);
-        if let Some(&f) = self.t.frames[o].get(super::Ptrs::new(vals)) {
+        if let Some(&f) = self.t.frames[o].get(Ptrs::new(vals)) {
             return f;
         }
         stat!(self, frame_new);
@@ -254,17 +250,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             open,
             prune: Cell::new((0, Env::EMPTY)),
         })));
-        self.t.frames[o].insert(super::Ptrs::new(vals), f);
+        self.t.frames[o].insert(Ptrs::new(vals), f);
         f
     }
 
-    /// A projection value, reduced when the structure is already a constructor application.
-    pub(crate) fn proj(
-        &mut self,
-        name: crate::term::ptr::NamePtr<'t>,
-        idx: u16,
-        s: V<'t>,
-    ) -> V<'t> {
+    pub(crate) fn proj(&mut self, name: NamePtr<'t>, idx: u16, s: V<'t>) -> V<'t> {
         if let K::Neu(Head::Const(c, _), args) = s.k
             && let Some(Declar::Ctor(k)) = self.declar(c)
             && let Some(&f) = args.get(usize::from(k.num_params) + usize::from(idx))
@@ -293,7 +283,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
-    /// Whether a closure body reads its own argument.
     pub(crate) fn uses_arg(&mut self, c: Clo<'t>) -> bool {
         !c.body.closed() && self.slots(c.body).next() == Some(0)
     }
@@ -304,9 +293,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.tick()?;
             match f.k {
                 K::Lam(_, c) if !c.typed => {
-                    // Bind successive arguments through nested lambdas and
-                    // evaluate the innermost body once, skipping the
-                    // intermediate closures.
+                    // Bind nested lambdas at once and evaluate only the innermost body.
                     stat!(self, applies);
                     stat!(self, beta_runs);
                     let (mut env, mut body) = (self.push(c.env, args[i]), c.body);
@@ -346,7 +333,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(f)
     }
 
-    /// Loose bound variables of `e` in ascending order.
     pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Slots<'t> {
         #[cfg(debug_assertions)]
         if e.sup() != WIDE
@@ -397,34 +383,26 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         s
     }
 
-    /// The type of a constant at given levels, evaluated once per declaration.
-    pub(crate) fn const_type(
-        &mut self,
-        n: crate::term::ptr::NamePtr<'t>,
-        ls: crate::term::ptr::LevelsPtr<'t>,
-    ) -> R<V<'t>> {
+    pub(crate) fn const_type(&mut self, n: NamePtr<'t>, ls: LevelsPtr<'t>) -> R<V<'t>> {
         if let Some(&v) = self.t.const_ty.get(&(n, ls)) {
             return Ok(v);
         }
         let Some(d) = self.declar(n) else {
             reject!("unknown constant {}", n.as_ref())
         };
-        let sub = self.sub(d.uparams(), ls);
-        let v = self.eval(Env::EMPTY, sub, d.ty())?;
+        let v = self.eval_at(d.uparams(), ls, d.ty())?;
         self.t.const_ty.insert((n, ls), v);
         Ok(v)
     }
 }
 
-/// Ascending loose bound variables: an inline mask, or a memoized wide list.
 #[derive(Clone)]
 pub(crate) enum Slots<'t> {
     Mask(u32),
-    Wide(std::slice::Iter<'t, u16>),
+    Wide(Iter<'t, u16>),
 }
 
 impl Slots<'_> {
-    /// Largest slot and slot count, if any.
     fn bounds(&self) -> Option<(u16, usize)> {
         match self {
             Slots::Mask(0) => None,
@@ -449,8 +427,7 @@ impl Iterator for Slots<'_> {
     }
 }
 
-/// Reference support by tree walk, giving up after `fuel` nodes since shared
-/// DAGs expand exponentially.
+/// Gives up after `fuel` nodes since shared DAGs expand exponentially.
 #[cfg(debug_assertions)]
 fn naive_support(e: ExprPtr<'_>, fuel: &mut u32) -> Option<Vec<u16>> {
     *fuel = fuel.checked_sub(1)?;
@@ -488,4 +465,26 @@ fn naive_support(e: ExprPtr<'_>, fuel: &mut u32) -> Option<Vec<u16>> {
     out.sort_unstable();
     out.dedup();
     Some(out)
+}
+
+impl<'t> Vc<'t, '_> {
+    #[inline]
+    pub(super) fn eval_at(
+        &mut self,
+        ks: LevelsPtr<'t>,
+        ls: LevelsPtr<'t>,
+        e: ExprPtr<'t>,
+    ) -> R<V<'t>> {
+        let sub = self.sub(ks, ls);
+        self.eval(Env::EMPTY, sub, e)
+    }
+
+    #[inline]
+    pub(super) fn subst_level(&mut self, sub: Sub<'t>, l: LevelPtr<'t>) -> LevelPtr<'t> {
+        if sub.is_id() {
+            l
+        } else {
+            self.ctx.subst_level(l, sub.ks, sub.vs)
+        }
+    }
 }

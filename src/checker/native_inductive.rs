@@ -1,15 +1,15 @@
-//! Native validation of non-nested inductive blocks, following the existing
-//! kernel's reconstruction: generate the expected recursors and compare.
-
 use super::Tc;
+use crate::kernel;
 use crate::term::FxHashSet;
 use crate::term::decl::{Constructor, Declar, Inductive, Recursor};
 use crate::term::expr::Expr;
 use crate::term::intern::Block;
-use crate::term::level::Level;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
-use crate::value_checker::{RecCheck, check_recursor};
+use crate::value_checker::RecCheck;
 use crate::{ensure, reject};
+use std::ops::Range;
+
+mod recursor;
 
 fn spine(mut e: ExprPtr<'_>) -> (ExprPtr<'_>, Vec<ExprPtr<'_>>) {
     let mut args = Vec::new();
@@ -84,20 +84,62 @@ struct Shape<'t> {
     owner: usize,
 }
 
+struct RecField<'t> {
+    field: ExprPtr<'t>,
+    locals: Vec<ExprPtr<'t>>,
+    owner: usize,
+    indices: Vec<ExprPtr<'t>>,
+}
+
+struct Members<'t> {
+    types: Vec<Inductive<'t>>,
+    ctors: Vec<Constructor<'t>>,
+    recs: Vec<Recursor<'t>>,
+}
+
+struct Spec<'t> {
+    fam: Family<'t>,
+    types: Vec<Inductive<'t>>,
+    indices: Vec<Vec<ExprPtr<'t>>>,
+    shapes: Vec<Shape<'t>>,
+}
+
+struct Elim<'t> {
+    level: LevelPtr<'t>,
+    uparams: LevelsPtr<'t>,
+    k: bool,
+}
+
+struct Premises<'t> {
+    motives: Vec<ExprPtr<'t>>,
+    majors: Vec<ExprPtr<'t>>,
+    minors: Vec<ExprPtr<'t>>,
+    recursive_fields: Vec<Vec<RecField<'t>>>,
+}
+
+fn members<'t, T>(
+    declars: &[Declar<'t>],
+    r: Range<u32>,
+    pick: impl Fn(Declar<'t>) -> Option<T>,
+) -> Vec<T> {
+    declars[r.start as usize..r.end as usize]
+        .iter()
+        .map(|&d| pick(d).unwrap_or_else(|| reject!("malformed inductive block")))
+        .collect()
+}
+
 impl<'t, 'a: 't> Tc<'t, 'a> {
     fn sort_of(&mut self, e: ExprPtr<'t>) -> LevelPtr<'t> {
         let s = self.infer(e, false);
         self.ensure_sort(s)
     }
 
-    /// The sort of a type already known to be well formed.
     fn level_of(&mut self, e: ExprPtr<'t>) -> LevelPtr<'t> {
         let s = self.infer(e, true);
         self.ensure_sort(s)
     }
 
-    /// Open a Pi telescope. Syntactic Pi bodies stay unsubstituted until a
-    /// non-Pi needs head normalisation, so each binder costs its domain only.
+    /// Pi bodies stay unsubstituted until a non-Pi needs whnf, so a binder costs its domain only.
     fn telescope(&mut self, e: ExprPtr<'t>) -> (Vec<ExprPtr<'t>>, ExprPtr<'t>) {
         let mut e = self.whnf(e);
         let mut xs = Vec::new();
@@ -118,6 +160,24 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
     }
 
+    fn open_params(
+        &mut self,
+        mut ty: ExprPtr<'t>,
+        count: u16,
+        params: &mut Vec<ExprPtr<'t>>,
+    ) -> ExprPtr<'t> {
+        for _ in 0..count {
+            let w = self.whnf(ty);
+            let Expr::Pi { ty: d, body, .. } = *w else {
+                reject!("missing inductive parameter")
+            };
+            let x = self.fresh_local(d);
+            ty = self.ctx.inst(body, &[x]);
+            params.push(x);
+        }
+        ty
+    }
+
     fn consume_params(&mut self, mut ty: ExprPtr<'t>, params: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         for &x in params {
             let w = self.whnf(ty);
@@ -133,20 +193,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         ty
     }
 
-    /// Bind `xs` around `body`, the last becoming the innermost binder.
     fn bind(&mut self, xs: &[ExprPtr<'t>], body: ExprPtr<'t>, lam: bool) -> ExprPtr<'t> {
         self.bind_after(&[], xs, body, lam)
     }
 
-    /// Each local's type abstracted over the locals before it.
     fn binder_types(&mut self, xs: &[ExprPtr<'t>]) -> Vec<ExprPtr<'t>> {
         (0..xs.len())
             .map(|i| self.ctx.abstract_locals(local_ty(xs[i]), &xs[..i]))
             .collect()
     }
 
-    /// Bind `pre` then `xs` around `body`, where `pre_tys` is
-    /// `binder_types(pre)`, computed once for a shared prefix.
     fn bind_after(
         &mut self,
         pre: &[(ExprPtr<'t>, ExprPtr<'t>)],
@@ -189,16 +245,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
     }
 
-    fn recursive_field(
-        &mut self,
-        f: &Family<'t>,
-        ty: ExprPtr<'t>,
-    ) -> Option<(Vec<ExprPtr<'t>>, usize, Vec<ExprPtr<'t>>)> {
-        let (xs, r) = self.telescope(ty);
-        f.application(r).map(|(i, args)| (xs, i, args))
+    fn recursive_field(&mut self, f: &Family<'t>, x: ExprPtr<'t>) -> Option<RecField<'t>> {
+        let (locals, r) = self.telescope(local_ty(x));
+        f.application(r).map(|(owner, indices)| RecField {
+            field: x,
+            locals,
+            owner,
+            indices,
+        })
     }
 
-    /// Whether every member of the block can be validated natively.
     pub(crate) fn native_block(&self, b: Block) -> bool {
         (b.start..b.types_end).all(
             |i| matches!(self.ctx.store.declars[i as usize], Declar::Ind(t) if t.num_nested == 0),
@@ -206,45 +262,62 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub(crate) fn check_block(&mut self, b: Block) {
-        let store = self.ctx.store;
-        let members = |r: std::ops::Range<u32>| r.map(|i| (i, store.declars[i as usize]));
-        for (i, d) in members(b.start..b.end) {
+        let Members { types, ctors, recs } = self.block_members(b);
+        let ups = types[0].info.uparams;
+        ensure!(
+            kernel::InductiveType::distinct_params(&ups[..]),
+            "duplicate universe parameter"
+        );
+        self.uparams = ups;
+        self.limit = b.start;
+        let (fam, result_level, indices) = self.check_types(&types);
+        self.limit = b.types_end;
+        let zero = self.ctx.is_zero(result_level);
+        let shapes = self.check_ctors(&fam, &types, &ctors, result_level, zero);
+        let spec = Spec {
+            fam,
+            types,
+            indices,
+            shapes,
+        };
+        let elim = self.elim(&spec, &recs, result_level, zero);
+        self.uparams = elim.uparams;
+        self.limit = b.ctors_end;
+        let premises = self.premises(&spec, elim.level);
+        self.check_recursors(b, &spec, &recs, &elim, &premises);
+    }
+
+    fn block_members(&self, b: Block) -> Members<'t> {
+        let declars: &[Declar<'t>] = &self.ctx.store.declars;
+        for i in b.start..b.end {
             ensure!(
-                d.name().decl_idx() == Some(i),
+                declars[i as usize].name().decl_idx() == Some(i),
                 "duplicate inductive declaration name"
             );
         }
-        let types: Vec<Inductive<'t>> = members(b.start..b.types_end)
-            .map(|(_, d)| match d {
-                Declar::Ind(t) => t,
-                _ => reject!("malformed inductive block"),
-            })
-            .collect();
-        let ctors: Vec<Constructor<'t>> = members(b.types_end..b.ctors_end)
-            .map(|(_, d)| match d {
-                Declar::Ctor(c) => c,
-                _ => reject!("malformed inductive block"),
-            })
-            .collect();
-        let recs: Vec<Recursor<'t>> = members(b.ctors_end..b.end)
-            .map(|(_, d)| match d {
-                Declar::Rec(r) => r,
-                _ => reject!("malformed inductive block"),
-            })
-            .collect();
+        let types = members(declars, b.start..b.types_end, |d| match d {
+            Declar::Ind(t) => Some(t),
+            _ => None,
+        });
+        let ctors = members(declars, b.types_end..b.ctors_end, |d| match d {
+            Declar::Ctor(c) => Some(c),
+            _ => None,
+        });
+        let recs = members(declars, b.ctors_end..b.end, |d| match d {
+            Declar::Rec(r) => Some(r),
+            _ => None,
+        });
         ensure!(!types.is_empty(), "empty inductive block");
-        let first = types[0];
-        let ups = first.info.uparams;
-        ensure!(
-            ups.iter().collect::<FxHashSet<_>>().len() == ups.len(),
-            "duplicate universe parameter"
-        );
-        let all: Vec<_> = types.iter().map(|t| t.info.name).collect();
-        let np = first.num_params;
-        self.uparams = ups;
-        self.limit = b.start;
+        Members { types, ctors, recs }
+    }
+
+    fn check_types(
+        &mut self,
+        types: &[Inductive<'t>],
+    ) -> (Family<'t>, LevelPtr<'t>, Vec<Vec<ExprPtr<'t>>>) {
+        let (ups, np) = (types[0].info.uparams, types[0].num_params);
         let mut fam = Family {
-            names: all.clone(),
+            names: types.iter().map(|t| t.info.name).collect(),
             num_indices: types.iter().map(|t| usize::from(t.num_indices)).collect(),
             levels: ups,
             params: Vec::new(),
@@ -255,24 +328,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let types_wf = self.vc_reject(&wf).is_none();
         for (i, t) in types.iter().enumerate() {
             ensure!(
-                t.info.uparams == ups && t.num_params == np && t.all == &all[..],
+                t.info.uparams == ups && t.num_params == np && t.all == &fam.names[..],
                 "inconsistent mutual inductive parameters"
             );
             if !types_wf {
                 self.sort_of(t.info.ty);
             }
             let rest = if i == 0 {
-                let mut rest = t.info.ty;
-                for _ in 0..np {
-                    let w = self.whnf(rest);
-                    let Expr::Pi { ty, body, .. } = *w else {
-                        reject!("missing inductive parameter")
-                    };
-                    let x = self.fresh_local(ty);
-                    rest = self.ctx.inst(body, &[x]);
-                    fam.params.push(x);
-                }
-                rest
+                self.open_params(t.info.ty, np, &mut fam.params)
             } else {
                 self.consume_params(t.info.ty, &fam.params)
             };
@@ -294,10 +357,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
             indices.push(is);
         }
-        self.limit = b.types_end;
+        (fam, result_level, indices)
+    }
+
+    fn check_ctors(
+        &mut self,
+        fam: &Family<'t>,
+        types: &[Inductive<'t>],
+        ctors: &[Constructor<'t>],
+        result_level: LevelPtr<'t>,
+        zero: bool,
+    ) -> Vec<Shape<'t>> {
+        let (ups, np) = (fam.levels, types[0].num_params);
         let wf: Vec<_> = ctors.iter().map(|c| RecCheck::Sort(c.info.ty)).collect();
         let ctors_wf = self.vc_reject(&wf).is_none();
-        let zero = self.ctx.is_zero(result_level);
         let mut shapes = Vec::new();
         let (mut recursive, mut reflexive) = (false, false);
         for (owner, t) in types.iter().enumerate() {
@@ -331,7 +404,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                         "constructor field universe exceeds inductive universe"
                     );
                     self.tick();
-                    self.positive(&fam, ty);
+                    self.positive(fam, ty);
                     let has = fam.occurs(ty);
                     recursive |= has;
                     reflexive |= has && ty.is_pi();
@@ -350,189 +423,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
         }
         ensure!(shapes.len() == ctors.len(), "extraneous constructor");
-        for t in &types {
+        for t in types {
             ensure!(
                 t.is_rec == recursive && t.is_reflexive == reflexive,
                 "incorrect inductive recursion metadata"
             );
         }
-        let zeros: Vec<_> = ups.iter().map(|_| self.ctx.zero()).collect();
-        let zeros = self.ctx.levels(&zeros);
-        let at_zero = self.ctx.subst_level(result_level, ups, zeros);
-        let large = if !self.ctx.is_zero(at_zero) {
-            true
-        } else if types.len() > 1 || shapes.len() > 1 {
-            false
-        } else if let Some(s) = shapes.first() {
-            let mut ok = true;
-            for (&x, &l) in s.fields.iter().zip(&s.levels) {
-                ok &= self.ctx.is_zero(l) || s.indices.contains(&x);
-            }
-            ok
-        } else {
-            true
-        };
-        let k = zero && types.len() == 1 && shapes.len() == 1 && shapes[0].fields.is_empty();
-        ensure!(recs.len() == types.len(), "incorrect recursor count");
-        let rups = recs[0].info.uparams;
-        let elim = if large {
-            ensure!(
-                rups.len() == ups.len() + 1
-                    && rups[1..] == ups[..]
-                    && matches!(*rups[0], Level::Param(..))
-                    && !ups.contains(&rups[0]),
-                "incorrect recursor universe parameters"
-            );
-            rups[0]
-        } else {
-            ensure!(rups == ups, "invalid large elimination from proposition");
-            self.ctx.zero()
-        };
-        self.uparams = rups;
-        self.limit = b.ctors_end;
-        let mut motives = Vec::new();
-        let mut majors = Vec::new();
-        for (i, t) in types.iter().enumerate() {
-            let c = self.ctx.konst(t.info.name, ups);
-            let args: Vec<_> = fam.params.iter().chain(&indices[i]).copied().collect();
-            let applied = self.ctx.apps(c, &args);
-            let major = self.fresh_local(applied);
-            let s = self.ctx.sort(elim);
-            let xs: Vec<_> = indices[i].iter().copied().chain([major]).collect();
-            let mty = self.bind(&xs, s, false);
-            motives.push(self.fresh_local(mty));
-            majors.push(major);
-        }
-        let mut minors = Vec::new();
-        let mut recursive_fields = Vec::with_capacity(shapes.len());
-        for s in &shapes {
-            let c = self.ctx.konst(s.ctor.info.name, ups);
-            let args: Vec<_> = fam.params.iter().chain(&s.fields).copied().collect();
-            let ctor = self.ctx.apps(c, &args);
-            let args: Vec<_> = s.indices.iter().copied().chain([ctor]).collect();
-            let conclusion = self.ctx.apps(motives[s.owner], &args);
-            let mut xs = s.fields.clone();
-            let mut recs = Vec::new();
-            for &x in &s.fields {
-                if let Some((ys, owner, args)) = self.recursive_field(&fam, local_ty(x)) {
-                    let term = self.ctx.apps(x, &ys);
-                    let margs: Vec<_> = args.iter().copied().chain([term]).collect();
-                    let body = self.ctx.apps(motives[owner], &margs);
-                    let ih = self.bind(&ys, body, false);
-                    xs.push(self.fresh_local(ih));
-                    recs.push((x, ys, owner, args));
-                }
-            }
-            let ty = self.bind(&xs, conclusion, false);
-            minors.push(self.fresh_local(ty));
-            recursive_fields.push(recs);
-        }
-        let prefix: Vec<_> = fam
-            .params
-            .iter()
-            .chain(&motives)
-            .chain(&minors)
-            .copied()
-            .collect();
-        let prefix_tys = self.binder_types(&prefix);
-        let pre: Vec<_> = prefix.iter().copied().zip(prefix_tys).collect();
-        let rec_str = self.ctx.string("rec");
-        let rec_names: Vec<_> = all.iter().map(|&n| self.ctx.str_name(n, rec_str)).collect();
-        for (owner, t) in types.iter().enumerate() {
-            let Some(&r) = recs.iter().find(|r| r.info.name == rec_names[owner]) else {
-                reject!("missing recursor")
-            };
-            ensure!(
-                r.all == &all[..]
-                    && r.info.uparams == rups
-                    && r.num_params == np
-                    && r.num_indices == t.num_indices
-                    && usize::from(r.num_motives) == types.len()
-                    && usize::from(r.num_minors) == shapes.len()
-                    && r.is_k == k,
-                "incorrect recursor metadata"
-            );
-            let tail: Vec<_> = indices[owner]
-                .iter()
-                .copied()
-                .chain([majors[owner]])
-                .collect();
-            let result = self.ctx.apps(motives[owner], &tail);
-            let want = self.bind_after(&pre, &tail, result, false);
-            self.recursor_checks(&[RecCheck::Type(r.info.ty, want)]);
-            let mine: Vec<_> = shapes
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.owner == owner)
-                .collect();
-            ensure!(r.rules.len() == mine.len(), "incorrect recursor rule count");
-            let saved = self.limit;
-            self.limit = b.end;
-            let mut checks = Vec::new();
-            for (rule, (minor, s)) in r.rules.iter().zip(mine) {
-                if rule.ctor != s.ctor.info.name || usize::from(rule.nfields) != s.fields.len() {
-                    self.recursor_checks(&checks);
-                    reject!("incorrect recursor rule metadata");
-                }
-                let mut args = s.fields.clone();
-                for (x, ys, target, idx) in &recursive_fields[minor] {
-                    let rc = self.ctx.konst(rec_names[*target], rups);
-                    let term = self.ctx.apps(*x, ys);
-                    let a: Vec<_> = prefix.iter().chain(idx).copied().chain([term]).collect();
-                    let call = self.ctx.apps(rc, &a);
-                    args.push(self.bind(ys, call, true));
-                }
-                let rhs = self.ctx.apps(minors[minor], &args);
-                let want = self.bind_after(&pre, &s.fields, rhs, true);
-                checks.push(RecCheck::Rule(rule.rhs, want));
-            }
-            self.recursor_checks(&checks);
-            self.limit = saved;
-        }
-    }
-
-    /// Run obligations on the value checker; the index of the first it rejects.
-    fn vc_reject(&mut self, checks: &[RecCheck<'t>]) -> Option<usize> {
-        if checks.is_empty() {
-            return None;
-        }
-        let (limits, uparams, limit) = (self.limits, self.uparams, self.limit);
-        check_recursor(
-            &mut self.ctx,
-            limits,
-            &mut self.steps_left,
-            uparams,
-            limit,
-            checks,
-        )
-        .err()
-    }
-
-    /// Obligations go to the value checker; the term checker re-decides from
-    /// the first one it rejects, so rejections keep their reasons.
-    fn recursor_checks(&mut self, checks: &[RecCheck<'t>]) {
-        let Some(i) = self.vc_reject(checks) else {
-            return;
-        };
-        for &c in &checks[i..] {
-            match c {
-                RecCheck::Sort(ty) => {
-                    self.sort_of(ty);
-                }
-                RecCheck::Type(ty, want) => {
-                    self.sort_of(ty);
-                    ensure!(self.def_eq(ty, want), "incorrect recursor type");
-                }
-                RecCheck::Rule(rhs, want) => {
-                    let wt = self.infer(want, false);
-                    let at = self.infer(rhs, false);
-                    ensure!(self.def_eq(at, wt), "incorrect recursor computation rule");
-                    ensure!(
-                        self.def_eq(rhs, want),
-                        "incorrect recursor computation rule"
-                    );
-                }
-            }
-        }
+        shapes
     }
 }

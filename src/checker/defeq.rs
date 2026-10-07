@@ -1,25 +1,25 @@
 use super::Tc;
-use crate::term::decl::{Declar, Hint};
+use super::env::{Decls, positive, strip_pis, unfold_order};
+use crate::resource::Budget;
+use crate::term::decl::Hint;
 use crate::term::expr::Expr;
+use crate::term::outcome::ProbeExhausted;
 use crate::term::ptr::ExprPtr;
+use std::cell::Cell;
 use std::cmp::Ordering;
+use std::panic::{self, AssertUnwindSafe};
+use std::rc::Rc;
 
-/// Restore binder depth even when a speculative comparison unwinds.
-struct ConversionScope(std::rc::Rc<std::cell::Cell<usize>>, usize);
+const ARENA_CHECK_MASK: u64 = 1023;
+const SMALL_PROBE_STEPS: u32 = 32;
+const PROBE_STEPS: u32 = 2048;
+const SMALL_BODY_NODES: usize = 8;
+
+struct ConversionScope(Rc<Cell<usize>>, usize);
 
 impl Drop for ConversionScope {
     fn drop(&mut self) {
         self.0.set(self.1);
-    }
-}
-
-/// Which side lazy delta unfolds first: `Less` unfolds the left.
-fn unfold_order(t: Hint, s: Hint) -> Ordering {
-    match (t, s) {
-        (Hint::Regular(a), Hint::Regular(b)) => b.cmp(&a),
-        (Hint::Opaque, Hint::Opaque) | (Hint::Abbrev, Hint::Abbrev) => Ordering::Equal,
-        (Hint::Opaque, _) | (_, Hint::Abbrev) => Ordering::Greater,
-        (_, Hint::Opaque) | (Hint::Abbrev, _) => Ordering::Less,
     }
 }
 
@@ -39,22 +39,23 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     pub(crate) fn tick(&mut self) {
         if self.steps_left == 0 {
-            crate::unsupported!("declaration work budget exhausted");
+            Budget::Work.decline();
         }
         self.steps_left -= 1;
-        if self.steps_left & 1023 == 0 && self.ctx.arena.allocated_bytes() > self.limits.arena_bytes
+        if self.steps_left & ARENA_CHECK_MASK == 0
+            && self.ctx.arena.allocated_bytes() > self.limits.arena_bytes
         {
-            crate::unsupported!("declaration arena budget exhausted");
+            Budget::Arena.decline();
         }
         if let Some(remaining) = &mut self.probe_remaining {
             if *remaining == 0 {
-                std::panic::panic_any(crate::term::outcome::ProbeExhausted);
+                panic::panic_any(ProbeExhausted);
             }
             *remaining -= 1;
         }
     }
 
-    /// Failure or exhaustion is inconclusive: delta reduction may still prove equality.
+    /// Failure or exhaustion is inconclusive since delta may still prove equality.
     pub(super) fn probe_args(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
         if self.fail_cache.contains(&(t, s)) {
             return false;
@@ -62,31 +63,32 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if self.probe_remaining.is_some() {
             return self.args_eq(t, s);
         }
-        self.probe_remaining = Some(if self.small_delta_body(t) { 32 } else { 2048 });
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.args_eq(t, s)));
+        self.probe_remaining = Some(if self.small_delta_body(t) {
+            SMALL_PROBE_STEPS
+        } else {
+            PROBE_STEPS
+        });
+        let result = panic::catch_unwind(AssertUnwindSafe(|| self.args_eq(t, s)));
         self.probe_remaining = None;
         let equal = match result {
             Ok(equal) => equal,
-            Err(p) if p.is::<crate::term::outcome::ProbeExhausted>() => {
+            Err(p) if p.is::<ProbeExhausted>() => {
                 #[cfg(test)]
                 {
                     self.probe_exhaustions += 1;
                 }
                 false
             }
-            Err(p) => std::panic::resume_unwind(p),
+            Err(p) => panic::resume_unwind(p),
         };
         if !equal {
-            // Both callers must remember inconclusive probes. This only skips
-            // speculation; conversion still tries reduction and eta afterwards.
+            // Caching an inconclusive probe only skips speculation, not reduction or eta.
             self.fail_cache.insert((t, s));
             self.fail_cache.insert((s, t));
         }
         equal
     }
 
-    /// Give wrappers that apply or project an argument a short congruence probe
-    /// before unfolding. Even these wrappers can have cheaply equal arguments.
     fn small_delta_body(&self, e: ExprPtr<'t>) -> bool {
         let Some(name) = e.head().const_name() else {
             return false;
@@ -119,7 +121,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 _ => true,
             }
         }
-        small(body, &mut 8)
+        let mut budget = SMALL_BODY_NODES;
+        small(body, &mut budget)
     }
 
     fn quick(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
@@ -205,7 +208,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         {
             return true;
         }
-        // Proof equality depends on types, not on evaluating proof bodies.
         if !self.statically_not_proof(t)
             && let Some(r) = self.proof_irrel(t, s)
         {
@@ -213,23 +215,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
         if t.num_args() == s.num_args()
             && t.num_args() > 0
-            // Rigid heads cannot delta-reduce. Their arguments will be compared
-            // by def_eq_app, so an initial probe only duplicates that work.
             && self.delta_hint(t).is_some()
-            && let (
-                Expr::Const {
-                    name: a,
-                    levels: la,
-                    ..
-                },
-                Expr::Const {
-                    name: b,
-                    levels: lb,
-                    ..
-                },
-            ) = (*t.head(), *s.head())
-            && a == b
-            && self.ctx.levels_eq(la, lb)
+            && self.same_const_head(t, s)
             && self.probe_args(t, s)
         {
             return true;
@@ -288,18 +275,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.unit_like(tn, sn)
     }
 
-    /// Recognize data and types without building their instantiated types just
-    /// to rule out proof irrelevance. Unknown universe parameters stay unknown.
     fn statically_not_proof(&self, e: ExprPtr<'t>) -> bool {
-        fn positive(level: crate::term::ptr::LevelPtr<'_>) -> bool {
-            use crate::term::level::Level;
-            match *level {
-                Level::Succ(..) => true,
-                Level::Max(a, b, _) => positive(a) || positive(b),
-                Level::IMax(_, b, _) => positive(b),
-                _ => false,
-            }
-        }
         if matches!(
             *e,
             Expr::Sort { .. } | Expr::Pi { .. } | Expr::NatLit { .. } | Expr::StrLit { .. }
@@ -317,18 +293,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn uninstantiated_type(&self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        let mut ty = match *e.head() {
+        let ty = match *e.head() {
             Expr::Const { name, .. } => self.declar(name)?.ty(),
             Expr::Local { ty, .. } => ty,
             _ => return None,
         };
-        for _ in 0..e.num_args() {
-            let Expr::Pi { body, .. } = *ty else {
-                return None;
-            };
-            ty = body;
-        }
-        Some(ty)
+        strip_pis(ty, e.num_args())
     }
 
     fn proof_irrel(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> Option<bool> {
@@ -396,20 +366,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     Ordering::Equal => {
                         if let (Expr::App { .. }, Expr::App { .. }) = (*t, *s)
                             && matches!(ht, Hint::Regular(_))
-                            && let (
-                                Expr::Const {
-                                    name: a,
-                                    levels: la,
-                                    ..
-                                },
-                                Expr::Const {
-                                    name: b,
-                                    levels: lb,
-                                    ..
-                                },
-                            ) = (*t.head(), *s.head())
-                            && a == b
-                            && self.ctx.levels_eq(la, lb)
+                            && self.same_const_head(t, s)
                             && self.probe_args(t, s)
                         {
                             return Ok(true);
@@ -425,12 +382,32 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
     }
 
+    #[inline]
+    fn same_const_head(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> bool {
+        let (
+            Expr::Const {
+                name: a,
+                levels: la,
+                ..
+            },
+            Expr::Const {
+                name: b,
+                levels: lb,
+                ..
+            },
+        ) = (*t.head(), *s.head())
+        else {
+            return false;
+        };
+        a == b && self.ctx.levels_eq(la, lb)
+    }
+
     fn unfold_core(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
         let u = self.unfold(e).expect("delta hint without unfolding");
         self.whnf_core(u)
     }
 
-    fn relevant_arguments(&mut self, head: ExprPtr<'t>, count: usize) -> std::rc::Rc<[bool]> {
+    fn relevant_arguments(&mut self, head: ExprPtr<'t>, count: usize) -> Rc<[bool]> {
         let Some(name) = head.const_name() else {
             return vec![true; count].into();
         };
@@ -451,7 +428,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 *used = support.binary_search(&((consumed - 1 - i) as u16)).is_ok();
             }
         }
-        let mask: std::rc::Rc<[bool]> = mask.into();
+        let mask: Rc<[bool]> = mask.into();
         self.argument_support.insert((name, count), mask.clone());
         mask
     }
@@ -500,14 +477,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Expr::Const { name, .. } = *s.head() else {
             return false;
         };
-        let Some(Declar::Ctor(c)) = self.declar(name) else {
+        let Some(c) = self.struct_ctor(name, s.num_args()) else {
             return false;
         };
-        if s.num_args() != usize::from(c.num_params) + usize::from(c.num_fields)
-            || self.structure_like(c.induct).is_none()
-        {
-            return false;
-        }
         let tt = self.infer(t, true);
         let st = self.infer(s, true);
         if !self.def_eq(tt, st) {
@@ -543,12 +515,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Expr::Const { name, .. } = *tt.head() else {
             return false;
         };
-        match self.structure_like(name) {
-            Some((_, c)) if c.num_fields == 0 => {
-                let st = self.infer(s, true);
-                self.def_eq_core(tt, st)
-            }
-            _ => false,
+        if !self.unit_struct(name) {
+            return false;
         }
+        let st = self.infer(s, true);
+        self.def_eq_core(tt, st)
     }
 }

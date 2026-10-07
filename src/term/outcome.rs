@@ -1,5 +1,4 @@
-//! Checking failures unwind as panics carrying one of two payloads and are
-//! classified at the declaration boundary. Any other panic is an internal error.
+//! Checking failures unwind as panics with one of two payloads. Others are internal errors.
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -7,7 +6,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub struct Reject(pub String);
 pub struct Decline(pub String);
 
-/// Internal control flow: an inconclusive speculative comparison.
 pub(crate) struct ProbeExhausted;
 
 #[macro_export]
@@ -74,7 +72,6 @@ pub fn run<T>(f: impl FnOnce() -> T) -> Result<T, Failure> {
     catch_unwind(AssertUnwindSafe(f)).map_err(Failure::from_panic)
 }
 
-/// Keep rejections and declines off stderr; other panics print as usual.
 pub fn install_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -141,7 +141,6 @@ fn natural_literals_compare_with_constructor_chains_and_neutral_terms() {
         !env.def_eq(&Expr::nat(2u32), &Expr::constant("Nat.succ").app(expr("n")))
             .unwrap()
     );
-    // The literal must remain closed while instantiating a binder around it.
     let x = Name::new("x");
     let value = Expr::nat(123u32);
     let term = Expr::lam(x, expr("Nat"), value.clone()).app(Expr::nat(7u32));

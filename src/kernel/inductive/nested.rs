@@ -1,5 +1,13 @@
 use super::*;
+use crate::resource::Budget;
+use crate::syntax::Binder;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::iter;
+
+const PARAMETER_NAME: &str = "parameter";
+const NESTED_PREFIX: &str = "_nested_";
+const CTOR_PREFIX: &str = "ctor_";
+const REC_PREFIX: &str = "rec_";
 
 struct Auxiliary {
     name: String,
@@ -7,8 +15,6 @@ struct Auxiliary {
     constructors: Vec<(String, String)>,
 }
 
-/// A private mutual presentation of a nested declaration. No auxiliary types
-/// or constructors are retained in the public environment.
 pub(super) struct NestedExpansion {
     pub block: InductiveBlock,
     original_types: usize,
@@ -17,13 +23,12 @@ pub(super) struct NestedExpansion {
     auxiliaries: Vec<Auxiliary>,
 }
 
-fn append_name(name: &str, suffix: &str) -> String {
-    if let Ok(mut parts) = serde_json::from_str::<Vec<serde_json::Value>>(name) {
-        parts.push(serde_json::Value::String(suffix.into()));
-        serde_json::to_string(&parts).unwrap()
-    } else {
-        format!("{name}.{suffix}")
-    }
+fn auxiliary_ctor_name(auxiliary: &str, index: usize) -> String {
+    append_name(auxiliary, &format!("{CTOR_PREFIX}{index}"))
+}
+
+fn auxiliary_rec_name(base: &str, index: usize) -> String {
+    append_name(base, &format!("{REC_PREFIX}{}", index + 1))
 }
 
 fn instantiate_params(mut ty: Expr, args: &[Expr]) -> Result<Expr> {
@@ -36,8 +41,7 @@ fn instantiate_params(mut ty: Expr, args: &[Expr]) -> Result<Expr> {
     Ok(ty)
 }
 
-// Open binder bodies before visiting them, so a constructor-local variable
-// cannot be mistaken for an allowed enclosing inductive parameter.
+// Opening binders keeps constructor-local variables from passing as enclosing parameters.
 fn rewrite(e: &Expr, f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>) -> Result<Expr> {
     if let Some(replacement) = f(e)? {
         return Ok(replacement);
@@ -67,8 +71,7 @@ fn rewrite(e: &Expr, f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>) -> Resul
 
 type Memo = FxHashMap<usize, Shared<Expr>>;
 
-/// Rewrite under binders without opening them, once per shared node. Only for
-/// rewrites whose result does not depend on the binders above a term.
+/// Only sound for rewrites that do not depend on the enclosing binders.
 fn rewrite_closed(
     e: &Expr,
     f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>,
@@ -88,10 +91,10 @@ fn rewrite_closed(
         Ok(r)
     }
     fn binder(
-        b: &crate::syntax::Binder,
+        b: &Binder,
         f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>,
         memo: &mut Memo,
-    ) -> Result<crate::syntax::Binder> {
+    ) -> Result<Binder> {
         Ok(bind(b.pattern().clone(), shared(b.body(), f, memo)?))
     }
     if let Some(replacement) = f(e)? {
@@ -120,14 +123,16 @@ fn has_binder(e: &Expr) -> bool {
     }
 }
 
-/// How `restore_expr` walks binders: opened, or closed with a flag raised
-/// when a substitution would carry loose bound variables under a binder.
 enum Walk<'a> {
     Open,
     Closed(&'a [bool], &'a mut bool),
 }
 
 impl NestedExpansion {
+    fn universe_params(&self) -> &[String] {
+        &self.block.types[0].params
+    }
+
     pub fn is_nested(&self) -> bool {
         !self.auxiliaries.is_empty()
     }
@@ -140,7 +145,7 @@ impl NestedExpansion {
             let Expr::Pi(domain, body) = ty else {
                 return Err(Error("missing inductive parameter".into()));
             };
-            let local = (Name::new("parameter"), (*domain).clone());
+            let local = (Name::new(PARAMETER_NAME), (*domain).clone());
             ty = (*body.instantiate(&variable(&local))).clone();
             params.push(local);
         }
@@ -152,8 +157,7 @@ impl NestedExpansion {
             auxiliaries: Vec::new(),
         };
         result.block.recursors.clear();
-        // Discovery order determines auxiliary recursor names. Use each type's
-        // declared constructor order, independently of the serialized array order.
+        // Auxiliary recursor names follow declared constructor order, not serialized order.
         result.block.constructors = original
             .types
             .iter()
@@ -181,7 +185,6 @@ impl NestedExpansion {
         let mut fuel = 100_000usize;
         let mut next_name = 0usize;
         let mut cursor = 0;
-        // New auxiliary constructors can themselves contain nested occurrences.
         while cursor < result.block.constructors.len() {
             let c = result.block.constructors[cursor].clone();
             let mut body = c.ty;
@@ -193,23 +196,21 @@ impl NestedExpansion {
                 locals.push((p.0.clone(), (*domain).clone()));
                 body = (*rest.instantiate(&variable(p))).clone();
             }
-            let names = result.block.types.iter().map(|t| t.name.clone()).collect();
+            let names = result.block.type_names().into_iter().collect();
             let body = rewrite(&body, &mut |e| {
-                fuel = fuel.checked_sub(1).ok_or_else(|| {
-                    Error("checking budget exhausted during nested expansion".into())
-                })?;
-                // Most constructor domains do not mention this family. Keep
-                // their DAG sharing instead of expanding them into a tree while
-                // searching for nested occurrences that cannot be present.
+                fuel = fuel
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::from(Budget::NestedExpansion))?;
+                // Keep DAG sharing for domains that cannot contain nested occurrences.
                 if !occurs(e, &names) {
                     return Ok(Some(e.clone()));
                 }
                 result.replace_nested(env, e, &mut reserved, &mut next_name)
             })?;
-            result.block.constructors[cursor].ty = abstract_over(&locals, body, false);
+            result.block.constructors[cursor].ty = pis(&locals, body);
             cursor += 1;
         }
-        let all: Vec<_> = result.block.types.iter().map(|t| t.name.clone()).collect();
+        let all = result.block.type_names();
         for t in &mut result.block.types {
             t.all = all.clone();
             t.num_nested = result.auxiliaries.len();
@@ -235,7 +236,7 @@ impl NestedExpansion {
             return Ok(None);
         }
         let nested_args = &args[..container.num_params];
-        let names: BTreeSet<_> = self.block.types.iter().map(|t| t.name.clone()).collect();
+        let names: BTreeSet<_> = self.block.type_names().into_iter().collect();
         if !nested_args.iter().any(|e| occurs(e, &names)) {
             return Ok(None);
         }
@@ -260,93 +261,16 @@ impl NestedExpansion {
         } else {
             let mut found = None;
             for member in &container.all {
-                let source = &env.inductives[member];
-                demand(
-                    source.params.len() == levels.len(),
-                    "nested inductive universe argument count mismatch",
-                )?;
-                let substitution = source
-                    .params
-                    .iter()
-                    .cloned()
-                    .zip(levels.iter().cloned())
-                    .collect();
-                let aux_name = loop {
-                    *next += 1;
-                    let candidate =
-                        append_name(&self.block.types[0].name, &format!("_nested_{next}"));
-                    if !env.declarations.contains_key(&candidate)
-                        && !reserved.contains(&candidate)
-                        && !env.declarations.contains_key(&rec_name(&candidate))
-                        && !reserved.contains(&rec_name(&candidate))
-                        && source.constructors.iter().enumerate().all(|(i, _)| {
-                            let ctor = append_name(&candidate, &format!("ctor_{i}"));
-                            !env.declarations.contains_key(&ctor) && !reserved.contains(&ctor)
-                        })
-                    {
-                        reserved.insert(candidate.clone());
-                        reserved.insert(rec_name(&candidate));
-                        break candidate;
-                    }
-                };
-                let source_ty = source.ty.substitute_levels(&substitution)?;
-                let specialized = instantiate_params(source_ty, nested_args)?;
-                let ty = abstract_over(&self.params, specialized, false);
-                let mut constructors = Vec::new();
-                for (i, source_name) in source.constructors.iter().enumerate() {
-                    let source_ctor = &env.constructors[source_name];
-                    let cname = append_name(&aux_name, &format!("ctor_{i}"));
-                    demand(
-                        !env.declarations.contains_key(&cname) && reserved.insert(cname.clone()),
-                        "duplicate nested auxiliary name",
-                    )?;
-                    let subst = source_ctor
-                        .params
-                        .iter()
-                        .cloned()
-                        .zip(levels.iter().cloned())
-                        .collect();
-                    let cty =
-                        instantiate_params(source_ctor.ty.substitute_levels(&subst)?, nested_args)?;
-                    self.block.constructors.push(Constructor {
-                        name: cname.clone(),
-                        params: self.block.types[0].params.clone(),
-                        ty: abstract_over(&self.params, cty, false),
-                        inductive: aux_name.clone(),
-                        index: i,
-                        num_params: self.params.len(),
-                        num_fields: source_ctor.num_fields,
-                    });
-                    constructors.push((cname, source_name.clone()));
-                }
-                self.block.types.push(InductiveType {
-                    name: aux_name.clone(),
-                    params: self.block.types[0].params.clone(),
-                    ty,
-                    all: Vec::new(),
-                    constructors: constructors.iter().map(|c| c.0.clone()).collect(),
-                    num_params: self.params.len(),
-                    num_indices: source.num_indices,
-                    num_nested: 0,
-                    recursive: false,
-                    reflexive: false,
-                });
-                self.auxiliaries.push(Auxiliary {
-                    name: aux_name.clone(),
-                    application: apply(
-                        Expr::Const(member.clone(), levels.clone()),
-                        nested_args.iter().cloned(),
-                    ),
-                    constructors,
-                });
+                let aux_name =
+                    self.add_auxiliary(env, member, &levels, nested_args, reserved, next)?;
                 if member == &name {
                     found = Some(aux_name);
                 }
             }
             found.ok_or_else(|| Error("invalid nested mutual family".into()))?
         };
-        let levels = self.block.types[0]
-            .params
+        let levels = self
+            .universe_params()
             .iter()
             .cloned()
             .map(Level::Param)
@@ -358,6 +282,96 @@ impl NestedExpansion {
                 .map(variable)
                 .chain(args[container.num_params..].iter().cloned()),
         )))
+    }
+
+    fn fresh_auxiliary_name(
+        &self,
+        env: &Environment,
+        source: &InductiveType,
+        reserved: &mut BTreeSet<String>,
+        next: &mut usize,
+    ) -> String {
+        loop {
+            *next += 1;
+            let candidate =
+                append_name(&self.block.types[0].name, &format!("{NESTED_PREFIX}{next}"));
+            if !env.declarations.contains_key(&candidate)
+                && !reserved.contains(&candidate)
+                && !env.declarations.contains_key(&rec_name(&candidate))
+                && !reserved.contains(&rec_name(&candidate))
+                && source.constructors.iter().enumerate().all(|(i, _)| {
+                    let ctor = auxiliary_ctor_name(&candidate, i);
+                    !env.declarations.contains_key(&ctor) && !reserved.contains(&ctor)
+                })
+            {
+                reserved.insert(candidate.clone());
+                reserved.insert(rec_name(&candidate));
+                return candidate;
+            }
+        }
+    }
+
+    fn add_auxiliary(
+        &mut self,
+        env: &Environment,
+        member: &str,
+        levels: &[Level],
+        nested_args: &[Expr],
+        reserved: &mut BTreeSet<String>,
+        next: &mut usize,
+    ) -> Result<String> {
+        let source = &env.inductives[member];
+        demand(
+            source.params.len() == levels.len(),
+            "nested inductive universe argument count mismatch",
+        )?;
+        let substitution = level_substitution(&source.params, levels);
+        let aux_name = self.fresh_auxiliary_name(env, source, reserved, next);
+        let source_ty = source.ty.substitute_levels(&substitution)?;
+        let specialized = instantiate_params(source_ty, nested_args)?;
+        let ty = pis(&self.params, specialized);
+        let mut constructors = Vec::new();
+        for (i, source_name) in source.constructors.iter().enumerate() {
+            let source_ctor = &env.constructors[source_name];
+            let cname = auxiliary_ctor_name(&aux_name, i);
+            demand(
+                !env.declarations.contains_key(&cname) && reserved.insert(cname.clone()),
+                "duplicate nested auxiliary name",
+            )?;
+            let subst = level_substitution(&source_ctor.params, levels);
+            let cty = instantiate_params(source_ctor.ty.substitute_levels(&subst)?, nested_args)?;
+            self.block.constructors.push(Constructor {
+                name: cname.clone(),
+                params: self.universe_params().to_vec(),
+                ty: pis(&self.params, cty),
+                inductive: aux_name.clone(),
+                index: i,
+                num_params: self.params.len(),
+                num_fields: source_ctor.num_fields,
+            });
+            constructors.push((cname, source_name.clone()));
+        }
+        self.block.types.push(InductiveType {
+            name: aux_name.clone(),
+            params: self.universe_params().to_vec(),
+            ty,
+            all: Vec::new(),
+            constructors: constructors.iter().map(|c| c.0.clone()).collect(),
+            num_params: self.params.len(),
+            num_indices: source.num_indices,
+            num_nested: 0,
+            recursive: false,
+            reflexive: false,
+        });
+        self.auxiliaries.push(Auxiliary {
+            name: aux_name.clone(),
+            application: apply(
+                Expr::Const(member.into(), levels.to_vec()),
+                nested_args.iter().cloned(),
+            ),
+            constructors,
+        });
+        Ok(aux_name)
     }
 
     fn restore_expr(&self, e: &Expr, recs: &[String], names: &FxHashSet<&str>) -> Result<Expr> {
@@ -395,10 +409,9 @@ impl NestedExpansion {
             };
             for (i, auxiliary) in self.auxiliaries.iter().enumerate() {
                 if name == recs[i] {
-                    // Rename the head only; ordinary traversal restores its arguments.
                     if args.is_empty() {
                         return Ok(Some(Expr::Const(
-                            append_name(&self.block.types[0].name, &format!("rec_{}", i + 1)),
+                            auxiliary_rec_name(&self.block.types[0].name, i),
                             levels,
                         )));
                     }
@@ -418,16 +431,10 @@ impl NestedExpansion {
                         .iter()
                         .any(|a| a.support().has_loose_bound_vars())
                 {
-                    // Stop here: the opening walk redoes this term.
                     **loose = true;
                     return Ok(Some(term.clone()));
                 }
-                let level_subst = self.block.types[0]
-                    .params
-                    .iter()
-                    .cloned()
-                    .zip(levels.iter().cloned())
-                    .collect();
+                let level_subst = level_substitution(self.universe_params(), &levels);
                 let mut nested = auxiliary.application.substitute_levels(&level_subst)?;
                 for (p, arg) in self.params.iter().zip(&args) {
                     nested = nested.subst(&p.0, arg);
@@ -465,12 +472,12 @@ impl NestedExpansion {
         }
         generated.types.truncate(self.original_types);
         generated.constructors.truncate(self.original_constructors);
-        let all: Vec<_> = generated.types.iter().map(|t| t.name.clone()).collect();
+        let all = generated.type_names();
         let recs: Vec<_> = self.auxiliaries.iter().map(|a| rec_name(&a.name)).collect();
         let names: FxHashSet<&str> = self
             .auxiliaries
             .iter()
-            .flat_map(|a| std::iter::once(&a.name).chain(a.constructors.iter().map(|c| &c.0)))
+            .flat_map(|a| iter::once(&a.name).chain(a.constructors.iter().map(|c| &c.0)))
             .chain(&recs)
             .map(String::as_str)
             .collect();
@@ -484,7 +491,7 @@ impl NestedExpansion {
             r.ty = self.restore_expr(&r.ty, &recs, &names)?;
             r.all = all.clone();
             if let Some(i) = recs.iter().position(|n| *n == r.name) {
-                r.name = append_name(&generated.types[0].name, &format!("rec_{}", i + 1));
+                r.name = auxiliary_rec_name(&generated.types[0].name, i);
             }
             for rule in &mut r.rules {
                 rule.rhs = self.restore_expr(&rule.rhs, &recs, &names)?;
@@ -540,8 +547,6 @@ mod tests {
         }
     }
 
-    // Prepare valid input to exercise the transaction, then deliberately corrupt
-    // an exported rule. Signature correctness is tested with official exports.
     fn complete(env: &mut Environment, input: InductiveBlock) -> InductiveBlock {
         let expansion = NestedExpansion::new(env, &input).unwrap();
         let mut temporary = Vec::new();
@@ -569,8 +574,6 @@ mod tests {
             (*domain).clone(),
             Expr::Const("Tree".into(), vec![]),
         );
-        // Discovery needs to inspect eighteen shared levels, not their
-        // exponentially larger tree expansion. Full typing is a separate pass.
         let expansion = NestedExpansion::new(&Environment::new(), &block).unwrap();
         assert!(!expansion.is_nested());
         let Expr::Pi(result, _) = &expansion.block.constructors[0].ty else {

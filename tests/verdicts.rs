@@ -1,6 +1,4 @@
-//! Every export fixture, and every core script emitted as an export, must
-//! get the same verdict from all checkers, matching its `.verdict` file. Run
-//! with `BLESS=1` to regenerate.
+//! Every checker must match the `.verdict` file. Run with `BLESS=1` to regenerate.
 
 use nano_lean::{checker::Limits, emit, parser, verdict};
 use std::{
@@ -56,9 +54,6 @@ fn checkers_agree_with_golden_verdicts() {
     );
 }
 
-/// Each declaration a core script submits, checked on top of the ones the
-/// reference kernel accepted before it, so every rejection in a script (not
-/// just the first) must be shared by all checkers.
 #[test]
 fn every_rejection_is_shared() {
     let mut failed = Vec::new();

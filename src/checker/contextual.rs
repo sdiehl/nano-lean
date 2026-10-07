@@ -1,4 +1,3 @@
-//! Infer under binders without copying the remaining body at each binder.
 use super::Tc;
 use crate::term::{expr::Expr, ptr::ExprPtr};
 use crate::{ensure, reject};
@@ -66,12 +65,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let relevant: Vec<_> = slots
             .iter()
             .map(|&i| {
-                *env.get(
-                    env.len()
-                        .checked_sub(usize::from(i) + 1)
-                        .unwrap_or_else(|| reject!("unexpected bound variable")),
-                )
-                .unwrap_or_else(|| reject!("unexpected bound variable"))
+                env.len()
+                    .checked_sub(usize::from(i) + 1)
+                    .map(|j| env[j])
+                    .unwrap_or_else(|| reject!("unexpected bound variable"))
             })
             .collect();
         let key = (e, relevant);

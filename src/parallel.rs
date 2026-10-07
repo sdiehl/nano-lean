@@ -1,13 +1,22 @@
-//! Process workers keep the Rc-based kernel local to each process. A worker's
-//! assumptions are discharged only when all partitions accept the same export.
+use nano_lean::export::TRACE_VAR;
 use serde_json::{Value, json};
 use std::{
+    env,
     io::{self, BufRead, BufReader, Read},
-    process::{Child, Command, Stdio},
+    path::Path,
+    process::{self, Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
+
+const PROGRESS_VAR: &str = "NANO_LEAN_PROGRESS";
+const MAX_JOBS: usize = 64;
+const MIB: usize = 1024 * 1024;
+const BRIEF_CHARS: usize = 200;
+const OUTPUT_LIMIT: u64 = 1024 * 1024;
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 type Output = thread::JoinHandle<io::Result<Vec<u8>>>;
 #[derive(Clone, Default)]
@@ -34,10 +43,10 @@ impl Drop for Workers {
 }
 
 pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> {
-    let progress = match std::env::var("NANO_LEAN_PROGRESS").as_deref() {
+    let progress = match env::var(PROGRESS_VAR).as_deref() {
         Ok("0") => false,
         Ok(_) => true,
-        Err(_) => std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+        Err(_) => env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
     };
     let start = Instant::now();
     let result = run_workers(path, jobs, memory_mib, progress);
@@ -60,7 +69,7 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
 
 fn brief(text: &str) -> String {
     text.chars()
-        .take(200)
+        .take(BRIEF_CHARS)
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
@@ -90,15 +99,14 @@ fn run_workers(
     memory_mib: usize,
     progress: bool,
 ) -> Result<Value, String> {
-    if !(1..=64).contains(&jobs) {
-        return Err("worker count must be between 1 and 64".into());
+    if !(1..=MAX_JOBS).contains(&jobs) {
+        return Err(format!("worker count must be between 1 and {MAX_JOBS}"));
     }
     let budget = memory_mib
-        .checked_mul(1024 * 1024)
+        .checked_mul(MIB)
         .filter(|&n| n > 0)
         .ok_or("memory budget must be a positive number of MiB")? as u64;
-    // Refuse to start unmonitored workers on unsupported platforms.
-    memory_bytes(std::process::id()).map_err(|e| format!("cannot monitor memory: {e}"))?;
+    memory_bytes(process::id()).map_err(|e| format!("cannot monitor memory: {e}"))?;
     let started = Instant::now();
     let mut last_progress = Instant::now();
     if progress {
@@ -106,67 +114,16 @@ fn run_workers(
             "[progress] starting {jobs} worker(s), {memory_mib} MiB total budget; scanning export"
         );
     }
-    let trace_requested = std::env::var_os("NANO_LEAN_TRACE").is_some();
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let trace_requested = env::var_os(TRACE_VAR).is_some();
+    let executable = env::current_exe().map_err(|e| e.to_string())?;
     let mut workers = Workers(Vec::new());
     for index in 0..jobs {
-        let mut command = Command::new(&executable);
-        if progress {
-            command.env("NANO_LEAN_TRACE", "1");
-        }
-        let mut child = command
-            .args([
-                "--export-shard",
-                path,
-                &index.to_string(),
-                &jobs.to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot start worker {index}: {e}"))?;
-        let mut stdout = child.stdout.take().expect("piped worker output");
-        let output = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            // Drain concurrently, including long diagnostic output, so children
-            // cannot block on a full stdout pipe while the parent polls exit.
-            stdout.by_ref().take(1024 * 1024).read_to_end(&mut bytes)?;
-            io::copy(&mut stdout, &mut io::sink())?;
-            Ok(bytes)
-        });
-        let stderr = child.stderr.take().expect("piped worker stderr");
-        let snapshot = Arc::new(Mutex::new(None));
-        let snapshot_writer = snapshot.clone();
-        let stderr = thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line?;
-                let update = if progress {
-                    snapshot_from_trace(&line)
-                } else {
-                    None
-                };
-                let is_trace = update.is_some();
-                if let Some(update) = update {
-                    *snapshot_writer.lock().unwrap() = Some(update);
-                }
-                if !progress || trace_requested || !is_trace {
-                    eprintln!("{line}");
-                }
-            }
-            Ok(())
-        });
-        workers.0.push(Worker {
-            index,
-            child,
-            output,
-            stderr,
-            progress: snapshot,
-        });
+        let worker = spawn(&executable, path, index, jobs, progress, trace_requested)?;
+        workers.0.push(worker);
     }
     let mut reports = vec![Value::Null; jobs];
     while !workers.0.is_empty() {
-        let mut total = memory_bytes(std::process::id()).map_err(|e| e.to_string())?;
+        let mut total = memory_bytes(process::id()).map_err(|e| e.to_string())?;
         for worker in &mut workers.0 {
             let child = &mut worker.child;
             if child.try_wait().map_err(|e| e.to_string())?.is_none() {
@@ -181,14 +138,14 @@ fn run_workers(
         if total > budget {
             return Err(format!(
                 "memory budget exceeded: {} MiB used, {memory_mib} MiB limit; workers stopped",
-                total / (1024 * 1024)
+                total / MIB as u64
             ));
         }
-        if progress && last_progress.elapsed() >= Duration::from_secs(10) {
+        if progress && last_progress.elapsed() >= PROGRESS_INTERVAL {
             eprintln!(
                 "[progress] elapsed {}s | memory {} / {memory_mib} MiB | {} / {jobs} workers finished",
                 started.elapsed().as_secs(),
-                total / (1024 * 1024),
+                total / MIB as u64,
                 jobs - workers.0.len()
             );
             for worker in &workers.0 {
@@ -211,30 +168,7 @@ fn run_workers(
                 i += 1;
                 continue;
             }
-            let Worker {
-                index,
-                mut child,
-                output,
-                stderr,
-                ..
-            } = workers.0.swap_remove(i);
-            let status = child.wait().map_err(|e| e.to_string())?;
-            let output = output
-                .join()
-                .map_err(|_| "worker output reader panicked")?
-                .map_err(|e| e.to_string())?;
-            stderr
-                .join()
-                .map_err(|_| "worker stderr reader panicked")?
-                .map_err(|e| e.to_string())?;
-            if !status.success() {
-                return Err(format!(
-                    "worker {index} failed ({status}): {}",
-                    String::from_utf8_lossy(&output).trim()
-                ));
-            }
-            let report: Value = serde_json::from_slice(&output)
-                .map_err(|e| format!("invalid result from worker {index}: {e}"))?;
+            let (index, report) = finish(workers.0.swap_remove(i))?;
             if progress {
                 eprintln!(
                     "[progress] worker {}/{} finished its partition in {}s; awaiting all workers",
@@ -246,10 +180,100 @@ fn run_workers(
             reports[index] = report;
         }
         if !workers.0.is_empty() {
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(POLL_INTERVAL);
         }
     }
     combine(&reports)
+}
+
+fn finish(worker: Worker) -> Result<(usize, Value), String> {
+    let Worker {
+        index,
+        mut child,
+        output,
+        stderr,
+        ..
+    } = worker;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let output = output
+        .join()
+        .map_err(|_| "worker output reader panicked")?
+        .map_err(|e| e.to_string())?;
+    stderr
+        .join()
+        .map_err(|_| "worker stderr reader panicked")?
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!(
+            "worker {index} failed ({status}): {}",
+            String::from_utf8_lossy(&output).trim()
+        ));
+    }
+    let report: Value = serde_json::from_slice(&output)
+        .map_err(|e| format!("invalid result from worker {index}: {e}"))?;
+    Ok((index, report))
+}
+
+fn spawn(
+    executable: &Path,
+    path: &str,
+    index: usize,
+    jobs: usize,
+    progress: bool,
+    trace_requested: bool,
+) -> Result<Worker, String> {
+    let mut command = Command::new(executable);
+    if progress {
+        command.env(TRACE_VAR, "1");
+    }
+    let mut child = command
+        .args([
+            "--export-shard",
+            path,
+            &index.to_string(),
+            &jobs.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start worker {index}: {e}"))?;
+    let mut stdout = child.stdout.take().expect("piped worker output");
+    let output = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        // Drain concurrently so children never block on a full stdout pipe.
+        stdout.by_ref().take(OUTPUT_LIMIT).read_to_end(&mut bytes)?;
+        io::copy(&mut stdout, &mut io::sink())?;
+        Ok(bytes)
+    });
+    let stderr = child.stderr.take().expect("piped worker stderr");
+    let snapshot = Arc::new(Mutex::new(None));
+    let snapshot_writer = snapshot.clone();
+    let stderr = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let line = line?;
+            let update = if progress {
+                snapshot_from_trace(&line)
+            } else {
+                None
+            };
+            let is_trace = update.is_some();
+            if let Some(update) = update {
+                *snapshot_writer.lock().unwrap() = Some(update);
+            }
+            if !progress || trace_requested || !is_trace {
+                eprintln!("{line}");
+            }
+        }
+        Ok(())
+    });
+    Ok(Worker {
+        index,
+        child,
+        output,
+        stderr,
+        progress: snapshot,
+    })
 }
 
 fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
@@ -277,7 +301,7 @@ fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
 }
 
 #[cfg(target_os = "macos")]
-fn memory_bytes(pid: u32) -> std::io::Result<u64> {
+fn memory_bytes(pid: u32) -> io::Result<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v0>::uninit();
     // SAFETY: the buffer has the size/layout required by RUSAGE_INFO_V0 and
     // is read only after libproc reports that it initialized it successfully.
@@ -289,13 +313,13 @@ fn memory_bytes(pid: u32) -> std::io::Result<u64> {
         )
     };
     if result != 0 {
-        return Err(std::io::Error::last_os_error());
+        return Err(io::Error::last_os_error());
     }
     Ok(unsafe { usage.assume_init() }.ri_phys_footprint)
 }
 
 #[cfg(target_os = "linux")]
-fn memory_bytes(pid: u32) -> std::io::Result<u64> {
+fn memory_bytes(pid: u32) -> io::Result<u64> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
     let mut total = 0;
     for line in status.lines() {
@@ -304,7 +328,7 @@ fn memory_bytes(pid: u32) -> std::io::Result<u64> {
                 .split_whitespace()
                 .nth(1)
                 .and_then(|n| n.parse::<u64>().ok())
-                .ok_or_else(|| std::io::Error::other("invalid process memory counter"))?;
+                .ok_or_else(|| io::Error::other("invalid process memory counter"))?;
             total += kib * 1024;
         }
     }
@@ -312,8 +336,8 @@ fn memory_bytes(pid: u32) -> std::io::Result<u64> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn memory_bytes(_: u32) -> std::io::Result<u64> {
-    Err(std::io::Error::other(
+fn memory_bytes(_: u32) -> io::Result<u64> {
+    Err(io::Error::other(
         "parallel memory monitoring requires macOS or Linux",
     ))
 }

@@ -1,5 +1,3 @@
-//! Arena-allocated, hash-consed de Bruijn terms shared by the importer and the checker.
-
 pub mod arena;
 pub mod ctx;
 pub mod decl;
@@ -7,6 +5,7 @@ pub mod expr;
 pub mod intern;
 pub mod level;
 pub mod name;
+pub mod names;
 pub mod ops;
 pub mod outcome;
 pub mod ptr;
@@ -14,9 +13,7 @@ pub mod ptr;
 pub type FxHashMap<K, V> = std::collections::HashMap<K, V, rustc_hash::FxBuildHasher>;
 pub type FxHashSet<K> = std::collections::HashSet<K, rustc_hash::FxBuildHasher>;
 
-/// Structural hasher for interned nodes. Each word is multiplied and folded
-/// before the next is absorbed, so hashes of pointer tuples stay nonlinear
-/// (FxHasher is linear in its inputs and collides on large arenas).
+/// Multiply and fold each word, since FxHasher is linear and collides on large arenas.
 #[derive(Default)]
 pub struct MixHasher(u64);
 

@@ -1,4 +1,3 @@
-//! Opt-in counters and inclusive timings for a single export check.
 use std::{cell::RefCell, collections::BTreeMap, time::Instant};
 
 #[derive(Default)]

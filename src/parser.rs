@@ -1,5 +1,7 @@
 use crate::kernel::{Constructor, InductiveBlock, InductiveType};
 use crate::{Environment, Error, Expr, Level, lexer::lex};
+use num_bigint::BigUint;
+use offsides::LayoutMode;
 use unbound::{Name, Shared};
 
 lalrpop_util::lalrpop_mod!(
@@ -32,8 +34,6 @@ pub(crate) fn offset(u: Level, n: u32) -> Level {
     })
 }
 
-/// Names in scope while resolving a term. Inside an inductive block, a bare
-/// reference to the type being defined is applied to its universe parameters.
 #[derive(Default)]
 struct Scope {
     locals: Vec<(String, Name<Expr>)>,
@@ -41,13 +41,13 @@ struct Scope {
 }
 
 impl Term {
-    pub(crate) fn binders(params: Vec<Binding>, body: Term, pi: bool) -> Term {
+    pub(crate) fn binders(
+        params: Vec<Binding>,
+        body: Term,
+        binder: fn(String, Box<Term>, Box<Term>) -> Term,
+    ) -> Term {
         params.into_iter().rev().fold(body, |body, (n, ty)| {
-            if pi {
-                Term::Pi(n, Box::new(ty), Box::new(body))
-            } else {
-                Term::Lam(n, Box::new(ty), Box::new(body))
-            }
+            binder(n, Box::new(ty), Box::new(body))
         })
     }
     pub(crate) fn lets(defs: Vec<LocalDef>, body: Term) -> Term {
@@ -56,7 +56,6 @@ impl Term {
         })
     }
     fn resolve(self, scope: &mut Scope) -> Expr {
-        let is_pi = matches!(self, Self::Pi(..));
         match self {
             Self::Name(n) => {
                 if let Some((_, v)) = scope.locals.iter().rev().find(|(s, _)| s == &n) {
@@ -69,32 +68,42 @@ impl Term {
             }
             Self::Const(n, us) => Expr::Const(n, us),
             Self::Sort(u) => Expr::Sort(u),
-            Self::Nat(n) => Expr::nat(n.parse::<num_bigint::BigUint>().unwrap()),
+            Self::Nat(n) => Expr::nat(n.parse::<BigUint>().unwrap()),
             Self::Str(s) => Expr::Str(s),
             Self::Proj(n, i, e) => Expr::Proj(n, i, Shared::new(e.resolve(scope))),
             Self::App(f, a) => f.resolve(scope).app(a.resolve(scope)),
-            Self::Pi(n, ty, body) | Self::Lam(n, ty, body) => {
-                let ty = ty.resolve(scope);
-                let name = Name::new(if n.is_empty() { "_" } else { &n });
-                scope.locals.push((n, name.clone()));
-                let body = body.resolve(scope);
-                scope.locals.pop();
-                if is_pi {
-                    Expr::pi(name, ty, body)
-                } else {
-                    Expr::lam(name, ty, body)
-                }
-            }
+            Self::Pi(n, ty, body) => scope.binder(n, *ty, *body, Expr::pi),
+            Self::Lam(n, ty, body) => scope.binder(n, *ty, *body, Expr::lam),
             Self::Let(n, ty, value, body) => {
                 let ty = ty.resolve(scope);
                 let value = value.resolve(scope);
                 let name = Name::new(&n);
-                scope.locals.push((n, name.clone()));
-                let body = body.resolve(scope);
-                scope.locals.pop();
+                let body = scope.under(n, name.clone(), *body);
                 Expr::let_(name, ty, value, body)
             }
         }
+    }
+}
+
+impl Scope {
+    fn under(&mut self, local: String, name: Name<Expr>, body: Term) -> Expr {
+        self.locals.push((local, name));
+        let body = body.resolve(self);
+        self.locals.pop();
+        body
+    }
+
+    fn binder(
+        &mut self,
+        local: String,
+        ty: Term,
+        body: Term,
+        make: fn(Name<Expr>, Expr, Expr) -> Expr,
+    ) -> Expr {
+        let ty = ty.resolve(self);
+        let name = Name::new(if local.is_empty() { "_" } else { &local });
+        let body = self.under(local, name.clone(), body);
+        make(name, ty, body)
     }
 }
 
@@ -111,7 +120,6 @@ pub(crate) enum Command {
     Equal(Term, Term),
 }
 
-/// A declaration as submitted to the kernel, whether or not it was accepted.
 #[derive(Clone, Debug)]
 pub enum Declaration {
     Axiom(String, Vec<String>, Expr),
@@ -119,6 +127,10 @@ pub enum Declaration {
     Theorem(String, Vec<String>, Expr, Expr),
     Inductive(InductiveBlock),
     Quotient,
+}
+
+fn resolve(term: Term) -> Expr {
+    term.resolve(&mut Scope::default())
 }
 
 fn pis(mut e: &Expr) -> usize {
@@ -139,7 +151,6 @@ fn drop_pis(mut e: &Expr, n: usize) -> &Expr {
     e
 }
 
-/// The type, constructors and metadata of a single inductive, without a recursor.
 fn inductive(
     (name, params): Signature,
     binders: Vec<Binding>,
@@ -152,12 +163,12 @@ fn inductive(
         implicit: Some((name.clone(), levels)),
         ..Scope::default()
     };
-    let ty = Term::binders(binders.clone(), ty, true).resolve(&mut scope);
+    let ty = Term::binders(binders.clone(), ty, Term::Pi).resolve(&mut scope);
     let constructors: Vec<_> = ctors
         .into_iter()
         .enumerate()
         .map(|(index, (n, t))| {
-            let ty = Term::binders(binders.clone(), t, true).resolve(&mut scope);
+            let ty = Term::binders(binders.clone(), t, Term::Pi).resolve(&mut scope);
             Constructor {
                 name: n,
                 params: params.clone(),
@@ -189,14 +200,14 @@ fn inductive(
 
 pub fn parse_expr(source: &str) -> Result<Expr, Error> {
     grammar::ExprParser::new()
-        .parse(lex(source, false))
-        .map(|term| term.resolve(&mut Scope::default()))
+        .parse(lex(source, LayoutMode::Lazy))
+        .map(resolve)
         .map_err(|e| Error(e.to_string()))
 }
 
 fn program(source: &str) -> Result<Vec<Command>, Error> {
     grammar::ProgramParser::new()
-        .parse(lex(source, true))
+        .parse(lex(source, LayoutMode::Eager))
         .map_err(|e| Error(e.to_string()))
 }
 
@@ -239,7 +250,6 @@ fn execute(
     env: &mut Environment,
     submitted: &mut Vec<Declaration>,
 ) -> Result<String, Error> {
-    let resolve = |t: Term| t.resolve(&mut Scope::default());
     let d = match command {
         Command::Axiom((n, ps), ty) => Declaration::Axiom(n, ps, resolve(ty)),
         Command::Define((n, ps), ty, v) => Declaration::Definition(n, ps, resolve(ty), resolve(v)),
@@ -249,7 +259,6 @@ fn execute(
             match env.complete_inductive(&block) {
                 Ok(block) => Declaration::Inductive(block),
                 Err(e) => {
-                    // Submitted as written, with no recursor, so every checker sees it.
                     submitted.push(Declaration::Inductive(block));
                     return Err(e);
                 }
@@ -263,7 +272,6 @@ fn execute(
 }
 
 fn query(command: Command, env: &mut Environment) -> Result<String, Error> {
-    let resolve = |t: Term| t.resolve(&mut Scope::default());
     match command {
         Command::Infer(e) => {
             let e = resolve(e);
@@ -286,7 +294,6 @@ fn query(command: Command, env: &mut Environment) -> Result<String, Error> {
     }
 }
 
-/// Runs every command, stopping at the first failure.
 pub fn run(source: &str, env: &mut Environment) -> Result<Vec<String>, Error> {
     program(source)?
         .into_iter()
@@ -298,7 +305,6 @@ pub fn run(source: &str, env: &mut Environment) -> Result<Vec<String>, Error> {
         .collect()
 }
 
-/// Runs every command, keeping going past rejected ones.
 pub fn session(source: &str, env: &mut Environment) -> Result<Vec<Result<String, Error>>, Error> {
     Ok(program(source)?
         .into_iter()
@@ -306,7 +312,6 @@ pub fn session(source: &str, env: &mut Environment) -> Result<Vec<Result<String,
         .collect())
 }
 
-/// Every declaration a script submits, including rejected ones, in order.
 pub fn declarations(source: &str) -> Result<Vec<Declaration>, Error> {
     let mut env = Environment::new();
     let mut submitted = Vec::new();

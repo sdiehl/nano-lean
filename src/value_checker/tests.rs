@@ -1,11 +1,12 @@
 use super::*;
+use crate::checker::{self, Adapter};
 use crate::import::import_bytes;
+use crate::term::outcome::{self, Failure};
 
 macro_rules! fixtures {
     ($($f:literal),*) => { [$((concat!($f), include_bytes!(concat!("../../tests/fixtures/", $f)).as_slice())),*] };
 }
 
-/// Every declaration of every fixture gets the same verdict from both engines.
 #[test]
 fn fixture_outcomes_match_the_term_checker() {
     let all = fixtures!(
@@ -62,12 +63,11 @@ fn fixture_outcomes_match_the_term_checker() {
             let new = check(&store, &mut local, i, Limits::default(), Some(&mut b), true);
             let name = store.declars[i as usize].name();
             assert!(
-                !matches!(new, Err(outcome::Failure::Internal(_))),
+                !matches!(new, Err(Failure::Internal(_))),
                 "{file}: {name}: {}",
                 new.as_ref().err().map_or("", |f| f.reason())
             );
-            let kind =
-                |r: &Result<bool, outcome::Failure>| r.as_ref().map_err(|f| f.status()).copied();
+            let kind = |r: &Result<bool, Failure>| r.as_ref().map_err(|f| f.status()).copied();
             assert_eq!(kind(&old), kind(&new), "{file}: {name}");
             let shared = session.check(i, Limits::default(), Some(&mut c), true);
             assert_eq!(kind(&old), kind(&shared), "{file}: {name} in a session");

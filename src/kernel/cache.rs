@@ -1,4 +1,5 @@
 use super::*;
+use crate::syntax::Natural;
 
 enum BoundSupport {
     Inline(u64),
@@ -44,10 +45,9 @@ impl BoundSupport {
     }
 }
 
-/// Structural keys ignore binder hints, but retain every bound-variable index.
 #[derive(PartialEq, Eq, Hash)]
 enum Key {
-    Nat(crate::syntax::Natural),
+    Nat(Natural),
     Str(String),
     Var(Name<Expr>),
     Sort(Level),
@@ -82,10 +82,7 @@ impl Cache {
             return *id;
         }
         let id = self.id(e);
-        // Pointer aliases are only a shortcut to the stable structural IDs.
-        // Bound their retention so repeated instantiation cannot keep every
-        // transient copy alive for the entire declaration. Clearing the table
-        // also removes its addresses, so allocator reuse cannot leave stale IDs.
+        // Clearing drops addresses too, so allocator reuse cannot leave stale IDs.
         if self.pointers.len() >= 262_144 {
             self.pointers.clear();
         }
@@ -187,7 +184,6 @@ impl Cache {
         self.loose[id].is_some()
     }
 
-    /// Open only the subterm needed by inference, preserving the surrounding DAG.
     pub fn open_at(
         &mut self,
         e: &Expr,
@@ -268,8 +264,7 @@ impl Cache {
     }
 
     pub fn scope(&self, id: usize, scope: usize) -> usize {
-        // Free names are globally fresh and have immutable types/values within a checker.
-        // Extending a context therefore cannot change an already inferred open term.
+        // Free names are globally fresh, so extending a context cannot change an inferred term.
         if self.loose[id].is_some() { scope } else { 0 }
     }
 }

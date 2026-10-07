@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
 pub const ANON_HASH: u64 = 43;
 pub const STR_HASH: u64 = 911;
 pub const NUM_HASH: u64 = 103;
+const NO_DECL: u32 = u32::MAX;
+const NO_NAT_RED: u8 = u8::MAX;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Name<'a> {
@@ -23,7 +25,6 @@ impl Name<'_> {
     }
 }
 
-/// Interned string with its hash.
 pub struct StrNode<'a> {
     pub s: &'a str,
     pub hash: u64,
@@ -35,7 +36,6 @@ impl fmt::Debug for StrNode<'_> {
     }
 }
 
-/// Nat operations the kernel evaluates directly on literals.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NatRed {
@@ -76,9 +76,7 @@ const NAT_REDS: [NatRed; 16] = [
     NatRed::Log2,
 ];
 
-/// An interned hierarchical name. Carries the index of the declaration it names
-/// (set at import) and the tag of the Nat primitive it denotes, so the checker
-/// never hashes a name to look either up.
+/// Carries its declaration index and Nat primitive tag so the checker never hashes a name.
 pub struct NameNode<'a> {
     pub kind: Name<'a>,
     decl: AtomicU32,
@@ -89,15 +87,15 @@ impl<'a> NameNode<'a> {
     pub fn new(kind: Name<'a>) -> Self {
         Self {
             kind,
-            decl: AtomicU32::new(u32::MAX),
-            nat: AtomicU8::new(u8::MAX),
+            decl: AtomicU32::new(NO_DECL),
+            nat: AtomicU8::new(NO_NAT_RED),
         }
     }
 
     #[inline]
     pub fn decl_idx(&self) -> Option<u32> {
         let d = self.decl.load(Relaxed);
-        (d != u32::MAX).then_some(d)
+        (d != NO_DECL).then_some(d)
     }
 
     pub fn set_decl_idx(&self, idx: u32) {

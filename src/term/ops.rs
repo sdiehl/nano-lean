@@ -1,7 +1,5 @@
-//! Term operations: level arithmetic, name manipulation, lifting, instantiation
-//! and universe substitution. All memoised against the sharing in the term DAG.
-
 use super::ctx::Ctx;
+use super::decl::Declar;
 use super::expr::Expr;
 use super::level::Level;
 use super::ptr::{ExprPtr, LevelPtr, LevelsPtr};
@@ -10,10 +8,9 @@ use crate::reject;
 const OP_LIFT: u32 = 1 << 24;
 const OP_INST: u32 = 2 << 24;
 const OP_ABST: u32 = 4 << 24;
+const INST_CACHE_LIMIT: usize = 4096;
 
 impl<'t, 'a: 't> Ctx<'t, 'a> {
-    // Levels
-
     fn combine(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
         match (*l, *r) {
             (Level::Zero, _) => r,
@@ -190,10 +187,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         matches!(*l, Level::Succ(p, _) if self.is_zero(p))
     }
 
-    // Names
-
-    // Expressions
-
     fn fresh(&mut self) -> u32 {
         self.generation = self.generation.wrapping_add(1);
         self.generation
@@ -204,6 +197,44 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         match self.memo.get(&key) {
             Some(&(k, r)) if k == g => Some(r),
             _ => None,
+        }
+    }
+
+    #[inline(always)]
+    fn map_children(
+        &mut self,
+        e: ExprPtr<'t>,
+        mut f: impl FnMut(&mut Self, ExprPtr<'t>, u16) -> ExprPtr<'t>,
+    ) -> ExprPtr<'t> {
+        match *e {
+            Expr::App { fun, arg, .. } => {
+                let fun = f(self, fun, 0);
+                let arg = f(self, arg, 0);
+                self.app(fun, arg)
+            }
+            Expr::Lam { ty, body, .. } => {
+                let t = f(self, ty, 0);
+                let b = f(self, body, 1);
+                self.lam(t, b)
+            }
+            Expr::Pi { ty, body, .. } => {
+                let t = f(self, ty, 0);
+                let b = f(self, body, 1);
+                self.pi(t, b)
+            }
+            Expr::Let { data, .. } => {
+                let t = f(self, data.ty, 0);
+                let v = f(self, data.val, 0);
+                let b = f(self, data.body, 1);
+                self.let_(t, v, b, data.nondep)
+            }
+            Expr::Proj {
+                name, idx, e: s, ..
+            } => {
+                let s = f(self, s, 0);
+                self.proj(name, idx, s)
+            }
+            _ => e,
         }
     }
 
@@ -220,48 +251,17 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                 idx.checked_add(amount)
                     .unwrap_or_else(|| reject!("variable index overflow")),
             ),
-            Expr::App { fun, arg, .. } => {
-                let f = self.lift_rec(fun, cutoff, amount, g);
-                let a = self.lift_rec(arg, cutoff, amount, g);
-                self.app(f, a)
-            }
-            Expr::Lam { ty, body, .. } => {
-                let t = self.lift_rec(ty, cutoff, amount, g);
-                let b = self.lift_rec(body, cutoff + 1, amount, g);
-                self.lam(t, b)
-            }
-            Expr::Pi { ty, body, .. } => {
-                let t = self.lift_rec(ty, cutoff, amount, g);
-                let b = self.lift_rec(body, cutoff + 1, amount, g);
-                self.pi(t, b)
-            }
-            Expr::Let { data, .. } => {
-                let t = self.lift_rec(data.ty, cutoff, amount, g);
-                let v = self.lift_rec(data.val, cutoff, amount, g);
-                let b = self.lift_rec(data.body, cutoff + 1, amount, g);
-                self.let_(t, v, b, data.nondep)
-            }
-            Expr::Proj {
-                name, idx, e: s, ..
-            } => {
-                let s = self.lift_rec(s, cutoff, amount, g);
-                self.proj(name, idx, s)
-            }
-            _ => e,
+            _ => self.map_children(e, |c, x, d| c.lift_rec(x, cutoff + d, amount, g)),
         };
         self.memo.insert(key, (g, r));
         r
     }
 
-    /// Substitute `subs` for the outermost loose variables: `Var(i)` becomes
-    /// `subs[len - 1 - i]`, variables beyond are lowered by `len`. Substituted
-    /// terms may be open; they are lifted past the binders they are moved under.
     pub fn inst(&mut self, e: ExprPtr<'t>, subs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         if subs.is_empty() || e.closed() {
             return e;
         }
-        // A closed replacement needs no lifting. Exact syntax pointers capture
-        // all inputs; this cache contains no typing or declaration-validity facts.
+        // Sound because a closed replacement needs no lifting and pointers capture all inputs.
         let key = match subs {
             [s] if s.closed() => Some((e, *s)),
             _ => None,
@@ -274,8 +274,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         let g = self.fresh();
         let result = self.inst_rec(e, subs, 0, g);
         if let Some(key) = key {
-            // Bound auxiliary retention; clearing affects performance only.
-            if self.inst_cache.len() == 4096 {
+            if self.inst_cache.len() == INST_CACHE_LIMIT {
                 self.inst_cache.clear();
             }
             self.inst_cache.insert(key, result);
@@ -304,40 +303,12 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                     self.var(idx - subs.len() as u16)
                 }
             }
-            Expr::App { fun, arg, .. } => {
-                let f = self.inst_rec(fun, subs, off, g);
-                let a = self.inst_rec(arg, subs, off, g);
-                self.app(f, a)
-            }
-            Expr::Lam { ty, body, .. } => {
-                let t = self.inst_rec(ty, subs, off, g);
-                let b = self.inst_rec(body, subs, off + 1, g);
-                self.lam(t, b)
-            }
-            Expr::Pi { ty, body, .. } => {
-                let t = self.inst_rec(ty, subs, off, g);
-                let b = self.inst_rec(body, subs, off + 1, g);
-                self.pi(t, b)
-            }
-            Expr::Let { data, .. } => {
-                let t = self.inst_rec(data.ty, subs, off, g);
-                let v = self.inst_rec(data.val, subs, off, g);
-                let b = self.inst_rec(data.body, subs, off + 1, g);
-                self.let_(t, v, b, data.nondep)
-            }
-            Expr::Proj {
-                name, idx, e: s, ..
-            } => {
-                let s = self.inst_rec(s, subs, off, g);
-                self.proj(name, idx, s)
-            }
-            _ => e,
+            _ => self.map_children(e, |c, x, d| c.inst_rec(x, subs, off + d, g)),
         };
         self.memo.insert(key, (g, r));
         r
     }
 
-    /// Replace each of `locals` by a bound variable, the last one becoming `Var(0)`.
     pub fn abstract_locals(&mut self, e: ExprPtr<'t>, locals: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         if locals.is_empty() || !e.has_local() {
             return e;
@@ -365,40 +336,12 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                 Some(i) => self.var(off + (locals.len() - 1 - i) as u16),
                 None => e,
             },
-            Expr::App { fun, arg, .. } => {
-                let f = self.abst_rec(fun, locals, off, g);
-                let a = self.abst_rec(arg, locals, off, g);
-                self.app(f, a)
-            }
-            Expr::Lam { ty, body, .. } => {
-                let t = self.abst_rec(ty, locals, off, g);
-                let b = self.abst_rec(body, locals, off + 1, g);
-                self.lam(t, b)
-            }
-            Expr::Pi { ty, body, .. } => {
-                let t = self.abst_rec(ty, locals, off, g);
-                let b = self.abst_rec(body, locals, off + 1, g);
-                self.pi(t, b)
-            }
-            Expr::Let { data, .. } => {
-                let t = self.abst_rec(data.ty, locals, off, g);
-                let v = self.abst_rec(data.val, locals, off, g);
-                let b = self.abst_rec(data.body, locals, off + 1, g);
-                self.let_(t, v, b, data.nondep)
-            }
-            Expr::Proj {
-                name, idx, e: s, ..
-            } => {
-                let s = self.abst_rec(s, locals, off, g);
-                self.proj(name, idx, s)
-            }
-            _ => e,
+            _ => self.map_children(e, |c, x, d| c.abst_rec(x, locals, off + d, g)),
         };
         self.memo.insert(key, (g, r));
         r
     }
 
-    /// Replace universe parameters `ks` by `vs` throughout `e`.
     pub fn subst_expr_levels(
         &mut self,
         e: ExprPtr<'t>,
@@ -426,40 +369,12 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                 let ls = self.subst_levels(levels, ks, vs);
                 self.konst(name, ls)
             }
-            Expr::App { fun, arg, .. } => {
-                let f = self.subst_expr_levels(fun, ks, vs);
-                let a = self.subst_expr_levels(arg, ks, vs);
-                self.app(f, a)
-            }
-            Expr::Lam { ty, body, .. } => {
-                let t = self.subst_expr_levels(ty, ks, vs);
-                let b = self.subst_expr_levels(body, ks, vs);
-                self.lam(t, b)
-            }
-            Expr::Pi { ty, body, .. } => {
-                let t = self.subst_expr_levels(ty, ks, vs);
-                let b = self.subst_expr_levels(body, ks, vs);
-                self.pi(t, b)
-            }
-            Expr::Let { data, .. } => {
-                let t = self.subst_expr_levels(data.ty, ks, vs);
-                let v = self.subst_expr_levels(data.val, ks, vs);
-                let b = self.subst_expr_levels(data.body, ks, vs);
-                self.let_(t, v, b, data.nondep)
-            }
-            Expr::Proj {
-                name, idx, e: s, ..
-            } => {
-                let s = self.subst_expr_levels(s, ks, vs);
-                self.proj(name, idx, s)
-            }
-            _ => e,
+            _ => self.map_children(e, |c, x, _| c.subst_expr_levels(x, ks, vs)),
         };
         self.subst_cache.insert((e, ks, vs), r);
         r
     }
 
-    /// Split an application spine into head and arguments.
     pub fn unfold_apps(&self, mut e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
         let mut args = Vec::with_capacity(e.num_args());
         while let Expr::App { fun, arg, .. } = *e {
@@ -470,7 +385,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         (e, args)
     }
 
-    /// Strip `n` leading Pi binders, instantiating them with `args`.
     pub fn inst_pis(&mut self, mut e: ExprPtr<'t>, args: &[ExprPtr<'t>]) -> ExprPtr<'t> {
         for _ in args {
             match *e {
@@ -481,12 +395,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         self.inst(e, args)
     }
 
-    /// Instantiate a declaration's type with concrete universe levels.
-    pub fn declar_type(
-        &mut self,
-        d: &super::decl::Declar<'t>,
-        levels: LevelsPtr<'t>,
-    ) -> ExprPtr<'t> {
+    pub fn declar_type(&mut self, d: &Declar<'t>, levels: LevelsPtr<'t>) -> ExprPtr<'t> {
         self.subst_expr_levels(d.ty(), d.uparams(), levels)
     }
 }
@@ -529,7 +438,6 @@ mod tests {
                 let generation = ctx.fresh();
                 let expected = ctx.inst_rec(expression, &substitutions, 0, generation);
                 assert_eq!(ctx.inst(expression, &substitutions), expected);
-                // Interleave a different environment before requesting the same one.
                 ctx.inst(expression, &[other_local, prop]);
                 assert_eq!(ctx.inst(expression, &substitutions), expected);
             }
@@ -558,11 +466,9 @@ mod tests {
             for id in 0..5000 {
                 let local = ctx.local(id + round * 5000, prop);
                 assert_eq!(ctx.inst1(var, local), local);
-                assert!(ctx.inst_cache.len() <= 4096);
+                assert!(ctx.inst_cache.len() <= INST_CACHE_LIMIT);
             }
-            // A failed traversal must not publish a result for its root.
-            // Construct an invalid boundary variable deliberately: lifting it
-            // must hit checked arithmetic in both debug and release builds.
+            // Lifting this variable must hit checked arithmetic in release builds too.
             let near_limit = ExprPtr::new(
                 arena.alloc(Expr::Var {
                     idx: u16::MAX,

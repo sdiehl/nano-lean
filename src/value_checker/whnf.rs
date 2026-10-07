@@ -1,14 +1,14 @@
 use super::value::*;
 use super::{R, Vc, stat};
+use crate::checker::env::Decls;
+use crate::checker::nat::{self, NatValue};
+use crate::reject;
 use crate::term::decl::{Declar, Hint, Recursor};
-use crate::term::name::NatRed;
+use crate::term::names::{QUOT_FN, QUOT_IND_MAJOR, QUOT_LIFT_MAJOR, QUOT_MK_ARITY};
 use crate::term::ptr::{LevelsPtr, NamePtr};
 use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::Zero;
 use smallvec::SmallVec;
-
-const BIG_EXP: u64 = 1 << 24;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn whnf_core(&mut self, v: V<'t>) -> R<V<'t>> {
@@ -114,8 +114,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let f = match self.t.delta.get(&(n, ls)) {
             Some(&f) => f,
             None => {
-                let sub = self.sub(d.uparams(), ls);
-                let f = self.eval(Env::EMPTY, sub, body)?;
+                let f = self.eval_at(d.uparams(), ls, body)?;
                 self.t.delta.insert((n, ls), f);
                 f
             }
@@ -148,10 +147,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     ) -> R<Option<V<'t>>> {
         let n0 = Some(n);
         if n0 == self.names.quot_lift {
-            return self.reduce_quot(args, 5, 3);
+            return self.reduce_quot(args, QUOT_LIFT_MAJOR);
         }
         if n0 == self.names.quot_ind {
-            return self.reduce_quot(args, 4, 3);
+            return self.reduce_quot(args, QUOT_IND_MAJOR);
         }
         match self.declar(n) {
             Some(Declar::Rec(r)) => self.reduce_ind_rec(r, ls, args),
@@ -159,12 +158,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
-    fn reduce_quot(
-        &mut self,
-        args: &'t [V<'t>],
-        mk_pos: usize,
-        arg_pos: usize,
-    ) -> R<Option<V<'t>>> {
+    fn reduce_quot(&mut self, args: &'t [V<'t>], mk_pos: usize) -> R<Option<V<'t>>> {
         let Some(&m) = args.get(mk_pos) else {
             return Ok(None);
         };
@@ -172,18 +166,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let K::Neu(Head::Const(c, _), margs) = mk.k else {
             return Ok(None);
         };
-        if margs.len() != 3 || Some(c) != self.names.quot_mk {
+        if margs.len() != QUOT_MK_ARITY || Some(c) != self.names.quot_mk {
             return Ok(None);
         }
-        let r = self.apply(args[arg_pos], &margs[2..])?;
+        let r = self.apply(args[QUOT_FN], &margs[QUOT_MK_ARITY - 1..])?;
         Ok(Some(self.apply(r, &args[mk_pos + 1..])?))
-    }
-
-    fn rec_induct(&self, rec: &Recursor<'t>) -> Option<NamePtr<'t>> {
-        match self.declar(rec.rules.first()?.ctor)? {
-            Declar::Ctor(c) => Some(c.induct),
-            _ => None,
-        }
     }
 
     fn reduce_ind_rec(
@@ -227,8 +214,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let rhs = match self.t.rules.get(&(rec.info.name, ri, ls)) {
             Some(&v) => v,
             None => {
-                let sub = self.sub(rec.info.uparams, ls);
-                let v = self.eval(Env::EMPTY, sub, rule.rhs)?;
+                let v = self.eval_at(rec.info.uparams, ls, rule.rhs)?;
                 self.t.rules.insert((rec.info.name, ri, ls), v);
                 v
             }
@@ -317,7 +303,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let ch = self.konst0(self.names.char);
         let of_nat = self.konst0(self.names.char_of_nat);
         let (Some(nil), Some(cons)) = (self.names.list_nil, self.names.list_cons) else {
-            crate::reject!("missing builtin constant")
+            reject!("missing builtin constant")
         };
         let nil = self.mk(K::Neu(Head::Const(nil, l0), &[]), false);
         let cons = self.mk(K::Neu(Head::Const(cons, l0), &[]), false);
@@ -356,20 +342,18 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(None);
         };
         if args.len() == 1 {
-            let r = match op {
-                NatRed::Succ => match self.nat_val(args[0])? {
-                    Some(x) => x + 1u32,
-                    None => return Ok(None),
-                },
-                NatRed::Log2 => match self.nat_val(args[0])? {
-                    Some(x) => BigUint::from(x.bits().saturating_sub(1)),
-                    None => return Ok(None),
-                },
-                _ => return Ok(None),
+            if !nat::is_unary(op) {
+                return Ok(None);
+            }
+            let Some(x) = self.nat_val(args[0])? else {
+                return Ok(None);
+            };
+            let Some(r) = nat::unary(op, x) else {
+                return Ok(None);
             };
             return Ok(Some(self.nat(r)));
         }
-        if matches!(op, NatRed::Succ | NatRed::Log2) {
+        if nat::is_unary(op) {
             return Ok(None);
         }
         let Some(x) = self.nat_val(args[0])? else {
@@ -378,58 +362,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let Some(y) = self.nat_val(args[1])? else {
             return Ok(None);
         };
-        let b = |vc: &mut Self, t: bool| {
-            let n = if t {
-                vc.names.bool_true
-            } else {
-                vc.names.bool_false
-            };
-            Ok(Some(vc.konst0(n)))
+        let Some(r) = nat::binary(op, x, y) else {
+            return Ok(None);
         };
-        let r = match op {
-            NatRed::Add => x + y,
-            NatRed::Sub => {
-                if x > y {
-                    x - y
-                } else {
-                    BigUint::zero()
-                }
-            }
-            NatRed::Mul => x * y,
-            NatRed::Div => {
-                if y.is_zero() {
-                    y
-                } else {
-                    x / y
-                }
-            }
-            NatRed::Mod => {
-                if y.is_zero() {
-                    x
-                } else {
-                    x % y
-                }
-            }
-            NatRed::Gcd => x.gcd(&y),
-            NatRed::Beq => return b(self, x == y),
-            NatRed::Ble => return b(self, x <= y),
-            NatRed::Land => x & y,
-            NatRed::Lor => x | y,
-            NatRed::Xor => x ^ y,
-            NatRed::Shl => match y.to_u64().filter(|&k| k <= BIG_EXP) {
-                Some(k) => x << k,
-                None => return Ok(None),
-            },
-            NatRed::Shr => match y.to_u64() {
-                Some(k) => x >> k,
-                None => BigUint::zero(),
-            },
-            NatRed::Pow => match y.to_u64().filter(|&k| k <= BIG_EXP) {
-                Some(k) => x.pow(k as u32),
-                None => return Ok(None),
-            },
-            NatRed::Succ | NatRed::Log2 => return Ok(None),
-        };
-        Ok(Some(self.nat(r)))
+        Ok(Some(match r {
+            NatValue::Nat(r) => self.nat(r),
+            NatValue::Bool(true) => self.konst0(self.names.bool_true),
+            NatValue::Bool(false) => self.konst0(self.names.bool_false),
+        }))
     }
 }

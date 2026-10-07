@@ -1,6 +1,3 @@
-//! Semantic values. Syntax stays in the term store; values live in the
-//! per-declaration arena and are compared by pointer in caches.
-
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use num_bigint::BigUint;
 use std::cell::Cell;
@@ -9,7 +6,7 @@ pub type V<'t> = &'t Val<'t>;
 
 pub struct Val<'t> {
     pub k: K<'t>,
-    /// May mention a local. Over-approximates through closure environments.
+    /// May mention a local, over-approximated through closure environments.
     pub open: bool,
 }
 
@@ -30,8 +27,7 @@ pub enum Head<'t> {
     Proj(NamePtr<'t>, u16, V<'t>),
 }
 
-/// A body awaiting one argument. A typed closure yields the type of the
-/// body's value instead of the value: it is the codomain of a lambda's type.
+/// A typed closure yields the type of the body's value, the codomain of a lambda's type.
 #[derive(Clone, Copy)]
 pub struct Clo<'t> {
     pub env: Env<'t>,
@@ -40,7 +36,6 @@ pub struct Clo<'t> {
     pub typed: bool,
 }
 
-/// A lambda domain, evaluated at most once and only when needed.
 pub struct Lazy<'t> {
     pub env: Env<'t>,
     pub sub: Sub<'t>,
@@ -48,7 +43,7 @@ pub struct Lazy<'t> {
     pub val: Cell<Option<V<'t>>>,
 }
 
-/// Universe instantiation `ks := vs`, normalized so identity has one form.
+/// Normalized so identity has one form.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Sub<'t> {
     pub ks: LevelsPtr<'t>,
@@ -61,8 +56,7 @@ impl Sub<'_> {
     }
 }
 
-/// Bound values, innermost first: cheap pushes over an interned frame that
-/// closures capture and index directly. One pointer wide.
+/// Cheap pushes over an interned frame. One pointer wide.
 #[derive(Clone, Copy)]
 pub struct Env<'t>(Option<&'t EnvObj<'t>>);
 
@@ -81,21 +75,17 @@ pub struct EnvNode<'t> {
     pub head: V<'t>,
     pub tail: Env<'t>,
     pub open: bool,
-    /// Nodes above the nearest frame, including this one.
     pub depth: u32,
-    /// Values in the whole environment.
     pub len: u32,
     pub prune: Prune<'t>,
 }
 
-/// `vals[i]` is de Bruijn index `i`.
 pub struct Frame<'t> {
     pub vals: &'t [V<'t>],
     pub open: bool,
     pub prune: Prune<'t>,
 }
 
-/// The last restriction of an environment to a slot mask.
 pub type Prune<'t> = Cell<(u32, Env<'t>)>;
 
 impl<'t> Env<'t> {
@@ -139,7 +129,6 @@ impl<'t> Env<'t> {
         }
     }
 
-    /// The restriction to `mask` cached by `set_pruned`.
     #[inline]
     pub fn pruned(self, mask: u32) -> Option<Env<'t>> {
         let (m, r) = self.prune()?.get();
@@ -179,7 +168,6 @@ impl<'t> Env<'t> {
         self.0.map_or(0, |o| o as *const EnvObj as usize)
     }
 
-    /// All values, innermost first.
     pub fn iter(self) -> impl Iterator<Item = V<'t>> {
         let mut e = self;
         let mut at = 0;

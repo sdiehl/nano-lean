@@ -199,7 +199,6 @@ fn failed_and_exhausted_congruence_probes_fall_back_to_unfolding() {
     assert!(!tc.probe_args(cheap, costly));
     assert_eq!(tc.probe_exhaustions, exhausted);
     assert_eq!(tc.steps_left, remaining);
-    // An inconclusive probe must never become evidence of inequality.
     let two = tc.ctx.nat_lit(2u32.into());
     tc.fail_cache.insert((cheap, two));
     assert!(tc.def_eq(cheap, two));
@@ -256,8 +255,7 @@ fn projections_expose_operations_before_expensive_natural_reduction() {
     };
     let direct = body("PhaseTwo.direct");
     let projected = body("PhaseTwo.projected");
-    // Bound the regression itself: the old reduction order traversed billions
-    // of successors. Exhaustion here must fail the test, not hang the suite.
+    // A wrong reduction order walks billions of successors, so this must fail, not hang.
     tc.probe_remaining = Some(10_000);
     outcome::run(|| assert!(tc.def_eq(direct, projected)))
         .unwrap_or_else(|e| panic!("{}", e.reason()));
@@ -494,7 +492,6 @@ fn contextual_inference_keeps_distinct_local_types_and_dependencies() {
     let type_expected = tc.ctx.pi(ty, ty);
     assert_eq!(tc.infer(prop_identity, false), prop_expected);
     assert_eq!(tc.infer(type_identity, false), type_expected);
-    // The body refers to the outer type through an intervening unused binder.
     let outer = tc.ctx.var(1);
     let inner = tc.ctx.lam(prop, outer);
     let dependent = tc.ctx.lam(ty, inner);

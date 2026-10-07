@@ -1,6 +1,15 @@
 use crate::Error;
+use crate::resource::Budget;
 use std::collections::{BTreeMap, BTreeSet};
-use unbound::{Alpha, AnyName, Name, Subst, SubstName};
+use std::fmt;
+use unbound::{Alpha, AnyName, InstantiateCtx, Name, Subst, SubstName, Support};
+
+const MAX_SPLIT_PARAMS: usize = 16;
+
+fn succ_nat(n: u32) -> Result<u32, Error> {
+    n.checked_add(1)
+        .ok_or_else(|| Error("universe overflow".into()))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
@@ -39,13 +48,9 @@ impl Polynomial {
             .max(self.terms.values().copied().max().unwrap_or(0));
     }
     fn succ(mut self) -> Result<Self, Error> {
-        let add = |n: u32| {
-            n.checked_add(1)
-                .ok_or_else(|| Error("universe overflow".into()))
-        };
-        self.constant = add(self.constant)?;
+        self.constant = succ_nat(self.constant)?;
         for offset in self.terms.values_mut() {
-            *offset = add(*offset)?;
+            *offset = succ_nat(*offset)?;
         }
         Ok(self)
     }
@@ -54,10 +59,7 @@ impl Polynomial {
 impl Level {
     pub fn succ(self) -> Result<Self, Error> {
         match self {
-            Self::Nat(n) => Ok(Self::Nat(
-                n.checked_add(1)
-                    .ok_or_else(|| Error("universe overflow".into()))?,
-            )),
+            Self::Nat(n) => Ok(Self::Nat(succ_nat(n)?)),
             other => Ok(Self::Succ(Box::new(other))),
         }
     }
@@ -161,11 +163,10 @@ impl Level {
         let mut params = BTreeSet::new();
         self.params(&mut params);
         other.params(&mut params);
-        if params.len() > 16 {
-            return Err(Error("universe comparison budget exhausted".into()));
+        if params.len() > MAX_SPLIT_PARAMS {
+            return Err(Budget::UniverseComparison.into());
         }
-        // Split each parameter into zero or (fresh natural + 1). On each branch
-        // imax becomes max or zero, and max-plus polynomials have a canonical form.
+        // Split each parameter into zero or (fresh + 1), so imax becomes max or zero.
         for mask in 0..(1usize << params.len()) {
             for (i, n) in params.iter().enumerate() {
                 cases.insert(n.clone(), mask & (1 << i) != 0);
@@ -181,8 +182,8 @@ impl Level {
 }
 
 impl Alpha for Level {
-    fn support(&self) -> unbound::Support {
-        unbound::Support::default()
+    fn support(&self) -> Support {
+        Support::default()
     }
     fn aeq(&self, other: &Self) -> bool {
         self == other
@@ -192,7 +193,7 @@ impl Alpha for Level {
     fn fv_in(&self, _: &mut Vec<AnyName>) {}
 }
 impl<V> Subst<V> for Level {
-    fn instantiate_with(&self, _: usize, _: &mut unbound::InstantiateCtx<'_, V>) -> Option<Self> {
+    fn instantiate_with(&self, _: usize, _: &mut InstantiateCtx<'_, V>) -> Option<Self> {
         Some(self.clone())
     }
     fn is_var(&self) -> Option<SubstName<V>> {
@@ -202,8 +203,8 @@ impl<V> Subst<V> for Level {
         self.clone()
     }
 }
-impl std::fmt::Display for Level {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Level {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Nat(n) => write!(f, "{n}"),
             Self::Param(n) => f.write_str(n),

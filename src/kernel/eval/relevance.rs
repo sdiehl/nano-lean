@@ -1,7 +1,5 @@
 use super::*;
 
-/// Facts about a declaration instantiated at particular universe arguments.
-/// Unknown entries always take the ordinary type-directed conversion path.
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::kernel) struct Summary {
     pub proofs: u64,
@@ -36,8 +34,7 @@ impl Summary {
     }
 }
 
-// A symbolic universe that is merely unequal to zero can still specialize to
-// zero. Only a universally positive level justifies ruling out proof equality.
+// Only a universally positive level rules out proof equality, since nonzero can become zero.
 fn positive(level: &Level) -> bool {
     match level {
         Level::Nat(n) => *n > 0,

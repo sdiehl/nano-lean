@@ -68,7 +68,6 @@ fn official_exporter_smoke() {
 
 #[test]
 fn neutral_recursor_does_not_repeat_major_normalization() {
-    // Previously this small theorem exhausted the 100-million-step budget.
     let report = check(include_str!("fixtures/neutral.ndjson")).unwrap();
     assert_eq!(report.declarations, 53);
 }
@@ -549,7 +548,6 @@ fn source_groups_do_not_enable_forward_or_cyclic_references() {
         }
     });
     check(&encode(&records)).unwrap();
-    // Listing a source group must not predeclare its members, including itself.
     let declaration = records.iter().position(|r| r.get("def").is_some()).unwrap();
     let next = records
         .iter()

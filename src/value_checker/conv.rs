@@ -1,32 +1,19 @@
 use super::value::*;
 use super::{R, Stop, Vc, stat};
+use crate::checker::env::{Decls, positive, strip_pis, unfold_order};
+use crate::resource::grow;
 use crate::term::decl::{Declar, Hint};
 use crate::term::expr::Expr;
 use crate::term::level::Level;
 use crate::term::ptr::{ExprPtr, LevelPtr};
 use std::cmp::Ordering;
+use std::ptr;
+use std::rc::Rc;
 
-fn unfold_order(t: Hint, s: Hint) -> Ordering {
-    match (t, s) {
-        (Hint::Regular(a), Hint::Regular(b)) => b.cmp(&a),
-        (Hint::Opaque, Hint::Opaque) | (Hint::Abbrev, Hint::Abbrev) => Ordering::Equal,
-        (Hint::Opaque, _) | (_, Hint::Abbrev) => Ordering::Greater,
-        (_, Hint::Opaque) | (Hint::Abbrev, _) => Ordering::Less,
-    }
-}
-
-/// Conversion steps a same-head argument probe may take before it gives up
-/// and the caller unfolds both sides instead.
+/// Steps a same-head argument probe takes before both sides unfold instead.
 const PROBE_BUDGET: u32 = 2048;
 
-fn positive(l: LevelPtr<'_>) -> bool {
-    match *l {
-        Level::Succ(..) => true,
-        Level::Max(a, b, _) => positive(a) || positive(b),
-        Level::IMax(_, b, _) => positive(b),
-        _ => false,
-    }
-}
+const SAME_FUEL: u32 = 512;
 
 fn zero(l: LevelPtr<'_>) -> bool {
     match *l {
@@ -51,7 +38,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             *r -= 1;
         }
         stat!(self, deq_calls);
-        if std::ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
+        if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
             stat!(self, deq_ptr_eq);
             return Ok(true);
         }
@@ -64,25 +51,23 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             stat!(self, neq_hit);
             return Ok(false);
         }
-        let mut fuel = 512;
+        let mut fuel = SAME_FUEL;
         let same = self.same(t, s, &mut fuel);
         if same {
             stat!(self, deq_same);
         }
-        let r = same || stacker::maybe_grow(256 << 10, 16 << 20, || self.def_eq_core(t, s))?;
+        let r = same || grow(|| self.def_eq_core(t, s))?;
         if r {
-            self.t.eq_cache.insert((key(t), key(s)));
-            self.t.eq_cache.insert((key(s), key(t)));
+            self.t.eq_cache.insert_both(key(t), key(s));
         } else if !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..)) {
             self.t.neq_cache.insert(k);
         }
         Ok(r)
     }
 
-    /// Bounded structural equality: the value analogue of pointer equality on
-    /// hash-consed terms. False means unknown.
+    /// Bounded structural equality on hash-consed values. False means unknown.
     fn same(&self, a: V<'t>, b: V<'t>, fuel: &mut u32) -> bool {
-        if std::ptr::eq(a, b) {
+        if ptr::eq(a, b) {
             return true;
         }
         if *fuel == 0 {
@@ -107,7 +92,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             (K::Pi(d, c), K::Pi(e, k)) => self.same(d, e, fuel) && self.same_clo(c, k, fuel),
             (K::Lam(d, c), K::Lam(e, k)) => {
-                (std::ptr::eq(d, e)
+                (ptr::eq(d, e)
                     || (d.e == e.e && d.sub == e.sub && self.same_env(d.env, e.env, fuel)))
                     && self.same_clo(c, k, fuel)
             }
@@ -150,7 +135,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn quick(&mut self, t: V<'t>, s: V<'t>) -> R<Option<bool>> {
-        if std::ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
+        if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
             return Ok(Some(true));
         }
         Ok(match (t.k, s.k) {
@@ -162,16 +147,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         })
     }
 
-    /// The local of a binder entered at the current depth, which it bumps;
-    /// the caller restores the depth when the scope ends.
     pub(crate) fn binder_local(&mut self, d: V<'t>) -> V<'t> {
         let x = self.conv_local(d);
         self.depth += 1;
         x
     }
 
-    /// One local per depth and domain: binders in sibling scopes share it,
-    /// nested ones never do since each scope bumps the depth.
+    #[inline(always)]
+    pub(crate) fn restoring_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        let saved = self.depth;
+        let r = f(self);
+        self.depth = saved;
+        r
+    }
+
+    /// Sibling scopes share a local per depth and domain, nested scopes never do.
     fn conv_local(&mut self, d: V<'t>) -> V<'t> {
         let k = (self.depth, key(d));
         if let Some(&x) = self.t.conv_locals.get(&k) {
@@ -183,10 +173,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn def_eq_binding(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
-        let saved = self.depth;
-        let r = self.def_eq_binding_in(t, s);
-        self.depth = saved;
-        r
+        self.restoring_depth(|vc| vc.def_eq_binding_in(t, s))
     }
 
     fn def_eq_binding_in(&mut self, mut t: V<'t>, mut s: V<'t>) -> R<bool> {
@@ -195,7 +182,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             let (td, tc, sd, sc) = match (t.k, s.k) {
                 (K::Pi(td, tc), K::Pi(sd, sc)) => (td, tc, sd, sc),
                 (K::Lam(td, tc), K::Lam(sd, sc)) => {
-                    if std::ptr::eq(td, sd) && same_clo(tc, sc) {
+                    if ptr::eq(td, sd) && same_clo(tc, sc) {
                         return Ok(true);
                     }
                     let td = self.force(td)?;
@@ -204,7 +191,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
                 _ => return self.def_eq(t, s),
             };
-            if !std::ptr::eq(td, sd) && !self.def_eq(td, sd)? {
+            if !ptr::eq(td, sd) && !self.def_eq(td, sd)? {
                 return Ok(false);
             }
             if same_clo(tc, sc) {
@@ -249,7 +236,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         let tn = self.whnf_core(t)?;
         let sn = self.whnf_core(s)?;
-        if (!std::ptr::eq(tn, t) || !std::ptr::eq(sn, s))
+        if (!ptr::eq(tn, t) || !ptr::eq(sn, s))
             && let Some(r) = self.quick(tn, sn)?
         {
             return Ok(r);
@@ -273,7 +260,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         let tnn = self.whnf_core(tn)?;
         let snn = self.whnf_core(sn)?;
-        if !std::ptr::eq(tnn, tn) || !std::ptr::eq(snn, sn) {
+        if !ptr::eq(tnn, tn) || !ptr::eq(snn, sn) {
             return self.def_eq_core(tnn, snn);
         }
         if self.def_eq_app(tn, sn)?
@@ -354,13 +341,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         let equal = r.unwrap_or(false);
         if !equal {
-            self.t.fail_cache.insert((key(t), key(s)));
-            self.t.fail_cache.insert((key(s), key(t)));
+            self.t.fail_cache.insert_both(key(t), key(s));
         }
         Ok(equal)
     }
 
-    fn relevant(&mut self, v: V<'t>, count: usize) -> std::rc::Rc<[bool]> {
+    fn relevant(&mut self, v: V<'t>, count: usize) -> Rc<[bool]> {
         let K::Neu(Head::Const(n, _), _) = v.k else {
             return vec![true; count].into();
         };
@@ -397,13 +383,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 ty = body;
             }
         }
-        let m: std::rc::Rc<[bool]> = mask.into();
+        let m: Rc<[bool]> = mask.into();
         self.t.arg_support.insert((n, count), m.clone());
         m
     }
 
-    /// Whether the type `e`, under binders typed `doms` (innermost last), is
-    /// a proposition by its syntax alone.
     fn prop_type(&self, e: ExprPtr<'t>, doms: &mut Vec<ExprPtr<'t>>) -> bool {
         if let Expr::Pi { ty, body, .. } = *e {
             doms.push(ty);
@@ -435,8 +419,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(false);
         }
         let rel = self.relevant(t, ta.len());
-        for i in 0..ta.len() {
-            if rel[i] && !self.def_eq(ta[i], sa[i])? {
+        for ((&a, &b), &r) in ta.iter().zip(sa).zip(rel.iter()) {
+            if r && !self.def_eq(a, b)? {
                 return Ok(false);
             }
         }
@@ -537,8 +521,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if matches!(th, Head::Const(..)) {
             return self.args_eq(t, s);
         }
-        for i in 0..ta.len() {
-            if !self.def_eq(ta[i], sa[i])? {
+        for (&a, &b) in ta.iter().zip(sa) {
+            if !self.def_eq(a, b)? {
                 return Ok(false);
             }
         }
@@ -557,19 +541,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(false);
         };
         let td = self.force(td)?;
-        if !std::ptr::eq(td, d) && !self.def_eq(td, d)? {
+        if !ptr::eq(td, d) && !self.def_eq(td, d)? {
             return Ok(false);
         }
-        let saved = self.depth;
-        let x = self.conv_local(d);
-        self.depth += 1;
-        let r = (|| {
-            let a = self.inst(tc, x)?;
-            let b = self.apply(s, &[x])?;
-            self.def_eq(a, b)
-        })();
-        self.depth = saved;
-        r
+        self.restoring_depth(|vc| {
+            let x = vc.binder_local(d);
+            let a = vc.inst(tc, x)?;
+            let b = vc.apply(s, &[x])?;
+            vc.def_eq(a, b)
+        })
     }
 
     fn eta_struct(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
@@ -632,17 +612,4 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             _ => Ok(false),
         }
     }
-}
-
-fn strip_pis(
-    mut ty: crate::term::ptr::ExprPtr<'_>,
-    n: usize,
-) -> Option<crate::term::ptr::ExprPtr<'_>> {
-    for _ in 0..n {
-        let Expr::Pi { body, .. } = *ty else {
-            return None;
-        };
-        ty = body;
-    }
-    Some(ty)
 }

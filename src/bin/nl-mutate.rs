@@ -1,6 +1,12 @@
 use nano_lean::checker::Limits;
-use nano_lean::mutate::{self, Expect, OPERATORS, Rng};
-use std::{collections::BTreeMap, env, fs, path::PathBuf, process::ExitCode, time::Instant};
+use nano_lean::mutate::{self, Expect, Operator, Rng};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::PathBuf,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
 const USAGE: &str = "Usage: nl-mutate [--seed N] [--per-op N] [--op NAME] [--out DIR] FILE.ndjson
 Apply single edits to a valid export and report mutants where the reference
@@ -13,7 +19,7 @@ value) for Accepted, Rejected, Unsupported or Internal.";
 struct Options {
     seed: u64,
     per_op: usize,
-    ops: Vec<&'static str>,
+    ops: Vec<Operator>,
     out: Option<PathBuf>,
     path: PathBuf,
 }
@@ -23,7 +29,7 @@ fn options() -> Result<Options, String> {
     let mut o = Options {
         seed: 0,
         per_op: 50,
-        ops: OPERATORS.to_vec(),
+        ops: Operator::ALL.to_vec(),
         out: None,
         path: PathBuf::new(),
     };
@@ -33,11 +39,7 @@ fn options() -> Result<Options, String> {
         match arg.as_str() {
             "--seed" => o.seed = value()?.parse().map_err(|_| "invalid seed")?,
             "--per-op" => o.per_op = value()?.parse().map_err(|_| "invalid count")?,
-            "--op" => {
-                let name = value()?;
-                let op = OPERATORS.iter().find(|op| **op == name);
-                o.ops = vec![*op.ok_or(format!("unknown operator {name}"))?];
-            }
+            "--op" => o.ops = vec![value()?.parse()?],
             "--out" => o.out = Some(value()?.into()),
             "-h" | "--help" => return Err(USAGE.into()),
             _ if path.is_none() => path = Some(arg.into()),
@@ -69,7 +71,7 @@ fn main() -> ExitCode {
     let limits = Limits::default();
     let started = Instant::now();
     let baseline = mutate::check(&lines, limits);
-    let budget = started.elapsed() * 10 + std::time::Duration::from_secs(1);
+    let budget = started.elapsed() * 10 + Duration::from_secs(1);
     if !baseline.agree() {
         eprint!("baseline disagrees\n{baseline}");
         return ExitCode::FAILURE;
@@ -88,7 +90,9 @@ fn main() -> ExitCode {
             let mutant = m.apply(&lines);
             let started = Instant::now();
             let verdicts = mutate::check(&mutant, limits);
-            *tally.entry((op, mutate::signature(&verdicts))).or_default() += 1;
+            *tally
+                .entry((op.name(), mutate::signature(&verdicts)))
+                .or_default() += 1;
             let slow = m.expect == Expect::Same && started.elapsed() > budget;
             let Some(why) = mutate::finding(m.expect, &baseline, &verdicts)
                 .or(slow.then_some("performance edit exceeded time budget"))

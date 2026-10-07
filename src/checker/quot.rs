@@ -1,4 +1,5 @@
 use super::Tc;
+use super::env::Decls;
 use crate::term::decl::{Declar, Info};
 use crate::term::ptr::{ExprPtr, LevelPtr, NamePtr};
 use crate::{ensure, reject};
@@ -23,7 +24,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         body
     }
 
-    /// `#i -> #(i+1) -> Prop`, a relation on the type bound at `i`.
     fn rel(&mut self, i: u16) -> ExprPtr<'t> {
         let p = self.ctx.prop();
         let a = self.v(i);
@@ -47,7 +47,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let (v0, v1, p) = (self.v(0), self.v(1), self.ctx.prop());
         let want = self.pis(&[s, v0, v1], p);
         ensure!(self.def_eq(want, i.info.ty), "Eq has an unexpected type");
-        let Some(Declar::Ctor(k)) = self.declar(i.ctors[0]) else {
+        let Some(k) = self.ctor(i.ctors[0]) else {
             reject!("Eq has an unexpected shape")
         };
         let e = self.c(Some(eq), &[k.info.uparams.as_ref()[0]]);

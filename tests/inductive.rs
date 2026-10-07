@@ -402,7 +402,6 @@ fn proof_recursor_k_reduction() {
 
 #[test]
 fn higher_order_recursive_field_reduction() {
-    // A function-valued recursive field requires a function-valued induction hypothesis.
     let mut block = switch();
     block.types[0].name = "Tree".into();
     block.types[0].all = vec!["Tree".into()];

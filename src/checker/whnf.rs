@@ -1,13 +1,13 @@
 use super::Tc;
-use crate::term::decl::{Declar, Hint, Recursor};
+use super::env::Decls;
+use super::nat::{self, NatValue};
+use crate::reject;
+use crate::term::decl::{Hint, Recursor};
 use crate::term::expr::Expr;
-use crate::term::name::NatRed;
-use crate::term::ptr::{BigUintPtr, ExprPtr, LevelsPtr, StringPtr};
+use crate::term::names::{QUOT_FN, QUOT_MK_ARITY};
+use crate::term::ptr::{BigUintPtr, ExprPtr, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::{ToPrimitive, Zero};
-
-const BIG_EXP: u64 = 1 << 24;
+use num_traits::Zero;
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
     pub fn whnf_core(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
@@ -65,8 +65,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         r
     }
 
-    /// Keep substitutions outside the body while exposing adjacent beta/let
-    /// steps. Materialize only when another reduction rule needs syntax.
+    /// Keeps substitutions outside the body across beta and let until syntax is needed.
     fn reduce_binders(&mut self, mut body: ExprPtr<'t>, mut env: Vec<ExprPtr<'t>>) -> ExprPtr<'t> {
         loop {
             self.tick();
@@ -139,14 +138,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         r
     }
 
-    /// Hint of the unfoldable constant at the head of `e`.
     pub(crate) fn delta_hint(&self, e: ExprPtr<'t>) -> Option<Hint> {
         let Expr::Const { name, levels, .. } = *e.head() else {
             return None;
         };
-        let d = self.declar(name)?;
-        let (_, h) = d.unfoldable()?;
-        (levels.len() == d.uparams().len()).then_some(h)
+        self.hint(name, levels)
     }
 
     pub(crate) fn unfold(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
@@ -177,8 +173,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn reduce_proj(&mut self, idx: u16, s: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        // Expose the structure even during cheap reduction. Otherwise a hidden
-        // operation can make conversion unfold its visible counterpart too early.
+        // Exposing the structure here stops conversion unfolding its visible twin too early.
         let mut c = self.whnf(s);
         if let Expr::StrLit { s, .. } = *c {
             let x = self.str_to_ctor(s);
@@ -187,9 +182,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Expr::Const { name, .. } = *c.head() else {
             return None;
         };
-        let Some(Declar::Ctor(k)) = self.declar(name) else {
-            return None;
-        };
+        let k = self.ctor(name)?;
         let (_, args) = self.ctx.unfold_apps(c);
         args.get(usize::from(k.num_params) + usize::from(idx))
             .copied()
@@ -199,33 +192,22 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Expr::Const { name, levels, .. } = *f else {
             return None;
         };
-        let n = Some(name);
-        if n == self.names.quot_lift {
-            return self.reduce_quot(args, 5, 3);
+        if let Some(mk_pos) = self.quot_major(name) {
+            return self.reduce_quot(args, mk_pos);
         }
-        if n == self.names.quot_ind {
-            return self.reduce_quot(args, 4, 3);
-        }
-        match self.declar(name) {
-            Some(Declar::Rec(r)) => self.reduce_ind_rec(r, levels, args),
-            _ => None,
-        }
+        let r = self.recursor(name)?;
+        self.reduce_ind_rec(r, levels, args)
     }
 
-    fn reduce_quot(
-        &mut self,
-        args: &[ExprPtr<'t>],
-        mk_pos: usize,
-        arg_pos: usize,
-    ) -> Option<ExprPtr<'t>> {
+    fn reduce_quot(&mut self, args: &[ExprPtr<'t>], mk_pos: usize) -> Option<ExprPtr<'t>> {
         let mk = self.whnf(*args.get(mk_pos)?);
         let Expr::App { arg, .. } = *mk else {
             return None;
         };
-        if mk.num_args() != 3 || mk.head().const_name() != self.names.quot_mk {
+        if mk.num_args() != QUOT_MK_ARITY || mk.head().const_name() != self.names.quot_mk {
             return None;
         }
-        let r = self.ctx.app(args[arg_pos], arg);
+        let r = self.ctx.app(args[QUOT_FN], arg);
         Some(self.ctx.apps(r, &args[mk_pos + 1..]))
     }
 
@@ -281,13 +263,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Some(result)
     }
 
-    fn rec_induct(&self, rec: &Recursor<'t>) -> Option<crate::term::ptr::NamePtr<'t>> {
-        match self.declar(rec.rules.first()?.ctor)? {
-            Declar::Ctor(c) => Some(c.induct),
-            _ => None,
-        }
-    }
-
     fn expose_ctor_when_k(&mut self, rec: &Recursor<'t>, e: ExprPtr<'t>) -> ExprPtr<'t> {
         let Some(ind) = self.rec_induct(rec) else {
             return e;
@@ -313,14 +288,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     pub(crate) fn expose_ctor_when_structure(
         &mut self,
-        ind: crate::term::ptr::NamePtr<'t>,
+        ind: NamePtr<'t>,
         e: ExprPtr<'t>,
     ) -> ExprPtr<'t> {
         let Some((i, c)) = self.structure_like(ind) else {
             return e;
         };
         if let Expr::Const { name, .. } = *e.head()
-            && matches!(self.declar(name), Some(Declar::Ctor(_)))
+            && self.ctor(name).is_some()
         {
             return e;
         }
@@ -362,7 +337,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let ch = self.konst0(self.names.char);
         let of_nat = self.konst0(self.names.char_of_nat);
         let (Some(nil), Some(cons)) = (self.names.list_nil, self.names.list_cons) else {
-            crate::reject!("missing builtin constant")
+            reject!("missing builtin constant")
         };
         let nil = self.ctx.konst(nil, l0);
         let cons = self.ctx.konst(cons, l0);
@@ -403,70 +378,24 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         };
         let op = name.nat_red()?;
         if nargs == 1 {
-            let r = match op {
-                NatRed::Succ => self.nat_val(arg)? + 1u32,
-                NatRed::Log2 => {
-                    let n = self.nat_val(arg)?;
-                    BigUint::from(n.bits().saturating_sub(1))
-                }
-                _ => return None,
-            };
-            return Some(self.ctx.nat_lit(r));
+            if !nat::is_unary(op) {
+                return None;
+            }
+            let x = self.nat_val(arg)?;
+            return Some(self.ctx.nat_lit(nat::unary(op, x)?));
         }
         let Expr::App { arg: a, .. } = *fun else {
             return None;
         };
-        if matches!(op, NatRed::Succ | NatRed::Log2) {
+        if nat::is_unary(op) {
             return None;
         }
         let x = self.nat_val(a)?;
         let y = self.nat_val(arg)?;
-        let b = |tc: &mut Self, v: bool| {
-            let n = if v {
-                tc.names.bool_true
-            } else {
-                tc.names.bool_false
-            };
-            tc.konst0(n)
-        };
-        let r = match op {
-            NatRed::Add => x + y,
-            NatRed::Sub => {
-                if x > y {
-                    x - y
-                } else {
-                    BigUint::zero()
-                }
-            }
-            NatRed::Mul => x * y,
-            NatRed::Div => {
-                if y.is_zero() {
-                    y
-                } else {
-                    x / y
-                }
-            }
-            NatRed::Mod => {
-                if y.is_zero() {
-                    x
-                } else {
-                    x % y
-                }
-            }
-            NatRed::Gcd => x.gcd(&y),
-            NatRed::Beq => return Some(b(self, x == y)),
-            NatRed::Ble => return Some(b(self, x <= y)),
-            NatRed::Land => x & y,
-            NatRed::Lor => x | y,
-            NatRed::Xor => x ^ y,
-            NatRed::Shl => x << y.to_u64().filter(|&k| k <= BIG_EXP)?,
-            NatRed::Shr => match y.to_u64() {
-                Some(k) => x >> k,
-                None => BigUint::zero(),
-            },
-            NatRed::Pow => x.pow(u32::try_from(y.to_u64().filter(|&k| k <= BIG_EXP)?).ok()?),
-            NatRed::Succ | NatRed::Log2 => return None,
-        };
-        Some(self.ctx.nat_lit(r))
+        Some(match nat::binary(op, x, y)? {
+            NatValue::Nat(r) => self.ctx.nat_lit(r),
+            NatValue::Bool(true) => self.konst0(self.names.bool_true),
+            NatValue::Bool(false) => self.konst0(self.names.bool_false),
+        })
     }
 }

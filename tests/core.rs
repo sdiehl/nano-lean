@@ -1,5 +1,4 @@
-//! Golden tests for core-language scripts: each `tests/fixtures/core/*.ltc`
-//! is checked against its `.out` file. Run with `BLESS=1` to regenerate.
+//! Run with `BLESS=1` to regenerate the `.out` files.
 
 use nano_lean::{
     Environment,

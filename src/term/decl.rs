@@ -7,8 +7,6 @@ pub enum Hint {
     Regular(u32),
 }
 
-impl Hint {}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Info<'a> {
     pub name: NamePtr<'a>,
@@ -103,7 +101,6 @@ impl<'a> Declar<'a> {
         self.info().ty
     }
 
-    /// Value the kernel may unfold, with its reducibility hint.
     pub fn unfoldable(&self) -> Option<(ExprPtr<'a>, Hint)> {
         match self {
             Declar::Def(_, v, h) => Some((*v, *h)),

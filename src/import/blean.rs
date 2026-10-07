@@ -1,13 +1,15 @@
-//! Reader for olean-export's blean format. Names, levels and expressions, nearly every
-//! record, are decoded by hand straight off the bytes into the importer. Metadata and
-//! declarations go through olean-export's decoder and are rendered as their NDJSON lines,
-//! so they take the same validation path; they are a fraction of a percent of records.
+//! Blean reader. Rare metadata and declaration records are rendered as NDJSON to share its validation.
 
-use super::{ImportError, Importer, Result, invalid};
+use super::importer::{BYTES_PER_LINE, Importer};
+use super::{ImportError, Result, invalid};
 use crate::term::arena::Arena;
 use crate::term::intern::Store;
+use memmap2::{Advice, Mmap};
 use olean_export::{Counts, Record, Sink, blean, ndjson::Ndjson};
 use serde_json::Value;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{self, Read, Seek};
 
 pub use olean_export::blean::{MAGIC, sniff};
 
@@ -35,21 +37,17 @@ mod tag {
     pub const END: u32 = 19;
 }
 
-/// Binder annotations a `Binding` may carry.
 const BINDERS: u32 = 4;
-/// Fixed-width hash leading the `Info` after each expression record.
 const INFO_HASH_BYTES: usize = 8;
-/// The end record's three fixed-width counts.
 const END_BYTES: usize = 12;
 const VARINT_MORE: u8 = 0x80;
 const VARINT_BITS: u8 = 0x7f;
-/// Longest varint and the largest final byte for u32 and u64.
 const U32_BYTES: usize = 5;
 const U32_LAST: u8 = 0x0f;
 const U64_BYTES: usize = 10;
 const U64_LAST: u8 = 0x01;
 
-fn corrupt(e: olean_export::Error) -> ImportError {
+fn corrupt(e: impl Display) -> ImportError {
     ImportError::Invalid(format!("blean: {e}"))
 }
 
@@ -57,14 +55,12 @@ fn truncated<T>() -> Result<T> {
     invalid("blean: truncated record")
 }
 
-/// The record as its NDJSON line, parsed.
 fn line(r: &Record<'_>, buf: &mut Vec<u8>) -> Result<Value> {
     buf.clear();
     Ndjson::new(&mut *buf).record(r).map_err(corrupt)?;
-    serde_json::from_slice(buf).map_err(|e| ImportError::Invalid(e.to_string()))
+    Ok(serde_json::from_slice(buf)?)
 }
 
-/// Cursor over postcard-encoded fields.
 struct Cur<'b> {
     b: &'b [u8],
     at: usize,
@@ -129,10 +125,9 @@ impl<'b> Cur<'b> {
     fn str(&mut self) -> Result<&'b str> {
         let n = self.u32()? as usize;
         let s = self.take(n)?;
-        std::str::from_utf8(s).or_else(|_| invalid("blean: bad utf-8"))
+        str::from_utf8(s).or_else(|_| invalid("blean: bad utf-8"))
     }
 
-    /// A `Binding`'s fields after its binder annotation.
     fn binding(&mut self) -> Result<(u32, u32, u32)> {
         if self.u32()? >= BINDERS {
             return invalid("blean: bad binder");
@@ -147,13 +142,16 @@ impl<'b> Cur<'b> {
         Ok(())
     }
 
-    /// A record olean-export decodes, starting at `start`.
     fn record(&mut self, start: usize) -> Result<Record<'b>> {
-        let (r, rest) = postcard::take_from_bytes::<Record<'b>>(&self.b[start..])
-            .map_err(|e| ImportError::Invalid(format!("blean: {e}")))?;
+        let (r, rest) =
+            postcard::take_from_bytes::<Record<'b>>(&self.b[start..]).map_err(corrupt)?;
         self.at = self.b.len() - rest.len();
         Ok(r)
     }
+}
+
+fn records(c: &Counts) -> usize {
+    c.names as usize + c.levels as usize + c.exprs as usize
 }
 
 fn take_id(next: &mut u32) -> u32 {
@@ -161,18 +159,14 @@ fn take_id(next: &mut u32) -> u32 {
     *next - 1
 }
 
-/// Import a complete blean file.
 pub fn import<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
     read(arena, bytes).map(Importer::finish)
 }
 
-/// Every record of a blean file, before the tables are filled; `bytes` is not kept.
 pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
     let c = blean::counts(bytes).map_err(corrupt)?;
-    // Importer sizes its tables from NDJSON bytes at 56 per line. Every record takes at
-    // least a byte, so a damaged tail cannot ask for more than the file holds.
-    let records = (c.names as usize + c.levels as usize + c.exprs as usize).min(bytes.len());
-    let mut im = Importer::new(arena, records * 56);
+    // Every record takes at least a byte, so a damaged tail cannot ask for more than the file holds.
+    let mut im = Importer::new(arena, records(&c).min(bytes.len()) * BYTES_PER_LINE);
     let mut cur = Cur {
         b: &bytes[MAGIC.len()..],
         at: 0,
@@ -193,8 +187,7 @@ pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
                 line(&r, &mut buf).and_then(|v| im.general(&v, n == 0))
             }
             tag::END => {
-                let end: Counts = postcard::from_bytes(cur.take(END_BYTES)?)
-                    .map_err(|e| ImportError::Invalid(format!("blean: {e}")))?;
+                let end: Counts = postcard::from_bytes(cur.take(END_BYTES)?).map_err(corrupt)?;
                 if end != next || cur.at != cur.b.len() {
                     return invalid("blean: bad end record");
                 }
@@ -230,12 +223,7 @@ pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
                 done
             }
         };
-        done.map_err(|e| match e {
-            ImportError::Invalid(s) => ImportError::Invalid(format!("record {}: {s}", n + 1)),
-            ImportError::Unsupported(s) => {
-                ImportError::Unsupported(format!("record {}: {s}", n + 1))
-            }
-        })?;
+        done.map_err(|e| e.at("record", n))?;
     }
     unreachable!()
 }
@@ -276,19 +264,16 @@ fn expr(im: &mut Importer<'_>, cur: &mut Cur<'_>, us: &mut Vec<u32>, t: u32, i: 
     }
 }
 
-/// Map `file` if it is blean.
-pub(super) fn map(file: &std::fs::File) -> std::io::Result<Option<memmap2::Mmap>> {
-    use std::io::Read;
+pub(super) fn map(file: &File) -> io::Result<Option<Mmap>> {
     let mut head = [0; MAGIC.len()];
     if (&*file).read_exact(&mut head).is_err() || head != MAGIC {
-        std::io::Seek::rewind(&mut &*file)?;
+        (&*file).rewind()?;
         return Ok(None);
     }
-    // Safety: the export is read-only input; a concurrent writer would corrupt the
-    // records, which the decoder reports as an invalid export rather than misreading.
-    let map = unsafe { memmap2::Mmap::map(file)? };
-    let _ = map.advise(memmap2::Advice::Sequential);
-    let _ = map.advise(memmap2::Advice::WillNeed);
+    // SAFETY: a concurrent writer can only corrupt records, which then decode as invalid.
+    let map = unsafe { Mmap::map(file)? };
+    let _ = map.advise(Advice::Sequential);
+    let _ = map.advise(Advice::WillNeed);
     Ok(Some(map))
 }
 
@@ -296,11 +281,9 @@ pub(super) fn map(file: &std::fs::File) -> std::io::Result<Option<memmap2::Mmap>
 mod tests {
     use super::*;
 
-    /// The reader this module replaced: every record through olean-export's decoder.
     fn reference<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
         let c = blean::counts(bytes).map_err(corrupt)?;
-        let records = c.names as usize + c.levels as usize + c.exprs as usize;
-        let mut im = Importer::new(arena, records * 56);
+        let mut im = Importer::new(arena, records(&c) * BYTES_PER_LINE);
         let mut next = Counts::default();
         let mut buf = Vec::new();
         for (n, e) in blean::entries(bytes).map_err(corrupt)?.enumerate() {
@@ -353,7 +336,7 @@ mod tests {
     use std::collections::HashMap;
     use std::hash::{BuildHasher, Hash, RandomState};
 
-    /// Structural fingerprints; interned hashes mix in arena addresses.
+    /// Structural fingerprints, since interned hashes mix in arena addresses.
     struct Fp(RandomState, HashMap<*const Expr<'static>, u64>);
 
     impl Fp {
@@ -449,9 +432,8 @@ mod tests {
         include_bytes!("../../tests/fixtures/blean/theorem-reduction.blean"),
     ];
 
-    /// Bit flips that keep the declared counts, which only size the tables.
     const FLIPS: [u8; 2] = [0x01, 0x80];
-    /// Distance between damaged bytes; coprime to the common record lengths.
+    /// Coprime to the common record lengths.
     const STRIDE: usize = 7;
 
     #[test]

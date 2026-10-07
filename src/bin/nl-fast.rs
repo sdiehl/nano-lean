@@ -1,123 +1,163 @@
-//! Check Lean exports using the interned-term checker.
-
 use indicatif::{ProgressBar, ProgressStyle};
-use nano_lean::{checker, import, term};
-use std::io::IsTerminal;
+use nano_lean::checker::{Adapter, Limits};
+use nano_lean::import::{self, ImportError, blean};
+use nano_lean::term::{arena::Arena, intern::Store, outcome};
+use nano_lean::value_checker::{self, Session};
+use nano_lean::verdict::Core;
+use std::collections::HashSet;
+use std::ffi::c_long;
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+use std::{env, fs, process, thread};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Arena bytes a value-core session may accumulate before it is reset.
+const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--only FILE] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
+const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
+const DEFAULT_STEPS: u64 = 200_000_000;
+const DEFAULT_ARENA_MIB: usize = 2048;
+const MIB: usize = 1 << 20;
+const MAX_THREADS: usize = 64;
+const WORKER_STACK_BYTES: usize = 64 << 20;
+const FAILURES_SHOWN: usize = 30;
+const TICK: Duration = Duration::from_millis(250);
+const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const SESSION_BYTES: usize = 64 << 20;
+const MI_OPTION_PURGE_DELAY: i32 = 15;
 
 unsafe extern "C" {
-    fn mi_option_set(option: i32, value: std::ffi::c_long);
+    fn mi_option_set(option: i32, value: c_long);
     fn mi_collect(force: bool);
 }
 
-fn main() {
-    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--only FILE] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
-    let mut args = std::env::args().skip(1);
-    let mut path = None;
-    let mut threads = 1usize;
-    let mut selected = None;
-    let mut only: Option<std::collections::HashSet<String>> = None;
-    let mut limit = usize::MAX;
-    let mut import_only = false;
-    let mut trace = false;
-    let mut native_only = true;
-    let mut value_core = true;
-    let mut limits = checker::Limits {
-        steps: 200_000_000,
-        arena_bytes: 2048 << 20,
+struct Options {
+    path: Option<String>,
+    threads: usize,
+    selected: Option<String>,
+    only: Option<HashSet<String>>,
+    limit: usize,
+    import_only: bool,
+    trace: bool,
+    native_only: bool,
+    core: Core,
+    limits: Limits,
+}
+
+fn usage() -> ! {
+    eprintln!("{USAGE}");
+    process::exit(2)
+}
+
+fn number<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>) -> T {
+    value(args).parse().unwrap_or_else(|_| usage())
+}
+
+fn value(args: &mut impl Iterator<Item = String>) -> String {
+    args.next().unwrap_or_else(|| usage())
+}
+
+fn names(file: &str) -> HashSet<String> {
+    let text = fs::read_to_string(file).unwrap_or_else(|e| {
+        eprintln!("{file}: {e}");
+        process::exit(2)
+    });
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn options() -> Option<Options> {
+    let mut o = Options {
+        path: None,
+        threads: 1,
+        selected: None,
+        only: None,
+        limit: usize::MAX,
+        import_only: false,
+        trace: false,
+        native_only: true,
+        core: Core::Value,
+        limits: Limits {
+            steps: DEFAULT_STEPS,
+            arena_bytes: DEFAULT_ARENA_MIB * MIB,
+        },
     };
-    let usage = || -> ! {
-        eprintln!("{USAGE}");
-        std::process::exit(2)
-    };
-    let value = |args: &mut std::iter::Skip<std::env::Args>| args.next().unwrap_or_else(|| usage());
+    let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{USAGE}");
-                return;
+                return None;
             }
-            "-j" | "--threads" => threads = value(&mut args).parse().unwrap_or_else(|_| usage()),
-            "--declaration" => selected = Some(value(&mut args)),
-            "--only" => {
-                let file = value(&mut args);
-                let text = std::fs::read_to_string(&file).unwrap_or_else(|e| {
-                    eprintln!("{file}: {e}");
-                    std::process::exit(2)
-                });
-                only = Some(
-                    text.lines()
-                        .map(str::trim)
-                        .filter(|l| !l.is_empty())
-                        .map(String::from)
-                        .collect(),
-                );
-            }
-            "--limit" => limit = value(&mut args).parse().unwrap_or_else(|_| usage()),
-            "--import-only" => import_only = true,
-            "--trace" => trace = true,
-            "--fallback" => native_only = false,
-            "--term-core" => value_core = false,
-            "--steps" => limits.steps = value(&mut args).parse().unwrap_or_else(|_| usage()),
+            "-j" | "--threads" => o.threads = number(&mut args),
+            "--declaration" => o.selected = Some(value(&mut args)),
+            "--only" => o.only = Some(names(&value(&mut args))),
+            "--limit" => o.limit = number(&mut args),
+            "--import-only" => o.import_only = true,
+            "--trace" => o.trace = true,
+            "--fallback" => o.native_only = false,
+            "--term-core" => o.core = Core::Term,
+            "--steps" => o.limits.steps = number(&mut args),
             "--arena-mib" => {
-                limits.arena_bytes = value(&mut args)
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|m| m.checked_mul(1 << 20))
+                o.limits.arena_bytes = number::<usize>(&mut args)
+                    .checked_mul(MIB)
                     .unwrap_or_else(|| usage())
             }
-            "-" => path = None,
+            "-" => o.path = None,
             a if a.starts_with('-') => usage(),
-            _ if path.is_none() => path = Some(arg),
+            _ if o.path.is_none() => o.path = Some(arg),
             _ => usage(),
         }
     }
     assert!(
-        (1..=64).contains(&threads),
+        (1..=MAX_THREADS).contains(&o.threads),
         "thread count must be between 1 and 64"
     );
-    let t = std::time::Instant::now();
-    let arena = term::arena::Arena::new();
-    let imported = match &path {
-        Some(p) => import::import(&arena, p),
+    Some(o)
+}
+
+fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
+    let imported = match path {
+        Some(p) => import::import(arena, p),
         None => {
-            use std::io::{BufRead, Read};
-            let mut stdin = std::io::stdin().lock();
-            if stdin.fill_buf().is_ok_and(import::blean::sniff) {
+            let mut stdin = io::stdin().lock();
+            if stdin.fill_buf().is_ok_and(blean::sniff) {
                 let mut bytes = Vec::new();
                 match stdin.read_to_end(&mut bytes) {
-                    Ok(_) => import::import_bytes(&arena, &bytes),
-                    Err(e) => Err(import::ImportError::Invalid(e.to_string())),
+                    Ok(_) => import::import_bytes(arena, &bytes),
+                    Err(e) => Err(ImportError::Invalid(e.to_string())),
                 }
             } else {
-                import::import_reader(&arena, stdin, 0)
+                import::import_reader(arena, stdin, 0)
             }
         }
     };
-    let store = match imported {
-        Ok(store) => store,
-        Err(e) => {
-            println!("{e}");
-            let code = match e {
-                import::ImportError::Invalid(_) => 1,
-                import::ImportError::Unsupported(_) => 2,
-            };
-            std::process::exit(code);
-        }
+    imported.unwrap_or_else(|e| {
+        println!("{e}");
+        process::exit(match e {
+            ImportError::Invalid(_) => 1,
+            ImportError::Unsupported(_) => 2,
+        })
+    })
+}
+
+fn main() {
+    let Some(o) = options() else {
+        return;
     };
-    // Return the import's freed buffers to the system, then keep freed pages from
-    // here on: they are reused by the next declaration.
-    // SAFETY: option 15 is mi_option_purge_delay; -1 disables purging.
+    let t = Instant::now();
+    let arena = Arena::new();
+    let store = load(&arena, o.path.as_deref());
+    // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
+    // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
     unsafe {
         mi_collect(true);
-        mi_option_set(15, -1);
+        mi_option_set(MI_OPTION_PURGE_DELAY, -1);
     }
     let s = store.stats;
     eprintln!(
@@ -129,42 +169,50 @@ fn main() {
         s.names,
         s.levels
     );
-    if import_only {
+    if o.import_only {
         return;
     }
+    let filtered = o.selected.is_some() || o.only.is_some();
     let indices: Vec<_> = store
         .declars
         .iter()
         .enumerate()
         .filter(|(_, d)| {
-            (selected.is_none() && only.is_none()) || {
+            !filtered || {
                 let name = d.name().to_string();
-                selected.as_ref().is_none_or(|s| name == *s)
-                    && only.as_ref().is_none_or(|set| set.contains(&name))
+                o.selected.as_ref().is_none_or(|s| name == *s)
+                    && o.only.as_ref().is_none_or(|set| set.contains(&name))
             }
         })
-        .take(limit)
+        .take(o.limit)
         .map(|(i, _)| i as u32)
         .collect();
-    if (selected.is_some() || only.is_some()) && indices.is_empty() {
+    if filtered && indices.is_empty() {
         eprintln!("requested declaration not found");
-        std::process::exit(2);
+        process::exit(2);
     }
-    term::outcome::install_hook();
-    let t = std::time::Instant::now();
+    outcome::install_hook();
+    let code = check(&o, &store, &indices);
+    if code != 0 {
+        process::exit(code as i32);
+    }
+}
+
+fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
+    let t = Instant::now();
     let next = AtomicU32::new(0);
     let fails = AtomicUsize::new(0);
     let fallbacks = AtomicUsize::new(0);
     let n = indices.len() as u32;
     let exit = AtomicUsize::new(0);
-    let progress = if trace {
+    let progress = if o.trace {
         ProgressBar::hidden()
     } else {
         ProgressBar::new(u64::from(n))
     };
-    progress.set_style(ProgressStyle::with_template(
-        "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}"
-    ).expect("valid progress template"));
+    progress.set_style(
+        ProgressStyle::with_template(PROGRESS_TEMPLATE).expect("valid progress template"),
+    );
     let tally = || {
         format!(
             "{} fail, {} fallback",
@@ -173,17 +221,15 @@ fn main() {
         )
     };
     progress.set_message(tally());
-    progress.enable_steady_tick(std::time::Duration::from_millis(250));
+    progress.enable_steady_tick(TICK);
     let (stop, stopped) = mpsc::channel::<()>();
-    std::thread::scope(|sc| {
+    thread::scope(|sc| {
         // Stop the reporter even if joining a worker unwinds.
         let stop = stop;
-        if !trace && !std::io::stderr().is_terminal() {
+        if !o.trace && !io::stderr().is_terminal() {
             let (progress, tally) = (&progress, &tally);
             sc.spawn(move || {
-                while let Err(mpsc::RecvTimeoutError::Timeout) =
-                    stopped.recv_timeout(std::time::Duration::from_secs(10))
-                {
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(REPORT_INTERVAL) {
                     let eta = progress.eta().as_secs();
                     eprintln!(
                         "[progress] {}/{n} checked; {:.0}/s; estimated remaining {}m {}s; {}",
@@ -196,52 +242,48 @@ fn main() {
                 }
             });
         }
-        let workers: Vec<_> = (0..threads)
+        let workers: Vec<_> = (0..o.threads)
             .map(|_| {
-                std::thread::Builder::new()
-                    .stack_size(64 << 20)
+                thread::Builder::new()
+                    .stack_size(WORKER_STACK_BYTES)
                     .spawn_scoped(sc, || {
-                        let mut session = nano_lean::value_checker::Session::new(&store);
-                        let mut adapter = checker::Adapter::new(&store);
+                        let mut session = Session::new(store);
+                        let mut adapter = Adapter::new(store);
                         loop {
                             let job = next.fetch_add(1, Relaxed);
                             if job >= n {
                                 break;
                             }
                             let idx = indices[job as usize];
-                            let started = std::time::Instant::now();
-                            if trace {
+                            let started = Instant::now();
+                            if o.trace {
                                 eprintln!("start {idx} {}", store.declars[idx as usize].name());
                             }
-                            let r = if value_core {
-                                session.check(idx, limits, Some(&mut adapter), native_only)
-                            } else {
-                                checker::check_with_adapter(
-                                    &store,
-                                    session.arena_mut(),
-                                    idx,
-                                    limits,
-                                    Some(&mut adapter),
-                                    native_only,
-                                )
-                            };
+                            let r = o.core.check(
+                                store,
+                                &mut session,
+                                idx,
+                                o.limits,
+                                &mut adapter,
+                                o.native_only,
+                            );
                             if matches!(r, Ok(true)) {
                                 fallbacks.fetch_add(1, Relaxed);
                                 progress.set_message(tally());
                             }
-                            if trace {
+                            if o.trace {
                                 eprintln!(
                                     "end {idx} elapsed {:?} arena {} bytes",
                                     started.elapsed(),
                                     session.arena().allocated_bytes()
                                 );
                             }
-                            if !value_core
+                            if o.core == Core::Term
                                 || r.is_err()
                                 || session.arena().allocated_bytes() > SESSION_BYTES
                             {
                                 #[cfg(feature = "vstats")]
-                                nano_lean::value_checker::RESETS.fetch_add(1, Relaxed);
+                                value_checker::RESETS.fetch_add(1, Relaxed);
                                 session.reset();
                             }
                             progress.inc(1);
@@ -249,7 +291,7 @@ fn main() {
                                 exit.fetch_max(f.exit_code() as usize, Relaxed);
                                 let k = fails.fetch_add(1, Relaxed);
                                 progress.set_message(tally());
-                                if k < 30 {
+                                if k < FAILURES_SHOWN {
                                     progress.suspend(|| {
                                         println!(
                                             "{} {}: {}",
@@ -257,7 +299,7 @@ fn main() {
                                             f.status(),
                                             f.reason()
                                         );
-                                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                                        let _ = io::stdout().flush();
                                     });
                                 }
                             }
@@ -279,8 +321,8 @@ fn main() {
         fails.load(Relaxed),
         fallbacks.load(Relaxed)
     );
-    if value_core {
-        let b = &nano_lean::value_checker::BRIDGED;
+    if o.core == Core::Value {
+        let b = &value_checker::BRIDGED;
         eprintln!(
             "bridged quot {} ind {} ctor {} rec {}",
             b[0].load(Relaxed),
@@ -289,9 +331,7 @@ fn main() {
             b[3].load(Relaxed)
         );
         #[cfg(feature = "vstats")]
-        nano_lean::value_checker::report();
+        value_checker::report();
     }
-    if exit.load(Relaxed) != 0 {
-        std::process::exit(exit.load(Relaxed) as i32);
-    }
+    exit.load(Relaxed)
 }

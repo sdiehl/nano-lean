@@ -1,6 +1,9 @@
 use crate::Error;
 use logos::Logos;
 use offsides::{Layout, LayoutConfig, LayoutLexer, LayoutMode, OpenerRule};
+use std::fmt;
+
+const TAB_WIDTH: usize = 4;
 
 #[derive(Logos, Clone, Debug, PartialEq, Eq)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -100,11 +103,10 @@ impl Layout for Token {
     }
 }
 
-impl std::fmt::Display for Token {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Ident(n) => f.write_str(n),
-            Self::Num(n) => f.write_str(n),
+            Self::Ident(n) | Self::Num(n) => f.write_str(n),
             Self::Str(s) => write!(f, "{s:?}"),
             _ => write!(f, "{self:?}"),
         }
@@ -113,23 +115,19 @@ impl std::fmt::Display for Token {
 
 pub fn lex(
     source: &str,
-    program: bool,
+    mode: LayoutMode,
 ) -> impl Iterator<Item = Result<(usize, Token, usize), Error>> + '_ {
     let raw = Token::lexer(source).spanned().map(|(t, span)| {
         t.map(|t| (span.start, t, span.end))
             .map_err(|_| Error(format!("invalid token at byte {}", span.start)))
     });
     let config = LayoutConfig::new(|t| matches!(t, Token::Let))
-        .with_mode(if program {
-            LayoutMode::Eager
-        } else {
-            LayoutMode::Lazy
-        })
+        .with_mode(mode)
         .with_opener_rule(OpenerRule::Conditional)
         .with_brackets(
             |t| matches!(t, Token::LParen),
             |t| matches!(t, Token::RParen),
         )
-        .with_tab_width(4);
+        .with_tab_width(TAB_WIDTH);
     LayoutLexer::new(raw, source, config)
 }

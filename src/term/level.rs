@@ -36,7 +36,6 @@ impl<'a> LevelPtr<'a> {
         matches!(*self, Level::Max(..) | Level::IMax(..))
     }
 
-    /// Every parameter occurring in `self` is one of `params`.
     pub fn params_in(self, params: LevelsPtr<'a>) -> bool {
         match *self {
             Level::Zero => true,
@@ -50,7 +49,6 @@ impl<'a> LevelPtr<'a> {
 }
 
 impl<'a> LevelsPtr<'a> {
-    /// All elements are distinct parameters.
     pub fn distinct_params(self) -> bool {
         self.iter()
             .enumerate()

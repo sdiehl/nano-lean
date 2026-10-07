@@ -1,10 +1,15 @@
-//! Run one export through every checker so their verdicts can be compared.
-
 use crate::checker::{self, Adapter, Limits};
 use crate::export::{ExportError, check_export};
-use crate::term::{arena::Arena, outcome::Failure};
-use crate::{import, value_checker};
-use std::fmt;
+use crate::import::{self, ImportError};
+use crate::term::{
+    arena::Arena,
+    intern::Store,
+    outcome::{self, Failure},
+};
+use crate::value_checker::Session;
+use std::{fmt, sync::Once, thread};
+
+const STACK_BYTES: usize = 256 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -59,7 +64,7 @@ impl Verdicts {
             ("value", &self.value),
         ]
     }
-    /// No checker crashed and none accepts what another rejects.
+
     pub fn agree(&self) -> bool {
         let all = self.all();
         !all.iter().any(|(_, v)| matches!(v, Verdict::Internal(_)))
@@ -77,7 +82,7 @@ impl fmt::Display for Verdicts {
 }
 
 fn reference(source: &str) -> Verdict {
-    match crate::term::outcome::run(|| check_export(source.as_bytes())) {
+    match outcome::run(|| check_export(source.as_bytes())) {
         Ok(Ok(_)) => Verdict::Accepted,
         Ok(Err(ExportError::Invalid(s))) => Verdict::Rejected(s),
         Ok(Err(ExportError::Unsupported(s))) => Verdict::Unsupported(s),
@@ -85,28 +90,47 @@ fn reference(source: &str) -> Verdict {
     }
 }
 
-fn fast(source: &str, limits: Limits, value_core: bool) -> Verdict {
-    let arena = Arena::new();
-    let store = match import::import_reader(&arena, source.as_bytes(), source.len()) {
-        Ok(store) => store,
-        Err(import::ImportError::Invalid(s)) => return Verdict::Rejected(s),
-        Err(import::ImportError::Unsupported(s)) => return Verdict::Unsupported(s),
-    };
-    let mut session = value_checker::Session::new(&store);
-    let mut adapter = Adapter::new(&store);
-    for idx in 0..store.declars.len() as u32 {
-        let r = if value_core {
-            session.check(idx, limits, Some(&mut adapter), true)
-        } else {
-            checker::check_with_adapter(
-                &store,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Core {
+    Term,
+    Value,
+}
+
+impl Core {
+    pub fn check<'a>(
+        self,
+        store: &'a Store<'a>,
+        session: &mut Session<'a>,
+        idx: u32,
+        limits: Limits,
+        adapter: &mut Adapter<'a>,
+        native_only: bool,
+    ) -> Result<bool, Failure> {
+        match self {
+            Self::Value => session.check(idx, limits, Some(adapter), native_only),
+            Self::Term => checker::check_with_adapter(
+                store,
                 session.arena_mut(),
                 idx,
                 limits,
-                Some(&mut adapter),
-                true,
-            )
-        };
+                Some(adapter),
+                native_only,
+            ),
+        }
+    }
+}
+
+fn fast(source: &str, limits: Limits, core: Core) -> Verdict {
+    let arena = Arena::new();
+    let store = match import::import_reader(&arena, source.as_bytes(), source.len()) {
+        Ok(store) => store,
+        Err(ImportError::Invalid(s)) => return Verdict::Rejected(s),
+        Err(ImportError::Unsupported(s)) => return Verdict::Unsupported(s),
+    };
+    let mut session = Session::new(&store);
+    let mut adapter = Adapter::new(&store);
+    for idx in 0..store.declars.len() as u32 {
+        let r = core.check(&store, &mut session, idx, limits, &mut adapter, true);
         session.reset();
         if let Err(f) = r {
             let name = store.declars[idx as usize].name().to_string();
@@ -119,17 +143,16 @@ fn fast(source: &str, limits: Limits, value_core: bool) -> Verdict {
     Verdict::Accepted
 }
 
-/// Check an export with the reference kernel, the fast checker and the value core.
 pub fn check(source: &str, limits: Limits) -> Verdicts {
-    static HOOK: std::sync::Once = std::sync::Once::new();
-    HOOK.call_once(crate::term::outcome::install_hook);
-    std::thread::scope(|s| {
-        std::thread::Builder::new()
-            .stack_size(256 << 20)
+    static HOOK: Once = Once::new();
+    HOOK.call_once(outcome::install_hook);
+    thread::scope(|s| {
+        thread::Builder::new()
+            .stack_size(STACK_BYTES)
             .spawn_scoped(s, || Verdicts {
                 reference: reference(source),
-                fast: fast(source, limits, false),
-                value: fast(source, limits, true),
+                fast: fast(source, limits, Core::Term),
+                value: fast(source, limits, Core::Value),
             })
             .unwrap()
             .join()

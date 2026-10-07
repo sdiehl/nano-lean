@@ -1,17 +1,17 @@
 use crate::{Error, Level};
+use num_bigint::BigUint;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
 };
-use unbound::prelude::*;
+use unbound::{InstantiateCtx, Support, prelude::*};
 
-/// An atomic, arbitrary-precision natural number (it contains no binders).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Natural(pub num_bigint::BigUint);
+pub struct Natural(pub BigUint);
 
 impl Alpha for Natural {
-    fn support(&self) -> unbound::Support {
-        unbound::Support::default()
+    fn support(&self) -> Support {
+        Support::default()
     }
     fn aeq(&self, other: &Self) -> bool {
         self == other
@@ -21,7 +21,7 @@ impl Alpha for Natural {
     fn fv_in(&self, _: &mut Vec<AnyName>) {}
 }
 impl<V> Subst<V> for Natural {
-    fn instantiate_with(&self, _: usize, _: &mut unbound::InstantiateCtx<'_, V>) -> Option<Self> {
+    fn instantiate_with(&self, _: usize, _: &mut InstantiateCtx<'_, V>) -> Option<Self> {
         Some(self.clone())
     }
     fn is_var(&self) -> Option<SubstName<V>> {
@@ -49,7 +49,7 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub fn nat(value: impl Into<num_bigint::BigUint>) -> Self {
+    pub fn nat(value: impl Into<BigUint>) -> Self {
         Self::Nat(Natural(value.into()))
     }
     pub fn substitute_levels(&self, levels: &BTreeMap<String, Level>) -> Result<Self, Error> {
@@ -125,6 +125,11 @@ impl Expr {
     }
 }
 
+const RESERVED: &[&str] = &[
+    "Sort", "Prop", "Type", "forall", "fun", "let", "in", "axiom", "def", "infer", "check", "eval",
+    "equal",
+];
+
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn go(e: &Expr, scope: &mut NameScope, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -164,22 +169,14 @@ impl fmt::Display for Expr {
                 Expr::Pi(ty, b) | Expr::Lam(ty, b) | Expr::Let(ty, _, b) => {
                     let (n, body) = b.unbind_ref();
                     let hint = match n.string() {
-                        Some(
-                            "Sort" | "Prop" | "Type" | "forall" | "fun" | "let" | "in" | "axiom"
-                            | "def" | "infer" | "check" | "eval" | "equal",
-                        ) => Name::<Expr>::new(format!("{}_", n.string().unwrap())),
+                        Some(s) if RESERVED.contains(&s) => Name::<Expr>::new(format!("{s}_")),
                         _ => n.clone(),
                     };
                     let display = scope.pick(&hint, &body.fv());
-                    let tag = match e {
-                        Expr::Pi(..) => "forall",
-                        Expr::Lam(..) => "fun",
-                        _ => "let",
-                    };
-                    if matches!(e, Expr::Let(..)) {
-                        write!(f, "(let {display} : ")?;
-                    } else {
-                        write!(f, "({tag} ({display} : ")?;
+                    match e {
+                        Expr::Pi(..) => write!(f, "(forall ({display} : ")?,
+                        Expr::Lam(..) => write!(f, "(fun ({display} : ")?,
+                        _ => write!(f, "(let {display} : ")?,
                     }
                     go(ty, scope, f)?;
                     match e {

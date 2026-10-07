@@ -39,8 +39,8 @@ Signature: Signature = {
 Ctor: (String, Term) = "|" <n:"ident"> ":" <ty:Expr> => (n, ty);
 
 pub Expr: Term = {
-    "fun" <params:Binder+> "=>" <body:Expr> => Term::binders(params, body, false),
-    "forall" <params:Binder+> "," <body:Expr> => Term::binders(params, body, true),
+    "fun" <params:Binder+> "=>" <body:Expr> => Term::binders(params, body, Term::Lam),
+    "forall" <params:Binder+> "," <body:Expr> => Term::binders(params, body, Term::Pi),
     "let" <binding:LocalDef> "in" <body:Expr> => Term::lets(vec![binding], body),
     "let" "v{" <head:LocalDef> <tail:("v;" LocalDef)*> "v}" <_sep:"v;"?> "in" <body:Expr> => {
         let mut defs = vec![head];

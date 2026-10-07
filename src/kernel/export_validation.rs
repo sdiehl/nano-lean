@@ -1,8 +1,10 @@
-//! Conditional validation for export checkers that verify ordinary declarations
-//! separately. No environment assembled here is returned to callers.
+//! Soundness: results are conditional on ordinary dependencies the coordinator checks separately.
 
-use super::{Environment, InductiveBlock, Result};
+use super::{Environment, Error, InductiveBlock, Result};
 use crate::Expr;
+use std::{cell::Cell, collections::BTreeSet, rc::Rc};
+
+const MAX_KNOWN_DEPENDENCIES: usize = 8192;
 
 pub enum ExportDependency {
     Ordinary {
@@ -20,84 +22,87 @@ pub enum ExportDependency {
     },
 }
 
-/// Validate a declaration, reconstructing all required inductive blocks.
-///
-/// This result is conditional on the validity of every ordinary dependency.
-/// The export coordinator must check those declarations independently before
-/// accepting the export, just as for `check_export_file_shard`. Dependencies
-/// must precede the target and be supplied in declaration order. This function
-/// never exposes the conditional environment as a validated `Environment`.
-pub fn validate_export_dependencies(
-    dependencies: impl IntoIterator<Item = ExportDependency>,
-    target: ExportDependency,
-    theorem: bool,
-    work: std::rc::Rc<std::cell::Cell<u64>>,
-) -> Result<()> {
-    let mut env = Environment::new();
-    env.export_work = Some(work);
-    for dependency in dependencies {
+impl Environment {
+    fn assume_dependency(&mut self, dependency: ExportDependency) -> Result<()> {
         match dependency {
             ExportDependency::Ordinary {
                 name,
                 params,
                 ty,
                 value,
-            } => {
-                env.assume_export_declaration(name, params, ty, value, true)?;
-            }
-            ExportDependency::Inductive(block) => env.declare_inductive(block)?,
+            } => self.assume_export_declaration(name, params, ty, value, true),
+            ExportDependency::Inductive(block) => self.declare_inductive(block),
             ExportDependency::Quotient {
                 name,
                 params,
                 ty,
                 kind,
-            } => {
-                env.declare_quotient(name, params, ty, kind)?;
-            }
+            } => self.declare_quotient(name, params, ty, kind),
         }
     }
-    match target {
-        ExportDependency::Inductive(block) => env.declare_inductive(block),
-        ExportDependency::Quotient {
-            name,
-            params,
-            ty,
-            kind,
-        } => env.declare_quotient(name, params, ty, kind),
-        ExportDependency::Ordinary {
-            name,
-            params,
-            ty,
-            value,
-        } if theorem => env.declare_theorem(
-            name,
-            params,
-            ty,
-            value.ok_or_else(|| super::Error("missing theorem body".into()))?,
-        ),
-        ExportDependency::Ordinary {
-            name,
-            params,
-            ty,
-            value,
-        } => env.declare(name, params, ty, value, true),
+
+    fn declare_target(&mut self, target: ExportDependency, theorem: bool) -> Result<()> {
+        match target {
+            ExportDependency::Ordinary {
+                name,
+                params,
+                ty,
+                value,
+            } if theorem => self.declare_theorem(
+                name,
+                params,
+                ty,
+                value.ok_or_else(|| Error("missing theorem body".into()))?,
+            ),
+            ExportDependency::Ordinary {
+                name,
+                params,
+                ty,
+                value,
+            } => self.declare(name, params, ty, value, true),
+            other => self.assume_dependency(other),
+        }
+    }
+
+    fn set_order(&mut self, name: &str, order: u32) {
+        Rc::make_mut(self.declarations.get_mut(name).unwrap()).order = order as usize;
     }
 }
 
-/// Reuse conditional dependencies while walking one immutable export in order.
-/// As with `validate_export_dependencies`, the coordinator must independently
-/// validate all ordinary declarations. Inductive blocks are checked before use.
+fn ordinary_name(dependency: &ExportDependency) -> Option<String> {
+    match dependency {
+        ExportDependency::Ordinary { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Dependencies must precede the target in declaration order, and the conditional environment is never exposed.
+pub fn validate_export_dependencies(
+    dependencies: impl IntoIterator<Item = ExportDependency>,
+    target: ExportDependency,
+    theorem: bool,
+    work: Rc<Cell<u64>>,
+) -> Result<()> {
+    let mut env = Environment::new();
+    env.export_work = Some(work);
+    for dependency in dependencies {
+        env.assume_dependency(dependency)?;
+    }
+    env.declare_target(target, theorem)
+}
+
 #[derive(Default)]
 pub struct ExportSession {
     env: Environment,
-    known: std::collections::BTreeSet<u32>,
+    known: BTreeSet<u32>,
     target: Option<u32>,
 }
 
 impl ExportSession {
     pub fn begin(&mut self, target: u32) {
-        // Bound retained dependency environments across long exports.
-        if self.known.len() > 8192 || self.target.is_some_and(|previous| target <= previous) {
+        if self.known.len() > MAX_KNOWN_DEPENDENCIES
+            || self.target.is_some_and(|previous| target <= previous)
+        {
             *self = Self::default();
         }
         self.target = Some(target);
@@ -112,91 +117,45 @@ impl ExportSession {
         dependencies: impl IntoIterator<Item = (u32, ExportDependency)>,
         target: ExportDependency,
         theorem: bool,
-        work: std::rc::Rc<std::cell::Cell<u64>>,
+        work: Rc<Cell<u64>>,
     ) -> Result<()> {
         let index = self
             .target
-            .ok_or_else(|| super::Error("missing export target".into()))?;
+            .ok_or_else(|| Error("missing export target".into()))?;
         self.env.export_work = Some(work);
-        let result = (|| {
-            for (dependency_index, dependency) in dependencies {
-                if dependency_index >= index || self.known.contains(&dependency_index) {
-                    return Err(super::Error("invalid cached export dependency".into()));
-                }
-                match dependency {
-                    ExportDependency::Ordinary {
-                        name,
-                        params,
-                        ty,
-                        value,
-                    } => {
-                        let key = name.clone();
-                        self.env
-                            .assume_export_declaration(name, params, ty, value, true)?;
-                        // Cache insertion order differs from export order. Preserve
-                        // the latter for the evaluator's unfolding heuristic.
-                        std::rc::Rc::make_mut(self.env.declarations.get_mut(&key).unwrap()).order =
-                            dependency_index as usize;
-                    }
-                    ExportDependency::Inductive(block) => self.env.declare_inductive(block)?,
-                    ExportDependency::Quotient {
-                        name,
-                        params,
-                        ty,
-                        kind,
-                    } => {
-                        self.env.declare_quotient(name, params, ty, kind)?;
-                    }
-                }
-                self.known.insert(dependency_index);
-            }
-            let ordinary_name = match &target {
-                ExportDependency::Ordinary { name, .. } => Some(name.clone()),
-                _ => None,
-            };
-            match target {
-                ExportDependency::Inductive(block) => self.env.declare_inductive(block)?,
-                ExportDependency::Quotient {
-                    name,
-                    params,
-                    ty,
-                    kind,
-                } => {
-                    self.env.declare_quotient(name, params, ty, kind)?;
-                }
-                ExportDependency::Ordinary {
-                    name,
-                    params,
-                    ty,
-                    value,
-                } if theorem => {
-                    self.env.declare_theorem(
-                        name,
-                        params,
-                        ty,
-                        value.ok_or_else(|| super::Error("missing theorem body".into()))?,
-                    )?;
-                }
-                ExportDependency::Ordinary {
-                    name,
-                    params,
-                    ty,
-                    value,
-                } => {
-                    self.env.declare(name, params, ty, value, true)?;
-                }
-            }
-            if let Some(name) = ordinary_name {
-                std::rc::Rc::make_mut(self.env.declarations.get_mut(&name).unwrap()).order =
-                    index as usize;
-            }
-            self.known.insert(index);
-            Ok(())
-        })();
+        let result = self.extend(dependencies, target, theorem, index);
         if result.is_err() {
             *self = Self::default();
         }
         result
+    }
+
+    fn extend(
+        &mut self,
+        dependencies: impl IntoIterator<Item = (u32, ExportDependency)>,
+        target: ExportDependency,
+        theorem: bool,
+        index: u32,
+    ) -> Result<()> {
+        for (dependency_index, dependency) in dependencies {
+            if dependency_index >= index || self.known.contains(&dependency_index) {
+                return Err(Error("invalid cached export dependency".into()));
+            }
+            let name = ordinary_name(&dependency);
+            self.env.assume_dependency(dependency)?;
+            // Preserve export order for the evaluator's unfolding heuristic.
+            if let Some(name) = name {
+                self.env.set_order(&name, dependency_index);
+            }
+            self.known.insert(dependency_index);
+        }
+        let name = ordinary_name(&target);
+        self.env.declare_target(target, theorem)?;
+        if let Some(name) = name {
+            self.env.set_order(&name, index);
+        }
+        self.known.insert(index);
+        Ok(())
     }
 }
 
@@ -217,7 +176,7 @@ mod tests {
     #[test]
     fn cached_dependencies_preserve_export_unfolding_order() {
         let mut session = ExportSession::default();
-        let work = std::rc::Rc::new(std::cell::Cell::new(10000));
+        let work = Rc::new(Cell::new(10000));
         session.begin(10);
         session
             .validate([(9, axiom("later"))], axiom("first"), false, work.clone())

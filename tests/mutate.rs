@@ -1,9 +1,6 @@
-//! A seeded mutation sweep over the export fixtures, plus the invariants the
-//! shrinker relies on.
-
 use nano_lean::{
     checker::Limits,
-    mutate::{self, OPERATORS, Rng},
+    mutate::{self, Operator, Rng},
 };
 use std::{fs, path::Path};
 
@@ -21,7 +18,7 @@ fn seeded_sweep_finds_nothing() {
     for name in ["ordinary.ndjson", "mutual.ndjson", "primitives.ndjson"] {
         let lines = fixture(name);
         let baseline = mutate::check(&lines, Limits::default());
-        for op in OPERATORS {
+        for op in Operator::ALL {
             let mut candidates = mutate::mutants(&lines, op);
             while candidates.len() > 8 {
                 candidates.swap_remove(rng.below(candidates.len()));
@@ -54,7 +51,6 @@ fn compaction_preserves_verdicts() {
     }
 }
 
-/// The dotted name of the last declaration.
 fn last_name(lines: &[serde_json::Value]) -> String {
     let decl = lines.iter().rfind(|l| mutate::is_declaration(l)).unwrap();
     let (_, body) = decl.as_object().unwrap().iter().next().unwrap();

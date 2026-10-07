@@ -1,9 +1,12 @@
-use super::expr::Expr;
+use super::FxHashMap;
+use super::arena::Arena;
+use super::decl::Declar;
+use super::expr::{Expr, HAS_LOCAL, Meta, mk};
 use super::level::Level;
-use super::name::{Name, NameNode, NatRed, StrNode};
+use super::name::{NUM_HASH, Name, NameNode, NatRed, STR_HASH, StrNode};
+use super::names::*;
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
-use crate::term::arena::Arena;
 use hashbrown::HashTable;
 use num_bigint::BigUint;
 
@@ -50,7 +53,6 @@ impl Keyed for BigUint {
 /// Bits of the bucket index that order a bulk fill, so its writes sweep the table.
 const FILL_RADIX_BITS: u32 = 11;
 
-/// Hash-consing table over arena references.
 pub struct Interner<'a, T: ?Sized>(HashTable<&'a T>);
 
 impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
@@ -78,7 +80,6 @@ impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
         r
     }
 
-    /// Insert distinct nodes in bucket order; `items` is walked twice.
     pub fn fill(&mut self, items: impl Iterator<Item = &'a T> + Clone) {
         let n = items.clone().count();
         self.0.reserve(n, |r| r.key_hash());
@@ -112,7 +113,8 @@ impl<T: ?Sized + Keyed> Default for Interner<'_, T> {
     }
 }
 
-/// All interners for one arena.
+const LINES_PER_NAME: usize = 16;
+
 #[derive(Default)]
 pub struct Dag<'a> {
     pub names: Interner<'a, NameNode<'a>>,
@@ -124,11 +126,11 @@ pub struct Dag<'a> {
 }
 
 impl<'a> Dag<'a> {
-    /// Presized for an export of `lines` lines, so the big tables never rehash.
+    /// Presized for `lines` lines so the big tables never rehash.
     pub fn with_capacity(lines: usize) -> Self {
         Self {
-            names: Interner::with_capacity(lines / 16),
-            strings: Interner::with_capacity(lines / 16),
+            names: Interner::with_capacity(lines / LINES_PER_NAME),
+            strings: Interner::with_capacity(lines / LINES_PER_NAME),
             exprs: Interner::with_capacity(lines),
             ..Self::default()
         }
@@ -206,7 +208,7 @@ impl<'a> Dag<'a> {
             .map(|r| ExprPtr::new(r, meta_of(r)))
     }
 
-    pub fn add_expr(&mut self, arena: &'a Arena, e: Expr<'a>, meta: u16) -> ExprPtr<'a> {
+    pub fn add_expr(&mut self, arena: &'a Arena, e: Expr<'a>, meta: Meta) -> ExprPtr<'a> {
         ExprPtr::new(self.exprs.insert(arena.alloc(e)), meta)
     }
 
@@ -218,38 +220,68 @@ impl<'a> Dag<'a> {
         BigUintPtr::new(self.nats.insert(arena.alloc_nat(n)))
     }
 
-    /// Resolve a dotted name against the interned names, without allocating.
+    #[inline]
+    pub fn intern_name(&mut self, arena: &'a Arena, n: Name<'a>) -> NamePtr<'a> {
+        self.find_name(&n)
+            .unwrap_or_else(|| self.add_name(arena, n))
+    }
+
+    #[inline]
+    pub fn intern_str(&mut self, arena: &'a Arena, s: &str) -> StringPtr<'a> {
+        self.find_str(s).unwrap_or_else(|| self.add_str(arena, s))
+    }
+
+    #[inline]
+    pub fn intern_level(&mut self, arena: &'a Arena, l: Level<'a>) -> LevelPtr<'a> {
+        self.find_level(&l)
+            .unwrap_or_else(|| self.add_level(arena, l))
+    }
+
+    #[inline]
+    pub fn intern_levels(&mut self, arena: &'a Arena, ls: &[LevelPtr<'a>]) -> LevelsPtr<'a> {
+        self.find_levels(ls)
+            .unwrap_or_else(|| self.add_levels(arena, ls))
+    }
+
+    #[inline]
+    pub fn intern_nat(&mut self, arena: &'a Arena, n: BigUint) -> BigUintPtr<'a> {
+        self.find_nat(&n).unwrap_or_else(|| self.add_nat(arena, n))
+    }
+
+    #[inline]
+    pub fn intern_expr(&mut self, arena: &'a Arena, e: Expr<'a>, meta: Meta) -> ExprPtr<'a> {
+        self.find_expr(&e)
+            .unwrap_or_else(|| self.add_expr(arena, e, meta))
+    }
+
     pub fn lookup(&self, anon: NamePtr<'a>, dotted: &str) -> Option<NamePtr<'a>> {
         let mut pfx = anon;
         for s in dotted.split('.') {
             pfx = if let Ok(n) = s.parse::<u64>() {
-                self.find_name(&Name::Num(pfx, n, hash64!(super::name::NUM_HASH, pfx, n)))?
+                self.find_name(&Name::Num(pfx, n, hash64!(NUM_HASH, pfx, n)))?
             } else {
                 let s = self.find_str(s)?;
-                self.find_name(&Name::Str(pfx, s, hash64!(super::name::STR_HASH, pfx, s)))?
+                self.find_name(&Name::Str(pfx, s, hash64!(STR_HASH, pfx, s)))?
             };
         }
         Some(pfx)
     }
 }
 
-/// Pointer metadata, recomputed from children for interner hits.
-pub fn meta_of(e: &Expr<'_>) -> u16 {
-    use super::expr::mk;
+pub fn meta_of(e: &Expr<'_>) -> Meta {
     match *e {
         Expr::Var { idx, .. } => mk::var(idx).1,
         Expr::App { fun, arg, .. } => mk::app(fun, arg).1,
         Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => mk::lam(ty, body).1,
         Expr::Let { data, .. } => mk::let_(*data).2,
         Expr::Proj { e, .. } => e.meta(),
-        Expr::Local { .. } => super::expr::HAS_LOCAL,
+        Expr::Local { .. } => HAS_LOCAL,
         _ => 0,
     }
 }
 
 macro_rules! names {
-    ($($field:ident = $path:literal $(=> $red:ident)?,)*) => {
-        /// Names the checker treats specially, resolved once after import.
+    ($($field:ident = $path:expr $(=> $red:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, Default)]
         pub struct Names<'a> {
             $(pub $field: Option<NamePtr<'a>>,)*
@@ -266,40 +298,39 @@ macro_rules! names {
 }
 
 names! {
-    quot = "Quot",
-    quot_mk = "Quot.mk",
-    quot_lift = "Quot.lift",
-    quot_ind = "Quot.ind",
-    eq = "Eq",
-    string = "String",
-    string_of_list = "String.ofList",
-    char = "Char",
-    char_of_nat = "Char.ofNat",
-    list_nil = "List.nil",
-    list_cons = "List.cons",
-    nat = "Nat",
-    nat_zero = "Nat.zero",
-    bool_true = "Bool.true",
-    bool_false = "Bool.false",
-    nat_succ = "Nat.succ" => Succ,
-    nat_add = "Nat.add" => Add,
-    nat_sub = "Nat.sub" => Sub,
-    nat_mul = "Nat.mul" => Mul,
-    nat_pow = "Nat.pow" => Pow,
-    nat_mod = "Nat.mod" => Mod,
-    nat_div = "Nat.div" => Div,
-    nat_gcd = "Nat.gcd" => Gcd,
-    nat_beq = "Nat.beq" => Beq,
-    nat_ble = "Nat.ble" => Ble,
-    nat_land = "Nat.land" => Land,
-    nat_lor = "Nat.lor" => Lor,
-    nat_xor = "Nat.xor" => Xor,
-    nat_shl = "Nat.shiftLeft" => Shl,
-    nat_shr = "Nat.shiftRight" => Shr,
-    nat_log2 = "Nat.log2" => Log2,
+    quot = QUOT,
+    quot_mk = QUOT_MK,
+    quot_lift = QUOT_LIFT,
+    quot_ind = QUOT_IND,
+    eq = EQ,
+    string = STRING,
+    string_of_list = STRING_OF_LIST,
+    char = CHAR,
+    char_of_nat = CHAR_OF_NAT,
+    list_nil = LIST_NIL,
+    list_cons = LIST_CONS,
+    nat = NAT,
+    nat_zero = NAT_ZERO,
+    bool_true = BOOL_TRUE,
+    bool_false = BOOL_FALSE,
+    nat_succ = NAT_SUCC => Succ,
+    nat_add = NAT_ADD => Add,
+    nat_sub = NAT_SUB => Sub,
+    nat_mul = NAT_MUL => Mul,
+    nat_pow = NAT_POW => Pow,
+    nat_mod = NAT_MOD => Mod,
+    nat_div = NAT_DIV => Div,
+    nat_gcd = NAT_GCD => Gcd,
+    nat_beq = NAT_BEQ => Beq,
+    nat_ble = NAT_BLE => Ble,
+    nat_land = NAT_LAND => Land,
+    nat_lor = NAT_LOR => Lor,
+    nat_xor = NAT_XOR => Xor,
+    nat_shl = NAT_SHL => Shl,
+    nat_shr = NAT_SHR => Shr,
+    nat_log2 = NAT_LOG2 => Log2,
 }
 
-/// Import statistics reported to the user.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub declarations: usize,
@@ -308,7 +339,6 @@ pub struct Stats {
     pub levels: usize,
 }
 
-/// Exact declaration interval emitted by one inductive export entry.
 #[derive(Clone, Copy, Debug)]
 pub struct Block {
     pub start: u32,
@@ -317,16 +347,12 @@ pub struct Block {
     pub end: u32,
 }
 
-/// Immutable imported declarations and their interned syntax, shared by workers.
 pub struct Store<'a> {
     pub dag: Dag<'a>,
     pub anon: NamePtr<'a>,
     pub zero: LevelPtr<'a>,
-    pub declars: Vec<super::decl::Declar<'a>>,
-    /// Each inductive member maps to its exact export block.
-    pub blocks: super::FxHashMap<NamePtr<'a>, Block>,
+    pub declars: Vec<Declar<'a>>,
+    pub blocks: FxHashMap<NamePtr<'a>, Block>,
     pub names: Names<'a>,
     pub stats: Stats,
 }
-
-impl<'a> Store<'a> {}

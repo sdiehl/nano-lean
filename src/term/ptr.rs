@@ -1,4 +1,4 @@
-use super::expr::Expr;
+use super::expr::{Expr, HAS_LOCAL, Meta, NLB_MASK};
 use super::level::Level;
 use super::name::{NameNode, StrNode};
 use num_bigint::BigUint;
@@ -52,6 +52,7 @@ impl fmt::Display for NamePtr<'_> {
 }
 
 const ADDR: u64 = 0x0000_ffff_ffff_ffff;
+const META_SHIFT: u32 = 48;
 
 /// Pointer to an arena `Expr` with the loose bound variable count packed in the top 16 bits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,24 +60,23 @@ pub struct ExprPtr<'a>(NonZeroU64, PhantomData<&'a Expr<'a>>);
 
 impl<'a> ExprPtr<'a> {
     #[inline]
-    pub fn new(r: &'a Expr<'a>, meta: u16) -> Self {
+    pub fn new(r: &'a Expr<'a>, meta: Meta) -> Self {
         let addr = r as *const Expr<'a> as u64;
         debug_assert_eq!(addr & !ADDR, 0);
         Self(
-            NonZeroU64::new(addr | (u64::from(meta) << 48)).unwrap(),
+            NonZeroU64::new(addr | (u64::from(meta) << META_SHIFT)).unwrap(),
             PhantomData,
         )
     }
 
     #[inline]
-    pub fn meta(self) -> u16 {
-        (self.0.get() >> 48) as u16
+    pub fn meta(self) -> Meta {
+        (self.0.get() >> META_SHIFT) as Meta
     }
 
-    /// Number of loose bound variables: `Var(i)` occurs loose only if `i < nlb`.
     #[inline]
     pub fn nlb(self) -> u16 {
-        self.meta() & 0x7fff
+        self.meta() & NLB_MASK
     }
 
     #[inline]
@@ -86,7 +86,7 @@ impl<'a> ExprPtr<'a> {
 
     #[inline]
     pub fn has_local(self) -> bool {
-        self.meta() & 0x8000 != 0
+        self.meta() & HAS_LOCAL != 0
     }
 
     #[inline]
@@ -117,13 +117,16 @@ pub struct LevelsPtr<'a>(u64, PhantomData<&'a [LevelPtr<'a>]>);
 impl<'a> LevelsPtr<'a> {
     #[inline]
     pub fn new(s: &'a [LevelPtr<'a>]) -> Self {
-        assert!(s.len() < 1 << 16, "too many universe levels");
-        Self(s.as_ptr() as u64 | ((s.len() as u64) << 48), PhantomData)
+        assert!(s.len() <= usize::from(u16::MAX), "too many universe levels");
+        Self(
+            s.as_ptr() as u64 | ((s.len() as u64) << META_SHIFT),
+            PhantomData,
+        )
     }
 
     #[inline]
     pub fn len(self) -> usize {
-        (self.0 >> 48) as usize
+        (self.0 >> META_SHIFT) as usize
     }
 
     #[inline]

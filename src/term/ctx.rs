@@ -1,24 +1,19 @@
-//! Per-thread allocation context: a bump arena plus local interners layered over
-//! the shared import store. Everything the checker builds lives here.
-
 use super::FxHashMap;
-use super::expr::{Expr, LetData, mk};
+use super::arena::Arena;
+use super::expr::{Expr, LetData, Meta, mk};
 use super::intern::{Dag, Store};
 use super::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use super::name::{Name, STR_HASH as NAME_STR_HASH};
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
-use crate::term::arena::Arena;
 use num_bigint::BigUint;
 
 pub struct Ctx<'t, 'a: 't> {
     pub store: &'a Store<'a>,
     pub arena: &'t Arena,
     pub dag: Dag<'t>,
-    /// Memo for one traversal: key (expr, op and offset) to (generation, result).
     pub(crate) memo: FxHashMap<(ExprPtr<'t>, u32), (u32, ExprPtr<'t>)>,
     pub(crate) generation: u32,
-    /// Pure single-argument substitutions, scoped to this context and its arena.
     pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, ExprPtr<'t>), ExprPtr<'t>>,
     pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
     pub(crate) simp_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
@@ -50,10 +45,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if let Some(p) = self.store.dag.find_name(&n) {
             return p;
         }
-        match self.dag.find_name(&n) {
-            Some(p) => p,
-            None => self.dag.add_name(self.arena, n),
-        }
+        self.dag.intern_name(self.arena, n)
     }
 
     pub fn str_name(&mut self, pfx: NamePtr<'t>, s: StringPtr<'t>) -> NamePtr<'t> {
@@ -64,10 +56,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if let Some(p) = self.store.dag.find_str(s) {
             return p;
         }
-        match self.dag.find_str(s) {
-            Some(p) => p,
-            None => self.dag.add_str(self.arena, s),
-        }
+        self.dag.intern_str(self.arena, s)
     }
 
     pub fn str1(&mut self, s: &str) -> NamePtr<'t> {
@@ -80,10 +69,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if let Some(p) = self.store.dag.find_level(&l) {
             return p;
         }
-        match self.dag.find_level(&l) {
-            Some(p) => p,
-            None => self.dag.add_level(self.arena, l),
-        }
+        self.dag.intern_level(self.arena, l)
     }
 
     pub fn succ(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
@@ -118,31 +104,22 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if let Some(p) = self.store.dag.find_levels(ls) {
             return p;
         }
-        match self.dag.find_levels(ls) {
-            Some(p) => p,
-            None => self.dag.add_levels(self.arena, ls),
-        }
+        self.dag.intern_levels(self.arena, ls)
     }
 
     pub fn nat(&mut self, n: BigUint) -> BigUintPtr<'t> {
         if let Some(p) = self.store.dag.find_nat(&n) {
             return p;
         }
-        match self.dag.find_nat(&n) {
-            Some(p) => p,
-            None => self.dag.add_nat(self.arena, n),
-        }
+        self.dag.intern_nat(self.arena, n)
     }
 
     #[inline]
-    fn expr(&mut self, (e, meta): (Expr<'t>, u16)) -> ExprPtr<'t> {
+    fn expr(&mut self, (e, meta): (Expr<'t>, Meta)) -> ExprPtr<'t> {
         if let Some(p) = self.store.dag.find_expr(&e) {
             return p;
         }
-        match self.dag.find_expr(&e) {
-            Some(p) => p,
-            None => self.dag.add_expr(self.arena, e, meta),
-        }
+        self.dag.intern_expr(self.arena, e, meta)
     }
 
     pub fn var(&mut self, idx: u16) -> ExprPtr<'t> {

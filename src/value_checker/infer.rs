@@ -1,9 +1,10 @@
 use super::value::*;
 use super::{R, Vc, stat};
-use crate::term::decl::{Constructor, Declar, Inductive};
+use crate::checker::env::Decls;
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
+use smallvec::SmallVec;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn ensure_sort(&mut self, t: V<'t>) -> R<LevelPtr<'t>> {
@@ -26,7 +27,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
-    /// Whether `t` is a proposition, i.e. its type is `Prop`.
     pub(crate) fn is_prop(&mut self, t: V<'t>) -> R<bool> {
         let s = self.type_of(t)?;
         let s = self.whnf(s)?;
@@ -39,26 +39,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         })
     }
 
-    pub(crate) fn structure_like(
-        &self,
-        n: NamePtr<'t>,
-    ) -> Option<(Inductive<'t>, Constructor<'t>)> {
-        self.single_ctor(n).filter(|(i, _)| !i.is_rec)
-    }
-
-    fn single_ctor(&self, n: NamePtr<'t>) -> Option<(Inductive<'t>, Constructor<'t>)> {
-        let Some(Declar::Ind(i)) = self.declar(n) else {
-            return None;
-        };
-        if i.ctors.len() != 1 || i.num_indices != 0 {
-            return None;
-        }
-        match self.declar(i.ctors[0]) {
-            Some(Declar::Ctor(c)) => Some((i, c)),
-            _ => None,
-        }
-    }
-
     fn literal_type(&mut self, n: Option<NamePtr<'t>>) -> R<V<'t>> {
         let ty = self.konst0(n);
         let s = self.type_of(ty)?;
@@ -69,7 +49,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(ty)
     }
 
-    /// Type of a value, without syntax.
     pub(crate) fn type_of(&mut self, v: V<'t>) -> R<V<'t>> {
         if let Some(&t) = self.t.type_of.get(&key(v)) {
             return Ok(t);
@@ -85,11 +64,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             K::Pi(d, c) => {
                 let s1 = self.type_of(d)?;
                 let s1 = self.ensure_sort(s1)?;
-                let saved = self.depth;
-                let x = self.binder_local(d);
-                let s2 = self.inst(c, x).and_then(|b| self.type_of(b));
-                self.depth = saved;
-                let s2 = s2?;
+                let s2 = self.restoring_depth(|vc| {
+                    let x = vc.binder_local(d);
+                    let b = vc.inst(c, x)?;
+                    vc.type_of(b)
+                })?;
                 let s2 = self.ensure_sort(s2)?;
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
@@ -158,8 +137,22 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(d)
     }
 
-    /// Infer the type of syntax `e` under `env`. Check mode validates; infer-only
-    /// assumes `e` is well typed.
+    #[inline(always)]
+    fn infer_binder(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        dom: V<'t>,
+        body: ExprPtr<'t>,
+        only: bool,
+    ) -> R<V<'t>> {
+        self.restoring_depth(|vc| {
+            let x = vc.binder_local(dom);
+            let env1 = vc.push(env, x);
+            vc.infer(env1, sub, body, only)
+        })
+    }
+
     pub(crate) fn infer(
         &mut self,
         env: Env<'t>,
@@ -235,11 +228,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 if !only {
                     self.check_level(level);
                 }
-                let l = if sub.is_id() {
-                    level
-                } else {
-                    self.ctx.subst_level(level, sub.ks, sub.vs)
-                };
+                let l = self.subst_level(sub, level);
                 let l = self.ctx.succ(l);
                 self.mk(K::Sort(l), false)
             }
@@ -261,7 +250,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 self.const_type(name, ls)?
             }
             Expr::App { .. } => {
-                let mut args = smallvec::SmallVec::<[ExprPtr<'t>; 8]>::new();
+                let mut args = SmallVec::<[ExprPtr<'t>; 8]>::new();
                 let mut f = e;
                 while let Expr::App { fun, arg, .. } = *f {
                     args.push(arg);
@@ -289,12 +278,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 if !only {
                     let s = self.infer(env, sub, ty, false)?;
                     self.ensure_sort(s)?;
-                    let saved = self.depth;
-                    let x = self.binder_local(dom);
-                    let env1 = self.push(env, x);
-                    let r = self.infer(env1, sub, body, false);
-                    self.depth = saved;
-                    r?;
+                    self.infer_binder(env, sub, dom, body, false)?;
                 }
                 self.mk(
                     K::Pi(
@@ -313,12 +297,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let s = self.infer(env, sub, ty, only)?;
                 let s1 = self.ensure_sort(s)?;
                 let dom = self.eval(env, sub, ty)?;
-                let saved = self.depth;
-                let x = self.binder_local(dom);
-                let env1 = self.push(env, x);
-                let s = self.infer(env1, sub, body, only);
-                self.depth = saved;
-                let s = s?;
+                let s = self.infer_binder(env, sub, dom, body, only)?;
                 let s2 = self.ensure_sort(s)?;
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
