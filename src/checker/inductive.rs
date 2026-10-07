@@ -35,6 +35,24 @@ impl<'a> Adapter<'a> {
     }
 }
 
+/// Inductive blocks by path, native then legacy: count and nanoseconds.
+#[cfg(feature = "vstats")]
+pub static BLOCKS: [[std::sync::atomic::AtomicU64; 2]; 2] =
+    [const { [const { std::sync::atomic::AtomicU64::new(0) }; 2] }; 2];
+
+#[cfg(feature = "vstats")]
+struct BlockTimer(usize, std::time::Instant);
+
+#[cfg(feature = "vstats")]
+impl Drop for BlockTimer {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let [n, t] = &BLOCKS[self.0];
+        n.fetch_add(1, Relaxed);
+        t.fetch_add(self.1.elapsed().as_nanos() as u64, Relaxed);
+    }
+}
+
 impl<'t, 'a: 't> Tc<'t, 'a> {
     pub(crate) fn check_inductive(&mut self, idx: u32, d: Declar<'t>) {
         let block = *self
@@ -46,7 +64,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if block.start != idx {
             return;
         }
-        if std::env::var_os("NL_LEGACY_IND").is_none() && self.native_block(block) {
+        let native = std::env::var_os("NL_LEGACY_IND").is_none() && self.native_block(block);
+        #[cfg(feature = "vstats")]
+        let _timer = BlockTimer(usize::from(!native), std::time::Instant::now());
+        if native {
             self.check_block(block);
         } else {
             self.check_existing(idx);

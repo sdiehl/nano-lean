@@ -1,6 +1,7 @@
 //! Single-pass importer for lean4export NDJSON (format 3.1.0). Hot line shapes are
 //! scanned by hand straight out of an mmap; everything else goes through serde_json.
 
+pub mod blean;
 mod scan;
 
 use crate::hash64;
@@ -56,6 +57,8 @@ struct Importer<'a> {
     blocks: FxHashMap<NamePtr<'a>, Block>,
     stats: Stats,
     scratch: Vec<u32>,
+    /// Indices of metadata records, which reuse their child's node.
+    aliases: Vec<u32>,
 }
 
 fn slot<T: Copy>(v: &[Option<T>], i: u32) -> Result<T> {
@@ -79,10 +82,10 @@ fn put<T>(v: &mut Vec<Option<T>>, i: u32, x: T) -> Result<()> {
 
 impl<'a> Importer<'a> {
     fn new(arena: &'a Arena, bytes: usize) -> Self {
-        let mut dag = Dag::default();
+        let lines = bytes / 56;
+        let mut dag = Dag::with_capacity(lines);
         let anon = dag.add_name(arena, Name::Anon);
         let zero = dag.add_level(arena, Level::Zero);
-        let lines = bytes / 56;
         Self {
             arena,
             dag,
@@ -99,7 +102,29 @@ impl<'a> Importer<'a> {
                 ..Stats::default()
             },
             scratch: Vec::new(),
+            aliases: Vec::new(),
         }
+    }
+
+    /// Feed every non-empty line of `bytes`, numbering them from `n`.
+    fn lines(&mut self, bytes: &[u8], n: &mut usize) -> Result<()> {
+        let mut start = 0;
+        for end in memchr::memchr_iter(b'\n', bytes).chain([bytes.len()]) {
+            let line = &bytes[start..end];
+            start = end + 1;
+            if !line.is_empty() {
+                self.line(line, *n == 0).map_err(|e| at(e, *n))?;
+                *n += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_lines(self, n: usize) -> Result<Store<'a>> {
+        if n == 0 {
+            return invalid("empty export");
+        }
+        Ok(self.finish())
     }
 
     fn name(&self, i: u32) -> Result<NamePtr<'a>> {
@@ -166,11 +191,17 @@ impl<'a> Importer<'a> {
         self.add_level(i, Level::Param(n, hash64!(PARAM_HASH, n)))
     }
 
+    /// Exported expressions are already shared, so every node is new; the table is
+    /// filled once at the end instead of probed per node.
     fn intern(&mut self, (e, nlb): (Expr<'a>, u16)) -> ExprPtr<'a> {
-        match self.dag.find_expr(&e) {
-            Some(p) => p,
-            None => self.dag.add_expr(self.arena, e, nlb),
-        }
+        ExprPtr::new(self.arena.alloc(e), nlb)
+    }
+
+    fn alias(&mut self, i: u32, e: u32) -> Result<()> {
+        let e = self.expr(e)?;
+        self.stats.expressions += 1;
+        self.aliases.push(i);
+        put(&mut self.exprs, i, e)
     }
 
     fn add_expr(&mut self, i: u32, node: (Expr<'a>, u16)) -> Result<()> {
@@ -243,20 +274,8 @@ impl<'a> Importer<'a> {
             nondep,
         };
         let (hash, sup, nlb) = mk::let_(d);
-        let p = match self.dag.find_expr(&Expr::Let {
-            data: &d,
-            hash,
-            sup,
-        }) {
-            Some(p) => p,
-            None => {
-                let data = self.arena.alloc(d);
-                self.dag
-                    .add_expr(self.arena, Expr::Let { data, hash, sup }, nlb)
-            }
-        };
-        self.stats.expressions += 1;
-        put(&mut self.exprs, i, p)
+        let data = self.arena.alloc(d);
+        self.add_expr(i, (Expr::Let { data, hash, sup }, nlb))
     }
 
     fn do_proj(&mut self, i: u32, n: u32, idx: u64, e: u32) -> Result<()> {
@@ -521,9 +540,7 @@ impl<'a> Importer<'a> {
                 );
             }
             if let Some(m) = v.get("mdata") {
-                let e = self.expr(idx(&m["expr"])?)?;
-                self.stats.expressions += 1;
-                return put(&mut self.exprs, i, e);
+                return self.alias(i, idx(&m["expr"])?);
             }
             return unsupported(format!(
                 "expression {}",
@@ -709,7 +726,16 @@ impl<'a> Importer<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Store<'a> {
+    fn finish(mut self) -> Store<'a> {
+        self.names = Vec::new();
+        self.levels = Vec::new();
+        let mut aliases = self.aliases.iter().copied().peekable();
+        self.dag.exprs.fill(
+            (0..)
+                .zip(&self.exprs)
+                .filter(move |(i, _)| aliases.next_if_eq(i).is_none())
+                .filter_map(|(_, e)| e.map(|e| e.as_ref())),
+        );
         let names = Names::build(&self.dag, self.anon);
         Store {
             dag: self.dag,
@@ -774,35 +800,53 @@ pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>>
     let io = |e: std::io::Error| ImportError::Invalid(e.to_string());
     let file = std::fs::File::open(path).map_err(io)?;
     let len = file.metadata().map_err(io)?.len() as usize;
-    import_reader(arena, std::io::BufReader::with_capacity(1 << 20, file), len)
+    if let Some(map) = blean::map(&file).map_err(io)? {
+        let im = blean::read(arena, &map)?;
+        // The records are consumed; unmap before the fill peaks.
+        drop(map);
+        return Ok(im.finish());
+    }
+    import_reader(arena, file, len)
 }
+
+/// Bytes read per refill; a longer line grows the buffer to fit.
+const CHUNK: usize = 16 << 20;
 
 /// Import an export stream; `len` is a size hint in bytes, zero if unknown.
 pub fn import_reader<'a>(
     arena: &'a Arena,
-    mut r: impl std::io::BufRead,
+    mut r: impl std::io::Read,
     len: usize,
 ) -> Result<Store<'a>> {
     let io = |e: std::io::Error| ImportError::Invalid(e.to_string());
     let mut im = Importer::new(arena, len);
-    let mut buf = Vec::with_capacity(1 << 16);
-    let mut n = 0usize;
+    let mut buf = vec![0u8; CHUNK];
+    let (mut filled, mut n) = (0, 0);
     loop {
-        buf.clear();
-        if r.read_until(b'\n', &mut buf).map_err(io)? == 0 {
+        if filled == buf.len() {
+            buf.resize(2 * buf.len(), 0);
+        }
+        let k = match r.read(&mut buf[filled..]) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            k => k.map_err(io)?,
+        };
+        filled += k;
+        let end = if k == 0 {
+            filled
+        } else {
+            match memchr::memrchr(b'\n', &buf[..filled]) {
+                Some(p) => p + 1,
+                None => continue,
+            }
+        };
+        im.lines(&buf[..end], &mut n)?;
+        buf.copy_within(end..filled, 0);
+        filled -= end;
+        if k == 0 {
             break;
         }
-        let line = buf.strip_suffix(b"\n").unwrap_or(&buf);
-        if line.is_empty() {
-            continue;
-        }
-        im.line(line, n == 0).map_err(|e| at(e, n))?;
-        n += 1;
     }
-    if n == 0 {
-        return invalid("empty export");
-    }
-    Ok(im.finish())
+    im.finish_lines(n)
 }
 
 fn at(e: ImportError, n: usize) -> ImportError {
@@ -813,17 +857,11 @@ fn at(e: ImportError, n: usize) -> ImportError {
 }
 
 pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
+    if blean::sniff(bytes) {
+        return blean::import(arena, bytes);
+    }
     let mut im = Importer::new(arena, bytes.len());
-    let mut n = 0usize;
-    for line in bytes.split(|&c| c == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        im.line(line, n == 0).map_err(|e| at(e, n))?;
-        n += 1;
-    }
-    if n == 0 {
-        return invalid("empty export");
-    }
-    Ok(im.finish())
+    let mut n = 0;
+    im.lines(bytes, &mut n)?;
+    im.finish_lines(n)
 }

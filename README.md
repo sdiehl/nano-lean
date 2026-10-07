@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/logo.png" width="250" height="250" alt="Nano Lean, the tiny Lean kernel that can">
+</p>
+
 # nano-lean
 
 A minimalist (but complete) Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.

@@ -1,0 +1,5 @@
+reference: rejected: line 83: type mismatch:
+  expected: (forall (["x"] : @["A"]), (forall (["y"] : @["A"]), (((@["Eq"].{1} @["A"]) ["x"]) ["y"])))
+  inferred: (forall (_ : @["A"]), (forall (_1 : @["A"]), (((@["Eq"].{1} @["A"]) _) _)))
+fast: rejected: nested: declaration type mismatch
+value: rejected: nested: declaration type mismatch

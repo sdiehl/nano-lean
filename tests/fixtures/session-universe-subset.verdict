@@ -1,0 +1,3 @@
+reference: rejected: line 18: undeclared universe: ["v"]
+fast: rejected: narrowBad: undeclared universe parameter
+value: rejected: narrowBad: undeclared universe parameter

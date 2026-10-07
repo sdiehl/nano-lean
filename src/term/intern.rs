@@ -47,12 +47,19 @@ impl Keyed for BigUint {
     }
 }
 
+/// Bits of the bucket index that order a bulk fill, so its writes sweep the table.
+const FILL_RADIX_BITS: u32 = 11;
+
 /// Hash-consing table over arena references.
 pub struct Interner<'a, T: ?Sized>(HashTable<&'a T>);
 
 impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
     pub fn new() -> Self {
         Self(HashTable::new())
+    }
+
+    pub fn with_capacity(n: usize) -> Self {
+        Self(HashTable::with_capacity(n))
     }
 
     #[cfg(test)]
@@ -69,6 +76,33 @@ impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
     pub fn insert(&mut self, r: &'a T) -> &'a T {
         self.0.insert_unique(r.key_hash(), r, |r| r.key_hash());
         r
+    }
+
+    /// Insert distinct nodes in bucket order; `items` is walked twice.
+    pub fn fill(&mut self, items: impl Iterator<Item = &'a T> + Clone) {
+        let n = items.clone().count();
+        self.0.reserve(n, |r| r.key_hash());
+        let buckets = (self.0.capacity() * 8 / 7).next_power_of_two();
+        let shift = buckets.trailing_zeros().saturating_sub(FILL_RADIX_BITS);
+        let region = |h: u64| (h as usize & (buckets - 1)) >> shift;
+        let mut starts = vec![0usize; (1 << FILL_RADIX_BITS) + 1];
+        for r in items.clone() {
+            starts[region(r.key_hash()) + 1] += 1;
+        }
+        for i in 1..starts.len() {
+            starts[i] += starts[i - 1];
+        }
+        let mut sorted: Vec<(u64, Option<&'a T>)> = vec![(0, None); n];
+        for r in items {
+            let h = r.key_hash();
+            let s = &mut starts[region(h)];
+            sorted[*s] = (h, Some(r));
+            *s += 1;
+        }
+        for (h, r) in sorted {
+            let r = r.expect("every slot is written once");
+            self.0.insert_unique(h, r, |r| r.key_hash());
+        }
     }
 }
 
@@ -90,6 +124,16 @@ pub struct Dag<'a> {
 }
 
 impl<'a> Dag<'a> {
+    /// Presized for an export of `lines` lines, so the big tables never rehash.
+    pub fn with_capacity(lines: usize) -> Self {
+        Self {
+            names: Interner::with_capacity(lines / 16),
+            strings: Interner::with_capacity(lines / 16),
+            exprs: Interner::with_capacity(lines),
+            ..Self::default()
+        }
+    }
+
     pub fn find_name<'b>(&self, n: &Name<'b>) -> Option<NamePtr<'a>>
     where
         'a: 'b,

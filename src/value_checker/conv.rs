@@ -1,9 +1,9 @@
 use super::value::*;
-use super::{R, Vc, stat};
+use super::{R, Stop, Vc, stat};
 use crate::term::decl::{Declar, Hint};
 use crate::term::expr::Expr;
 use crate::term::level::Level;
-use crate::term::ptr::LevelPtr;
+use crate::term::ptr::{ExprPtr, LevelPtr};
 use std::cmp::Ordering;
 
 fn unfold_order(t: Hint, s: Hint) -> Ordering {
@@ -15,11 +15,24 @@ fn unfold_order(t: Hint, s: Hint) -> Ordering {
     }
 }
 
+/// Conversion steps a same-head argument probe may take before it gives up
+/// and the caller unfolds both sides instead.
+const PROBE_BUDGET: u32 = 2048;
+
 fn positive(l: LevelPtr<'_>) -> bool {
     match *l {
         Level::Succ(..) => true,
         Level::Max(a, b, _) => positive(a) || positive(b),
         Level::IMax(_, b, _) => positive(b),
+        _ => false,
+    }
+}
+
+fn zero(l: LevelPtr<'_>) -> bool {
+    match *l {
+        Level::Zero => true,
+        Level::Max(a, b, _) => zero(a) && zero(b),
+        Level::IMax(_, b, _) => zero(b),
         _ => false,
     }
 }
@@ -31,15 +44,37 @@ fn same_clo(a: Clo<'_>, b: Clo<'_>) -> bool {
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn def_eq(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
         self.tick()?;
+        if let Some(r) = &mut self.probe_remaining {
+            if *r == 0 {
+                return Err(Stop);
+            }
+            *r -= 1;
+        }
+        stat!(self, deq_calls);
         if std::ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
+            stat!(self, deq_ptr_eq);
             return Ok(true);
         }
+        let k = if key(t) < key(s) {
+            (key(t), key(s))
+        } else {
+            (key(s), key(t))
+        };
+        if self.t.neq_cache.contains(&k) {
+            stat!(self, neq_hit);
+            return Ok(false);
+        }
         let mut fuel = 512;
-        let r = self.same(t, s, &mut fuel)
-            || stacker::maybe_grow(256 << 10, 16 << 20, || self.def_eq_core(t, s))?;
+        let same = self.same(t, s, &mut fuel);
+        if same {
+            stat!(self, deq_same);
+        }
+        let r = same || stacker::maybe_grow(256 << 10, 16 << 20, || self.def_eq_core(t, s))?;
         if r {
             self.t.eq_cache.insert((key(t), key(s)));
             self.t.eq_cache.insert((key(s), key(t)));
+        } else if !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..)) {
+            self.t.neq_cache.insert(k);
         }
         Ok(r)
     }
@@ -127,6 +162,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         })
     }
 
+    /// The local of a binder entered at the current depth, which it bumps;
+    /// the caller restores the depth when the scope ends.
+    pub(crate) fn binder_local(&mut self, d: V<'t>) -> V<'t> {
+        let x = self.conv_local(d);
+        self.depth += 1;
+        x
+    }
+
+    /// One local per depth and domain: binders in sibling scopes share it,
+    /// nested ones never do since each scope bumps the depth.
     fn conv_local(&mut self, d: V<'t>) -> V<'t> {
         let k = (self.depth, key(d));
         if let Some(&x) = self.t.conv_locals.get(&k) {
@@ -145,6 +190,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn def_eq_binding_in(&mut self, mut t: V<'t>, mut s: V<'t>) -> R<bool> {
+        stat!(self, deq_binding);
         loop {
             let (td, tc, sd, sc) = match (t.k, s.k) {
                 (K::Pi(td, tc), K::Pi(sd, sc)) => (td, tc, sd, sc),
@@ -296,8 +342,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return self.args_eq(t, s);
         }
         stat!(self, probes);
-        self.probe_remaining = Some(if self.small_delta_body(t) { 32 } else { 2048 });
+        self.probe_remaining = Some(PROBE_BUDGET);
         let r = self.args_eq(t, s);
+        #[cfg(feature = "vstats")]
+        {
+            self.stats.probe_ticks += u64::from(PROBE_BUDGET - self.probe_remaining.unwrap_or(0));
+        }
         self.probe_remaining = None;
         if r.is_err() {
             stat!(self, exhausted);
@@ -308,41 +358,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.t.fail_cache.insert((key(s), key(t)));
         }
         Ok(equal)
-    }
-
-    fn small_delta_body(&self, v: V<'t>) -> bool {
-        let K::Neu(Head::Const(n, _), args) = v.k else {
-            return false;
-        };
-        let Some((mut body, _)) = self.declar(n).and_then(|d| d.unfoldable()) else {
-            return false;
-        };
-        for _ in 0..args.len() {
-            let Expr::Lam { body: next, .. } = *body else {
-                break;
-            };
-            body = next;
-        }
-        let mut head = body.head();
-        while let Expr::Proj { e, .. } = *head {
-            head = e.head();
-        }
-        if !matches!(*head, Expr::Var { .. }) {
-            return false;
-        }
-        fn small(e: crate::term::ptr::ExprPtr<'_>, n: &mut usize) -> bool {
-            if *n == 0 {
-                return false;
-            }
-            *n -= 1;
-            match *e {
-                Expr::App { fun, arg, .. } => small(fun, n) && small(arg, n),
-                Expr::Proj { e, .. } => small(e, n),
-                Expr::Lam { .. } | Expr::Pi { .. } | Expr::Let { .. } => false,
-                _ => true,
-            }
-        }
-        small(body, &mut 8)
     }
 
     fn relevant(&mut self, v: V<'t>, count: usize) -> std::rc::Rc<[bool]> {
@@ -368,12 +383,51 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
             }
         }
+        if let Some(d) = self.declar(n) {
+            let mut ty = d.ty();
+            let mut doms = Vec::new();
+            for m in &mut mask {
+                let Expr::Pi { ty: dom, body, .. } = *ty else {
+                    break;
+                };
+                if *m && self.prop_type(dom, &mut doms) {
+                    *m = false;
+                }
+                doms.push(dom);
+                ty = body;
+            }
+        }
         let m: std::rc::Rc<[bool]> = mask.into();
         self.t.arg_support.insert((n, count), m.clone());
         m
     }
 
+    /// Whether the type `e`, under binders typed `doms` (innermost last), is
+    /// a proposition by its syntax alone.
+    fn prop_type(&self, e: ExprPtr<'t>, doms: &mut Vec<ExprPtr<'t>>) -> bool {
+        if let Expr::Pi { ty, body, .. } = *e {
+            doms.push(ty);
+            let r = self.prop_type(body, doms);
+            doms.pop();
+            return r;
+        }
+        let ty = match *e.head() {
+            Expr::Const { name, .. } => match self.declar(name) {
+                Some(d) => d.ty(),
+                None => return false,
+            },
+            Expr::Var { idx, .. } => match doms.len().checked_sub(usize::from(idx) + 1) {
+                Some(i) => doms[i],
+                None => return false,
+            },
+            _ => return false,
+        };
+        strip_pis(ty, e.num_args())
+            .is_some_and(|s| matches!(*s, Expr::Sort { level, .. } if zero(level)))
+    }
+
     fn args_eq(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+        stat!(self, deq_args);
         let (K::Neu(_, ta), K::Neu(_, sa)) = (t.k, s.k) else {
             return Ok(false);
         };
@@ -479,6 +533,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         };
         if ta.is_empty() || ta.len() != sa.len() || !self.heads_eq(th, sh)? {
             return Ok(false);
+        }
+        if matches!(th, Head::Const(..)) {
+            return self.args_eq(t, s);
         }
         for i in 0..ta.len() {
             if !self.def_eq(ta[i], sa[i])? {

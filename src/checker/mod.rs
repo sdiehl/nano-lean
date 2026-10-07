@@ -6,6 +6,8 @@ mod defeq;
 mod inductive;
 mod native_inductive;
 pub use inductive::Adapter;
+#[cfg(feature = "vstats")]
+pub use inductive::BLOCKS;
 mod quot;
 #[cfg(test)]
 mod tests;

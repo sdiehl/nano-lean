@@ -1,8 +1,8 @@
 use super::value::*;
-use super::{R, Vc};
+use super::{R, Vc, stat};
 use crate::term::decl::{Constructor, Declar, Inductive};
 use crate::term::expr::Expr;
-use crate::term::ptr::{ExprPtr, LevelPtr, NamePtr};
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
@@ -85,9 +85,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             K::Pi(d, c) => {
                 let s1 = self.type_of(d)?;
                 let s1 = self.ensure_sort(s1)?;
-                let x = self.fresh_local(d);
-                let b = self.inst(c, x)?;
-                let s2 = self.type_of(b)?;
+                let saved = self.depth;
+                let x = self.binder_local(d);
+                let s2 = self.inst(c, x).and_then(|b| self.type_of(b));
+                self.depth = saved;
+                let s2 = s2?;
                 let s2 = self.ensure_sort(s2)?;
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
@@ -166,20 +168,37 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         only: bool,
     ) -> R<V<'t>> {
         self.tick()?;
+        if let Expr::Var { idx, .. } = *e {
+            let v = env
+                .get(idx)
+                .unwrap_or_else(|| reject!("unexpected bound variable"));
+            return match v.k {
+                K::Neu(Head::Local(_, ty), []) => Ok(ty),
+                _ => self.type_of(v),
+            };
+        }
         let closed = e.closed();
         let raw = (e, sub, env.key());
+        let mark = self.scoped;
         if closed {
-            if let Some(&t) = self.t.infer_closed[0].get(&(e, sub)) {
+            if let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub))
+                && self.within(s)
+            {
+                stat!(self, closed_hit);
+                if !s.is_empty() {
+                    self.scoped += 1;
+                }
                 return Ok(t);
             }
-            if only && let Some(&t) = self.t.infer_closed[1].get(&(e, sub)) {
+            stat!(self, closed_miss);
+            if only && let Some(&(t, _)) = self.t.infer_closed[1].get(&(e, sub)) {
                 return Ok(t);
             }
-        } else if let Some(&t) = self.t.infer_open[0].get(&raw).or(if only {
-            self.t.infer_open[1].get(&raw)
-        } else {
-            None
-        }) {
+        } else if let Some(&t) = self.t.infer_open[0].get(&raw) {
+            // Open entries do not record whether they met a parameter.
+            self.scoped += 1;
+            return Ok(t);
+        } else if only && let Some(&t) = self.t.infer_open[1].get(&raw) {
             return Ok(t);
         }
         let env = if closed {
@@ -191,14 +210,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         };
         if !closed && env.key() != raw.2 {
             let k = (e, sub, env.key());
-            let hit = self.t.infer_open[0]
-                .get(&k)
-                .or(if only {
-                    self.t.infer_open[1].get(&k)
-                } else {
-                    None
-                })
-                .copied();
+            let hit = match self.t.infer_open[0].get(&k) {
+                Some(&t) => {
+                    self.scoped += 1;
+                    Some(t)
+                }
+                None if only => self.t.infer_open[1].get(&k).copied(),
+                None => None,
+            };
             if let Some(t) = hit {
                 self.t.infer_open[usize::from(only)].insert(raw, t);
                 return Ok(t);
@@ -270,9 +289,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 if !only {
                     let s = self.infer(env, sub, ty, false)?;
                     self.ensure_sort(s)?;
-                    let x = self.fresh_local(dom);
+                    let saved = self.depth;
+                    let x = self.binder_local(dom);
                     let env1 = self.push(env, x);
-                    self.infer(env1, sub, body, false)?;
+                    let r = self.infer(env1, sub, body, false);
+                    self.depth = saved;
+                    r?;
                 }
                 self.mk(
                     K::Pi(
@@ -291,9 +313,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let s = self.infer(env, sub, ty, only)?;
                 let s1 = self.ensure_sort(s)?;
                 let dom = self.eval(env, sub, ty)?;
-                let x = self.fresh_local(dom);
+                let saved = self.depth;
+                let x = self.binder_local(dom);
                 let env1 = self.push(env, x);
-                let s = self.infer(env1, sub, body, only)?;
+                let s = self.infer(env1, sub, body, only);
+                self.depth = saved;
+                let s = s?;
                 let s2 = self.ensure_sort(s)?;
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
@@ -324,7 +349,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Expr::StrLit { .. } => self.literal_type(self.names.string)?,
         };
         if closed {
-            self.t.infer_closed[usize::from(only)].insert((e, sub), t);
+            let s = if only || self.scoped == mark {
+                LevelsPtr::new(&[])
+            } else {
+                self.uparams
+            };
+            self.t.infer_closed[usize::from(only)].insert((e, sub), (t, s));
         } else {
             self.t.infer_open[usize::from(only)].insert((e, sub, env.key()), t);
             if env.key() != raw.2 {

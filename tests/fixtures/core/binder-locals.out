@@ -1,0 +1,12 @@
+axiom A
+axiom a
+inductive Eq Eq.refl Eq.rec
+axiom k
+error: type mismatch:
+  expected: (forall (x : @A), (forall (y : @A), (((@Eq.{1} @A) x) y)))
+  inferred: (forall (_ : @A), (forall (_1 : @A), (((@Eq.{1} @A) _) _)))
+error: type mismatch:
+  expected: (((@Eq.{1} @A) _) _1)
+  inferred: (((@Eq.{1} @A) _) _)
+defined siblings
+defined twice

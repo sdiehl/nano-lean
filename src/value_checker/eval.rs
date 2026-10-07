@@ -15,37 +15,55 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, push_req);
         let k = (key(v), env.key());
         let open = v.open || env.open();
+        #[cfg(feature = "vstats")]
+        {
+            self.stats.push_open_req += u64::from(open);
+        }
         if let Some(&e) = self.t.envs[usize::from(open)].get(&k) {
             return e;
         }
         stat!(self, push_new);
+        #[cfg(feature = "vstats")]
+        {
+            self.stats.push_open_new += u64::from(open);
+        }
         let e = Env::new(self.ctx.arena.alloc(EnvObj::Node(EnvNode {
             head: v,
             tail: env,
             open,
             depth: env.depth() + 1,
             len: env.size() as u32 + 1,
+            prune: Cell::new((0, Env::EMPTY)),
         })));
         self.t.envs[usize::from(open)].insert(k, e);
         e
     }
 
+    /// Variables are read in place so the common lookup skips the call.
+    #[inline(always)]
     pub(crate) fn eval(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
         if let Expr::Var { idx, .. } = *e {
             return Ok(env
                 .get(idx)
                 .unwrap_or_else(|| reject!("unexpected bound variable")));
         }
+        self.eval_compound(env, sub, e)
+    }
+
+    fn eval_compound(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
         let closed = e.closed();
         let env = if closed { Env::EMPTY } else { env };
-        if let Some(&v) = if closed {
-            self.t.eval_closed.get(&(e, sub))
+        let h = match if closed {
+            self.t.eval_closed.probe(&(e, sub))
         } else {
-            self.t.eval_memo.get(&(e, sub, env.key()))
+            self.t.eval_memo.probe(&(e, sub, env.key()))
         } {
-            stat!(self, memo_hits);
-            return Ok(v);
-        }
+            Ok(&v) => {
+                stat!(self, memo_hits);
+                return Ok(v);
+            }
+            Err(h) => h,
+        };
         stat!(self, evals);
         #[cfg(feature = "vstats")]
         match *e {
@@ -79,12 +97,26 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     args.push(arg);
                     f = fun;
                 }
-                let fv = self.eval(env, sub, f)?;
+                // A constant head under the identity substitution is its own
+                // neutral, so the spine is interned without evaluating it.
+                let head = match *f {
+                    Expr::Const { name, levels, .. } if sub.is_id() => {
+                        Err(Head::Const(name, levels))
+                    }
+                    _ => Ok(self.eval(env, sub, f)?),
+                };
                 let mut vs = SmallVec::<[V<'t>; 8]>::with_capacity(args.len());
                 for &a in args.iter().rev() {
                     vs.push(self.eval(env, sub, a)?);
                 }
-                self.apply(fv, &vs)?
+                match head {
+                    Ok(fv) => self.apply(fv, &vs)?,
+                    Err(h) => {
+                        self.tick()?;
+                        let open = vs.iter().any(|a| a.open);
+                        self.neu(h, &[], &vs, open)
+                    }
+                }
             }
             Expr::Lam { ty, body, .. } => {
                 let env = self.trim(env, e);
@@ -145,10 +177,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Expr::StrLit { s, .. } => self.mk(K::Str(s.as_ref().s), false),
             Expr::Local { .. } => reject!("unexpected local in syntax"),
         };
+        // Evaluation never revisits its own key, so the probe's hash still fits.
         if closed {
-            self.t.eval_closed.insert((e, sub), v);
+            self.t.eval_closed.insert_new(h, (e, sub), v);
         } else {
-            self.t.eval_memo.insert((e, sub, env.key()), v);
+            self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
         }
         Ok(v)
     }
@@ -164,6 +197,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let n = usize::from(max) + 1;
         if len == n && env.size() == n && env.depth() <= SHALLOW {
             return env;
+        }
+        let mask = match sup {
+            Slots::Mask(m) => m,
+            Slots::Wide(_) => 0,
+        };
+        if mask != 0
+            && let Some(r) = env.pruned(mask)
+        {
+            return r;
         }
         let mut buf = SmallVec::<[V<'t>; 32]>::from_elem(self.dummy, n);
         let mut it = sup.peekable();
@@ -191,7 +233,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
         }
         ensure!(it.peek().is_none(), "unexpected bound variable");
-        self.frame(&buf)
+        let r = self.frame(&buf);
+        if mask != 0 {
+            env.set_pruned(mask, r);
+        }
+        r
     }
 
     fn frame(&mut self, vals: &[V<'t>]) -> Env<'t> {
@@ -203,7 +249,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         stat!(self, frame_new);
         let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
-        let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame { vals, open })));
+        let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame {
+            vals,
+            open,
+            prune: Cell::new((0, Env::EMPTY)),
+        })));
         self.t.frames[o].insert(super::Ptrs::new(vals), f);
         f
     }
@@ -288,13 +338,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                         }
                     }
                     let open = f.open || rest.iter().any(|a| a.open);
-                    let all = if sp.is_empty() {
-                        self.spine(rest)
-                    } else {
-                        let all: SmallVec<[V<'t>; 16]> = sp.iter().chain(rest).copied().collect();
-                        self.spine(&all)
-                    };
-                    return Ok(self.mk(K::Neu(h, all), open));
+                    return Ok(self.neu(h, sp, rest, open));
                 }
                 _ => reject!("expected a function"),
             }
@@ -305,10 +349,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// Loose bound variables of `e` in ascending order.
     pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Slots<'t> {
         #[cfg(debug_assertions)]
-        assert!(e.sup() == WIDE || Slots::Mask(e.sup()).eq(naive_support(e)));
+        if e.sup() != WIDE
+            && let Some(naive) = naive_support(e, &mut 4096)
+        {
+            assert!(Slots::Mask(e.sup()).eq(naive));
+        }
         match e.sup() {
-            WIDE => Slots::Wide(self.support_of(e).iter()),
-            m => Slots::Mask(m),
+            WIDE => {
+                stat!(self, sup_wide);
+                Slots::Wide(self.support_of(e).iter())
+            }
+            m => {
+                stat!(self, sup_mask);
+                Slots::Mask(m)
+            }
         }
     }
 
@@ -316,6 +370,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
         }
+        stat!(self, sup_wide_new);
         let mut slots = Vec::new();
         match *e {
             Expr::Var { idx, .. } => slots.push(idx),
@@ -394,29 +449,43 @@ impl Iterator for Slots<'_> {
     }
 }
 
+/// Reference support by tree walk, giving up after `fuel` nodes since shared
+/// DAGs expand exponentially.
 #[cfg(debug_assertions)]
-fn naive_support(e: ExprPtr<'_>) -> Vec<u16> {
-    let under = |b| {
-        naive_support(b)
-            .into_iter()
-            .filter_map(|i: u16| i.checked_sub(1))
-    };
+fn naive_support(e: ExprPtr<'_>, fuel: &mut u32) -> Option<Vec<u16>> {
+    *fuel = fuel.checked_sub(1)?;
     let mut out: Vec<u16> = match *e {
         _ if e.closed() => vec![],
         Expr::Var { idx, .. } => vec![idx],
-        Expr::App { fun, arg, .. } => [naive_support(fun), naive_support(arg)].concat(),
-        Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-            naive_support(ty).into_iter().chain(under(body)).collect()
+        Expr::App { fun, arg, .. } => {
+            [naive_support(fun, fuel)?, naive_support(arg, fuel)?].concat()
         }
-        Expr::Let { data, .. } => [naive_support(data.ty), naive_support(data.val)]
-            .concat()
-            .into_iter()
-            .chain(under(data.body))
-            .collect(),
-        Expr::Proj { e, .. } => naive_support(e),
+        Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
+            let mut v = naive_support(ty, fuel)?;
+            v.extend(
+                naive_support(body, fuel)?
+                    .into_iter()
+                    .filter_map(|i| i.checked_sub(1)),
+            );
+            v
+        }
+        Expr::Let { data, .. } => {
+            let mut v = [
+                naive_support(data.ty, fuel)?,
+                naive_support(data.val, fuel)?,
+            ]
+            .concat();
+            v.extend(
+                naive_support(data.body, fuel)?
+                    .into_iter()
+                    .filter_map(|i| i.checked_sub(1)),
+            );
+            v
+        }
+        Expr::Proj { e, .. } => naive_support(e, fuel)?,
         _ => vec![],
     };
     out.sort_unstable();
     out.dedup();
-    out
+    Some(out)
 }

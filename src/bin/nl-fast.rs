@@ -12,12 +12,18 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Arena bytes a value-core session may accumulate before it is reset.
 const SESSION_BYTES: usize = 64 << 20;
 
+unsafe extern "C" {
+    fn mi_option_set(option: i32, value: std::ffi::c_long);
+    fn mi_collect(force: bool);
+}
+
 fn main() {
-    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
+    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--only FILE] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
     let mut args = std::env::args().skip(1);
     let mut path = None;
     let mut threads = 1usize;
     let mut selected = None;
+    let mut only: Option<std::collections::HashSet<String>> = None;
     let mut limit = usize::MAX;
     let mut import_only = false;
     let mut trace = false;
@@ -40,6 +46,20 @@ fn main() {
             }
             "-j" | "--threads" => threads = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--declaration" => selected = Some(value(&mut args)),
+            "--only" => {
+                let file = value(&mut args);
+                let text = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                    eprintln!("{file}: {e}");
+                    std::process::exit(2)
+                });
+                only = Some(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(String::from)
+                        .collect(),
+                );
+            }
             "--limit" => limit = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--import-only" => import_only = true,
             "--trace" => trace = true,
@@ -67,11 +87,19 @@ fn main() {
     let arena = term::arena::Arena::new();
     let imported = match &path {
         Some(p) => import::import(&arena, p),
-        None => import::import_reader(
-            &arena,
-            std::io::BufReader::with_capacity(1 << 20, std::io::stdin().lock()),
-            0,
-        ),
+        None => {
+            use std::io::{BufRead, Read};
+            let mut stdin = std::io::stdin().lock();
+            if stdin.fill_buf().is_ok_and(import::blean::sniff) {
+                let mut bytes = Vec::new();
+                match stdin.read_to_end(&mut bytes) {
+                    Ok(_) => import::import_bytes(&arena, &bytes),
+                    Err(e) => Err(import::ImportError::Invalid(e.to_string())),
+                }
+            } else {
+                import::import_reader(&arena, stdin, 0)
+            }
+        }
     };
     let store = match imported {
         Ok(store) => store,
@@ -84,6 +112,13 @@ fn main() {
             std::process::exit(code);
         }
     };
+    // Return the import's freed buffers to the system, then keep freed pages from
+    // here on: they are reused by the next declaration.
+    // SAFETY: option 15 is mi_option_purge_delay; -1 disables purging.
+    unsafe {
+        mi_collect(true);
+        mi_option_set(15, -1);
+    }
     let s = store.stats;
     eprintln!(
         "import {:.2?} arena {} MiB, {} decls {} exprs {} names {} levels",
@@ -102,14 +137,16 @@ fn main() {
         .iter()
         .enumerate()
         .filter(|(_, d)| {
-            selected
-                .as_ref()
-                .is_none_or(|name| d.name().to_string() == *name)
+            (selected.is_none() && only.is_none()) || {
+                let name = d.name().to_string();
+                selected.as_ref().is_none_or(|s| name == *s)
+                    && only.as_ref().is_none_or(|set| set.contains(&name))
+            }
         })
         .take(limit)
         .map(|(i, _)| i as u32)
         .collect();
-    if selected.is_some() && indices.is_empty() {
+    if (selected.is_some() || only.is_some()) && indices.is_empty() {
         eprintln!("requested declaration not found");
         std::process::exit(2);
     }
@@ -203,6 +240,8 @@ fn main() {
                                 || r.is_err()
                                 || session.arena().allocated_bytes() > SESSION_BYTES
                             {
+                                #[cfg(feature = "vstats")]
+                                nano_lean::value_checker::RESETS.fetch_add(1, Relaxed);
                                 session.reset();
                             }
                             progress.inc(1);

@@ -85,13 +85,18 @@ pub struct EnvNode<'t> {
     pub depth: u32,
     /// Values in the whole environment.
     pub len: u32,
+    pub prune: Prune<'t>,
 }
 
 /// `vals[i]` is de Bruijn index `i`.
 pub struct Frame<'t> {
     pub vals: &'t [V<'t>],
     pub open: bool,
+    pub prune: Prune<'t>,
 }
+
+/// The last restriction of an environment to a slot mask.
+pub type Prune<'t> = Cell<(u32, Env<'t>)>;
 
 impl<'t> Env<'t> {
     pub const EMPTY: Self = Env(None);
@@ -109,6 +114,7 @@ impl<'t> Env<'t> {
         }
     }
 
+    #[inline]
     pub fn get(self, mut i: u16) -> Option<V<'t>> {
         let mut e = self;
         loop {
@@ -121,6 +127,28 @@ impl<'t> Env<'t> {
                 }
                 View::Frame(f) => return f.vals.get(usize::from(i)).copied(),
             }
+        }
+    }
+
+    #[inline]
+    fn prune(self) -> Option<&'t Prune<'t>> {
+        match self.view() {
+            View::Nil => None,
+            View::Node(n) => Some(&n.prune),
+            View::Frame(f) => Some(&f.prune),
+        }
+    }
+
+    /// The restriction to `mask` cached by `set_pruned`.
+    #[inline]
+    pub fn pruned(self, mask: u32) -> Option<Env<'t>> {
+        let (m, r) = self.prune()?.get();
+        (m == mask).then_some(r)
+    }
+
+    pub fn set_pruned(self, mask: u32, r: Env<'t>) {
+        if let Some(p) = self.prune() {
+            p.set((mask, r));
         }
     }
 

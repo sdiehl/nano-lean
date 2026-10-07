@@ -35,6 +35,7 @@ fn fixture_outcomes_match_the_term_checker() {
         "projection-prop.ndjson",
         "reduction.ndjson",
         "session-universe-scope.ndjson",
+        "session-universe-subset.ndjson",
         "smoke.ndjson",
         "theorem-reduction.ndjson",
         "valid-deep-sparse-scope.ndjson"

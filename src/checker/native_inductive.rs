@@ -8,6 +8,7 @@ use crate::term::expr::Expr;
 use crate::term::intern::Block;
 use crate::term::level::Level;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::value_checker::{RecCheck, check_recursor};
 use crate::{ensure, reject};
 
 fn spine(mut e: ExprPtr<'_>) -> (ExprPtr<'_>, Vec<ExprPtr<'_>>) {
@@ -78,6 +79,7 @@ impl<'t> Family<'t> {
 struct Shape<'t> {
     ctor: Constructor<'t>,
     fields: Vec<ExprPtr<'t>>,
+    levels: Vec<LevelPtr<'t>>,
     indices: Vec<ExprPtr<'t>>,
     owner: usize,
 }
@@ -88,16 +90,32 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.ensure_sort(s)
     }
 
+    /// The sort of a type already known to be well formed.
+    fn level_of(&mut self, e: ExprPtr<'t>) -> LevelPtr<'t> {
+        let s = self.infer(e, true);
+        self.ensure_sort(s)
+    }
+
+    /// Open a Pi telescope. Syntactic Pi bodies stay unsubstituted until a
+    /// non-Pi needs head normalisation, so each binder costs its domain only.
     fn telescope(&mut self, e: ExprPtr<'t>) -> (Vec<ExprPtr<'t>>, ExprPtr<'t>) {
         let mut e = self.whnf(e);
         let mut xs = Vec::new();
-        while let Expr::Pi { ty, body, .. } = *e {
-            let x = self.fresh_local(ty);
-            let b = self.ctx.inst(body, &[x]);
-            e = self.whnf(b);
-            xs.push(x);
+        let mut open = 0;
+        loop {
+            if let Expr::Pi { ty, body, .. } = *e {
+                let ty = self.ctx.inst(ty, &xs[xs.len() - open..]);
+                xs.push(self.fresh_local(ty));
+                open += 1;
+                e = body;
+            } else if open > 0 {
+                let b = self.ctx.inst(e, &xs[xs.len() - open..]);
+                e = self.whnf(b);
+                open = 0;
+            } else {
+                return (xs, e);
+            }
         }
-        (xs, e)
     }
 
     fn consume_params(&mut self, mut ty: ExprPtr<'t>, params: &[ExprPtr<'t>]) -> ExprPtr<'t> {
@@ -117,9 +135,32 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     /// Bind `xs` around `body`, the last becoming the innermost binder.
     fn bind(&mut self, xs: &[ExprPtr<'t>], body: ExprPtr<'t>, lam: bool) -> ExprPtr<'t> {
-        let mut b = self.ctx.abstract_locals(body, xs);
-        for i in (0..xs.len()).rev() {
-            let t = self.ctx.abstract_locals(local_ty(xs[i]), &xs[..i]);
+        self.bind_after(&[], xs, body, lam)
+    }
+
+    /// Each local's type abstracted over the locals before it.
+    fn binder_types(&mut self, xs: &[ExprPtr<'t>]) -> Vec<ExprPtr<'t>> {
+        (0..xs.len())
+            .map(|i| self.ctx.abstract_locals(local_ty(xs[i]), &xs[..i]))
+            .collect()
+    }
+
+    /// Bind `pre` then `xs` around `body`, where `pre_tys` is
+    /// `binder_types(pre)`, computed once for a shared prefix.
+    fn bind_after(
+        &mut self,
+        pre: &[(ExprPtr<'t>, ExprPtr<'t>)],
+        xs: &[ExprPtr<'t>],
+        body: ExprPtr<'t>,
+        lam: bool,
+    ) -> ExprPtr<'t> {
+        let all: Vec<_> = pre.iter().map(|p| p.0).chain(xs.iter().copied()).collect();
+        let mut b = self.ctx.abstract_locals(body, &all);
+        for i in (0..all.len()).rev() {
+            let t = match pre.get(i) {
+                Some(&(_, t)) => t,
+                None => self.ctx.abstract_locals(local_ty(all[i]), &all[..i]),
+            };
             b = if lam {
                 self.ctx.lam(t, b)
             } else {
@@ -210,12 +251,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         };
         let mut result_level = self.ctx.zero();
         let mut indices = Vec::new();
+        let wf: Vec<_> = types.iter().map(|t| RecCheck::Sort(t.info.ty)).collect();
+        let types_wf = self.vc_reject(&wf).is_none();
         for (i, t) in types.iter().enumerate() {
             ensure!(
                 t.info.uparams == ups && t.num_params == np && t.all == &all[..],
                 "inconsistent mutual inductive parameters"
             );
-            self.sort_of(t.info.ty);
+            if !types_wf {
+                self.sort_of(t.info.ty);
+            }
             let rest = if i == 0 {
                 let mut rest = t.info.ty;
                 for _ in 0..np {
@@ -250,6 +295,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             indices.push(is);
         }
         self.limit = b.types_end;
+        let wf: Vec<_> = ctors.iter().map(|c| RecCheck::Sort(c.info.ty)).collect();
+        let ctors_wf = self.vc_reject(&wf).is_none();
         let zero = self.ctx.is_zero(result_level);
         let mut shapes = Vec::new();
         let (mut recursive, mut reflexive) = (false, false);
@@ -265,16 +312,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                         && c.num_params == np,
                     "incorrect constructor metadata"
                 );
-                self.sort_of(c.info.ty);
+                if !ctors_wf {
+                    self.sort_of(c.info.ty);
+                }
                 let rest = self.consume_params(c.info.ty, &fam.params);
                 let (fields, ret) = self.telescope(rest);
                 ensure!(
                     fields.len() == usize::from(c.num_fields),
                     "incorrect constructor field count"
                 );
+                let mut levels = Vec::with_capacity(fields.len());
                 for &x in &fields {
                     let ty = local_ty(x);
-                    let l = self.sort_of(ty);
+                    let l = self.level_of(ty);
+                    levels.push(l);
                     ensure!(
                         zero || self.ctx.leq(l, result_level),
                         "constructor field universe exceeds inductive universe"
@@ -292,6 +343,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 shapes.push(Shape {
                     ctor: c,
                     fields,
+                    levels,
                     indices: args,
                     owner,
                 });
@@ -313,8 +365,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             false
         } else if let Some(s) = shapes.first() {
             let mut ok = true;
-            for &x in &s.fields {
-                let l = self.sort_of(local_ty(x));
+            for (&x, &l) in s.fields.iter().zip(&s.levels) {
                 ok &= self.ctx.is_zero(l) || s.indices.contains(&x);
             }
             ok
@@ -353,6 +404,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             majors.push(major);
         }
         let mut minors = Vec::new();
+        let mut recursive_fields = Vec::with_capacity(shapes.len());
         for s in &shapes {
             let c = self.ctx.konst(s.ctor.info.name, ups);
             let args: Vec<_> = fam.params.iter().chain(&s.fields).copied().collect();
@@ -360,17 +412,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             let args: Vec<_> = s.indices.iter().copied().chain([ctor]).collect();
             let conclusion = self.ctx.apps(motives[s.owner], &args);
             let mut xs = s.fields.clone();
+            let mut recs = Vec::new();
             for &x in &s.fields {
                 if let Some((ys, owner, args)) = self.recursive_field(&fam, local_ty(x)) {
                     let term = self.ctx.apps(x, &ys);
-                    let args: Vec<_> = args.into_iter().chain([term]).collect();
-                    let body = self.ctx.apps(motives[owner], &args);
+                    let margs: Vec<_> = args.iter().copied().chain([term]).collect();
+                    let body = self.ctx.apps(motives[owner], &margs);
                     let ih = self.bind(&ys, body, false);
                     xs.push(self.fresh_local(ih));
+                    recs.push((x, ys, owner, args));
                 }
             }
             let ty = self.bind(&xs, conclusion, false);
             minors.push(self.fresh_local(ty));
+            recursive_fields.push(recs);
         }
         let prefix: Vec<_> = fam
             .params
@@ -379,6 +434,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             .chain(&minors)
             .copied()
             .collect();
+        let prefix_tys = self.binder_types(&prefix);
+        let pre: Vec<_> = prefix.iter().copied().zip(prefix_tys).collect();
         let rec_str = self.ctx.string("rec");
         let rec_names: Vec<_> = all.iter().map(|&n| self.ctx.str_name(n, rec_str)).collect();
         for (owner, t) in types.iter().enumerate() {
@@ -401,10 +458,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 .chain([majors[owner]])
                 .collect();
             let result = self.ctx.apps(motives[owner], &tail);
-            let xs: Vec<_> = prefix.iter().copied().chain(tail).collect();
-            let want = self.bind(&xs, result, false);
-            self.sort_of(r.info.ty);
-            ensure!(self.def_eq(r.info.ty, want), "incorrect recursor type");
+            let want = self.bind_after(&pre, &tail, result, false);
+            self.recursor_checks(&[RecCheck::Type(r.info.ty, want)]);
             let mine: Vec<_> = shapes
                 .iter()
                 .enumerate()
@@ -413,33 +468,71 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             ensure!(r.rules.len() == mine.len(), "incorrect recursor rule count");
             let saved = self.limit;
             self.limit = b.end;
+            let mut checks = Vec::new();
             for (rule, (minor, s)) in r.rules.iter().zip(mine) {
-                ensure!(
-                    rule.ctor == s.ctor.info.name && usize::from(rule.nfields) == s.fields.len(),
-                    "incorrect recursor rule metadata"
-                );
+                if rule.ctor != s.ctor.info.name || usize::from(rule.nfields) != s.fields.len() {
+                    self.recursor_checks(&checks);
+                    reject!("incorrect recursor rule metadata");
+                }
                 let mut args = s.fields.clone();
-                for &x in &s.fields {
-                    if let Some((ys, target, idx)) = self.recursive_field(&fam, local_ty(x)) {
-                        let rc = self.ctx.konst(rec_names[target], rups);
-                        let term = self.ctx.apps(x, &ys);
-                        let a: Vec<_> = prefix.iter().copied().chain(idx).chain([term]).collect();
-                        let call = self.ctx.apps(rc, &a);
-                        args.push(self.bind(&ys, call, true));
-                    }
+                for (x, ys, target, idx) in &recursive_fields[minor] {
+                    let rc = self.ctx.konst(rec_names[*target], rups);
+                    let term = self.ctx.apps(*x, ys);
+                    let a: Vec<_> = prefix.iter().chain(idx).copied().chain([term]).collect();
+                    let call = self.ctx.apps(rc, &a);
+                    args.push(self.bind(ys, call, true));
                 }
                 let rhs = self.ctx.apps(minors[minor], &args);
-                let xs: Vec<_> = prefix.iter().chain(&s.fields).copied().collect();
-                let want = self.bind(&xs, rhs, true);
-                let wt = self.infer(want, false);
-                let at = self.infer(rule.rhs, false);
-                ensure!(self.def_eq(at, wt), "incorrect recursor computation rule");
-                ensure!(
-                    self.def_eq(rule.rhs, want),
-                    "incorrect recursor computation rule"
-                );
+                let want = self.bind_after(&pre, &s.fields, rhs, true);
+                checks.push(RecCheck::Rule(rule.rhs, want));
             }
+            self.recursor_checks(&checks);
             self.limit = saved;
+        }
+    }
+
+    /// Run obligations on the value checker; the index of the first it rejects.
+    fn vc_reject(&mut self, checks: &[RecCheck<'t>]) -> Option<usize> {
+        if checks.is_empty() {
+            return None;
+        }
+        let (limits, uparams, limit) = (self.limits, self.uparams, self.limit);
+        check_recursor(
+            &mut self.ctx,
+            limits,
+            &mut self.steps_left,
+            uparams,
+            limit,
+            checks,
+        )
+        .err()
+    }
+
+    /// Obligations go to the value checker; the term checker re-decides from
+    /// the first one it rejects, so rejections keep their reasons.
+    fn recursor_checks(&mut self, checks: &[RecCheck<'t>]) {
+        let Some(i) = self.vc_reject(checks) else {
+            return;
+        };
+        for &c in &checks[i..] {
+            match c {
+                RecCheck::Sort(ty) => {
+                    self.sort_of(ty);
+                }
+                RecCheck::Type(ty, want) => {
+                    self.sort_of(ty);
+                    ensure!(self.def_eq(ty, want), "incorrect recursor type");
+                }
+                RecCheck::Rule(rhs, want) => {
+                    let wt = self.infer(want, false);
+                    let at = self.infer(rhs, false);
+                    ensure!(self.def_eq(at, wt), "incorrect recursor computation rule");
+                    ensure!(
+                        self.def_eq(rhs, want),
+                        "incorrect recursor computation rule"
+                    );
+                }
+            }
         }
     }
 }

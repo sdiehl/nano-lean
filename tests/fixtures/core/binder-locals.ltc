@@ -1,0 +1,10 @@
+-- Nested binders with one domain never share a local; siblings may.
+axiom A : Type
+axiom a : A
+inductive Eq.{u} (B : Sort u) (b : B) : B -> Prop
+  | Eq.refl : Eq B b b
+axiom k : forall (x : A), forall (y : A), Eq.{1} A x y -> A
+theorem nested : forall (x : A), forall (y : A), Eq.{1} A x y := fun (x : A) => fun (y : A) => Eq.refl.{1} A x
+def inner : A -> A -> A := fun (x : A) => fun (y : A) => k x y (Eq.refl.{1} A x)
+def siblings : A := k (k a a (Eq.refl.{1} A a)) (k a a (Eq.refl.{1} A a)) (Eq.refl.{1} A (k a a (Eq.refl.{1} A a)))
+def twice : (A -> A) -> A -> A := fun (f : A -> A) => fun (x : A) => f ((fun (y : A) => y) ((fun (y : A) => f y) x))

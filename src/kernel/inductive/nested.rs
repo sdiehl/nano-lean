@@ -1,4 +1,5 @@
 use super::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 struct Auxiliary {
     name: String,
@@ -62,6 +63,68 @@ fn rewrite(e: &Expr, f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>) -> Resul
         Expr::Proj(n, i, v) => Expr::Proj(n.clone(), *i, Shared::new(rewrite(v, f)?)),
         other => other.clone(),
     })
+}
+
+type Memo = FxHashMap<usize, Shared<Expr>>;
+
+/// Rewrite under binders without opening them, once per shared node. Only for
+/// rewrites whose result does not depend on the binders above a term.
+fn rewrite_closed(
+    e: &Expr,
+    f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>,
+    memo: &mut Memo,
+) -> Result<Expr> {
+    fn shared(
+        e: &Shared<Expr>,
+        f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>,
+        memo: &mut Memo,
+    ) -> Result<Shared<Expr>> {
+        let key = e.as_ptr() as usize;
+        if let Some(r) = memo.get(&key) {
+            return Ok(r.clone());
+        }
+        let r = Shared::new(rewrite_closed(e, f, memo)?);
+        memo.insert(key, r.clone());
+        Ok(r)
+    }
+    fn binder(
+        b: &crate::syntax::Binder,
+        f: &mut impl FnMut(&Expr) -> Result<Option<Expr>>,
+        memo: &mut Memo,
+    ) -> Result<crate::syntax::Binder> {
+        Ok(bind(b.pattern().clone(), shared(b.body(), f, memo)?))
+    }
+    if let Some(replacement) = f(e)? {
+        return Ok(replacement);
+    }
+    Ok(match e {
+        Expr::App(a, b) => Expr::App(shared(a, f, memo)?, shared(b, f, memo)?),
+        Expr::Pi(ty, b) => Expr::Pi(shared(ty, f, memo)?, binder(b, f, memo)?),
+        Expr::Lam(ty, b) => Expr::Lam(shared(ty, f, memo)?, binder(b, f, memo)?),
+        Expr::Let(ty, v, b) => Expr::Let(
+            shared(ty, f, memo)?,
+            shared(v, f, memo)?,
+            binder(b, f, memo)?,
+        ),
+        Expr::Proj(n, i, v) => Expr::Proj(n.clone(), *i, shared(v, f, memo)?),
+        other => other.clone(),
+    })
+}
+
+fn has_binder(e: &Expr) -> bool {
+    match e {
+        Expr::Pi(..) | Expr::Lam(..) | Expr::Let(..) => true,
+        Expr::App(f, a) => has_binder(f) || has_binder(a),
+        Expr::Proj(_, _, v) => has_binder(v),
+        _ => false,
+    }
+}
+
+/// How `restore_expr` walks binders: opened, or closed with a flag raised
+/// when a substitution would carry loose bound variables under a binder.
+enum Walk<'a> {
+    Open,
+    Closed(&'a [bool], &'a mut bool),
 }
 
 impl NestedExpansion {
@@ -297,14 +360,41 @@ impl NestedExpansion {
         )))
     }
 
-    fn restore_expr(&self, e: &Expr) -> Result<Expr> {
-        rewrite(e, &mut |term| {
+    fn restore_expr(&self, e: &Expr, recs: &[String], names: &FxHashSet<&str>) -> Result<Expr> {
+        let binders: Vec<_> = self
+            .auxiliaries
+            .iter()
+            .map(|a| has_binder(&a.application))
+            .collect();
+        let mut loose = false;
+        let r = self.restore_walk(e, recs, names, &mut Walk::Closed(&binders, &mut loose))?;
+        if loose {
+            return self.restore_walk(e, recs, names, &mut Walk::Open);
+        }
+        Ok(r)
+    }
+
+    fn restore_walk(
+        &self,
+        e: &Expr,
+        recs: &[String],
+        names: &FxHashSet<&str>,
+        walk: &mut Walk,
+    ) -> Result<Expr> {
+        let f = |term: &Expr, walk: &mut Walk| -> Result<Option<Expr>> {
+            let mut head = term;
+            while let Expr::App(f, _) = head {
+                head = f;
+            }
+            if !matches!(head, Expr::Const(n, _) if names.contains(n.as_str())) {
+                return Ok(None);
+            }
             let (head, args) = spine(term);
             let Expr::Const(name, levels) = head else {
                 return Ok(None);
             };
             for (i, auxiliary) in self.auxiliaries.iter().enumerate() {
-                if name == rec_name(&auxiliary.name) {
+                if name == recs[i] {
                     // Rename the head only; ordinary traversal restores its arguments.
                     if args.is_empty() {
                         return Ok(Some(Expr::Const(
@@ -322,6 +412,16 @@ impl NestedExpansion {
                     args.len() >= self.params.len(),
                     "unsaturated nested auxiliary application",
                 )?;
+                if let Walk::Closed(binders, loose) = walk
+                    && binders[i]
+                    && args[..self.params.len()]
+                        .iter()
+                        .any(|a| a.support().has_loose_bound_vars())
+                {
+                    // Stop here: the opening walk redoes this term.
+                    **loose = true;
+                    return Ok(Some(term.clone()));
+                }
                 let level_subst = self.block.types[0]
                     .params
                     .iter()
@@ -343,12 +443,20 @@ impl NestedExpansion {
                 };
                 let tail = args[self.params.len()..]
                     .iter()
-                    .map(|a| self.restore_expr(a))
+                    .map(|a| self.restore_walk(a, recs, names, walk))
                     .collect::<Result<Vec<_>>>()?;
                 return Ok(Some(apply(restored, tail)));
             }
             Ok(None)
-        })
+        };
+        match walk {
+            Walk::Open => rewrite(e, &mut |t| f(t, &mut Walk::Open)),
+            Walk::Closed(binders, loose) => rewrite_closed(
+                e,
+                &mut |t| f(t, &mut Walk::Closed(binders, loose)),
+                &mut Memo::default(),
+            ),
+        }
     }
 
     pub fn restore(&self, mut generated: InductiveBlock) -> Result<InductiveBlock> {
@@ -358,24 +466,28 @@ impl NestedExpansion {
         generated.types.truncate(self.original_types);
         generated.constructors.truncate(self.original_constructors);
         let all: Vec<_> = generated.types.iter().map(|t| t.name.clone()).collect();
+        let recs: Vec<_> = self.auxiliaries.iter().map(|a| rec_name(&a.name)).collect();
+        let names: FxHashSet<&str> = self
+            .auxiliaries
+            .iter()
+            .flat_map(|a| std::iter::once(&a.name).chain(a.constructors.iter().map(|c| &c.0)))
+            .chain(&recs)
+            .map(String::as_str)
+            .collect();
         for t in &mut generated.types {
             t.all = all.clone();
         }
         for c in &mut generated.constructors {
-            c.ty = self.restore_expr(&c.ty)?;
+            c.ty = self.restore_expr(&c.ty, &recs, &names)?;
         }
         for r in &mut generated.recursors {
-            r.ty = self.restore_expr(&r.ty)?;
+            r.ty = self.restore_expr(&r.ty, &recs, &names)?;
             r.all = all.clone();
-            if let Some(i) = self
-                .auxiliaries
-                .iter()
-                .position(|a| rec_name(&a.name) == r.name)
-            {
+            if let Some(i) = recs.iter().position(|n| *n == r.name) {
                 r.name = append_name(&generated.types[0].name, &format!("rec_{}", i + 1));
             }
             for rule in &mut r.rules {
-                rule.rhs = self.restore_expr(&rule.rhs)?;
+                rule.rhs = self.restore_expr(&rule.rhs, &recs, &names)?;
                 for auxiliary in &self.auxiliaries {
                     if let Some((_, original)) = auxiliary
                         .constructors
