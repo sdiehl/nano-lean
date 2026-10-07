@@ -244,9 +244,17 @@ fn execute(
         Command::Axiom((n, ps), ty) => Declaration::Axiom(n, ps, resolve(ty)),
         Command::Define((n, ps), ty, v) => Declaration::Definition(n, ps, resolve(ty), resolve(v)),
         Command::Theorem((n, ps), ty, v) => Declaration::Theorem(n, ps, resolve(ty), resolve(v)),
-        Command::Inductive(signature, binders, ty, ctors) => Declaration::Inductive(
-            env.complete_inductive(&inductive(signature, binders, ty, ctors))?,
-        ),
+        Command::Inductive(signature, binders, ty, ctors) => {
+            let block = inductive(signature, binders, ty, ctors);
+            match env.complete_inductive(&block) {
+                Ok(block) => Declaration::Inductive(block),
+                Err(e) => {
+                    // Submitted as written, with no recursor, so every checker sees it.
+                    submitted.push(Declaration::Inductive(block));
+                    return Err(e);
+                }
+            }
+        }
         Command::InitQuot => Declaration::Quotient,
         command => return query(command, env),
     };

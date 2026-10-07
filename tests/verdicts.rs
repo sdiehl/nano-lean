@@ -55,3 +55,26 @@ fn checkers_agree_with_golden_verdicts() {
         "verdict mismatch (BLESS=1 to update): {failed:?}"
     );
 }
+
+/// Each declaration a core script submits, checked on top of the ones the
+/// reference kernel accepted before it, so every rejection in a script (not
+/// just the first) must be shared by all checkers.
+#[test]
+fn every_rejection_is_shared() {
+    let mut failed = Vec::new();
+    for path in sources("tests/fixtures/core", "ltc") {
+        let source = fs::read_to_string(&path).unwrap();
+        let mut accepted = Vec::new();
+        for d in parser::declarations(&source).unwrap() {
+            accepted.push(d);
+            let verdicts = verdict::check(&emit::ndjson(&accepted).unwrap(), Limits::default());
+            if !verdicts.agree() {
+                failed.push(format!("{}\n{verdicts}", path.display()));
+            }
+            if !verdicts.reference.accepted() {
+                accepted.pop();
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}

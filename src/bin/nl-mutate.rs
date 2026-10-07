@@ -79,7 +79,7 @@ fn main() -> ExitCode {
     let (mut tried, mut findings) = (0, 0);
     let mut tally: BTreeMap<(&str, String), usize> = BTreeMap::new();
     for &op in &o.ops {
-        let mut candidates = mutate::mutants(&lines, op, &mut rng);
+        let mut candidates = mutate::mutants(&lines, op);
         while candidates.len() > o.per_op {
             candidates.swap_remove(rng.below(candidates.len()));
         }

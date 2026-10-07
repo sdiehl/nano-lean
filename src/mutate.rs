@@ -242,6 +242,7 @@ pub const OPERATORS: &[&str] = &[
     "drop-decl",
     "swap-decls",
     "retarget-expr",
+    "unfold",
     "level-op",
     "nat-literal",
     "hints",
@@ -284,8 +285,119 @@ fn walk(v: &Value, ptr: &mut String, f: &mut impl FnMut(&str, &str, &Value)) {
     }
 }
 
+/// Expressions grouped by type, as far as the export shows it without
+/// inference: constants whose declarations share a type expression and level
+/// parameters, instantiated alike, and literals of one kind. Types and type
+/// formers are left out, since swapping `Nat` for `Bool` only breaks what
+/// follows.
+fn same_type(lines: &[Value]) -> BTreeMap<u64, Vec<u64>> {
+    let exprs = expressions(lines);
+    let former = |mut ty: u64| loop {
+        match exprs.get(&ty) {
+            Some(e) if e.get("sort").is_some() => return true,
+            Some(e) if e.get("forallE").is_some() => ty = e["forallE"]["body"].as_u64().unwrap(),
+            _ => return false,
+        }
+    };
+    let mut declared = BTreeMap::new();
+    let mut note = |d: &Value| {
+        if let (Some(name), Some(ty)) = (d["name"].as_u64(), d["type"].as_u64())
+            && !former(ty)
+        {
+            declared.insert(name, format!("{ty}{}", d["levelParams"]));
+        }
+    };
+    for line in lines.iter().filter(|l| is_declaration(l)) {
+        let Some((kind, body)) = line.as_object().and_then(|o| o.iter().next()) else {
+            continue;
+        };
+        if kind == "inductive" {
+            ["types", "ctors", "recs"]
+                .iter()
+                .flat_map(|s| body[s].as_array().into_iter().flatten())
+                .for_each(&mut note);
+        } else {
+            note(body);
+        }
+    }
+    let mut classes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for line in lines {
+        let Some((Ref::Expr, id)) = defines(line) else {
+            continue;
+        };
+        let class = if let Some(c) = line.get("const") {
+            c["name"]
+                .as_u64()
+                .and_then(|n| declared.get(&n))
+                .map(|ty| format!("{ty}{}", c["us"]))
+        } else {
+            ["natVal", "strVal"]
+                .into_iter()
+                .find(|k| line.get(k).is_some())
+                .map(str::to_owned)
+        };
+        if let Some(class) = class {
+            classes.entry(class).or_default().push(id);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for ids in classes.into_values().filter(|ids| ids.len() > 1) {
+        for &id in &ids {
+            out.insert(id, ids.clone());
+        }
+    }
+    out
+}
+
+fn expressions(lines: &[Value]) -> BTreeMap<u64, &Value> {
+    lines
+        .iter()
+        .filter_map(|l| match defines(l) {
+            Some((Ref::Expr, id)) => Some((id, l)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Bodies of monomorphic, transparent definitions and theorems, by name.
+/// The `Nat` and `String` namespaces are left folded: kernels accelerate
+/// those constants by name, and unfolding one turns a literal operation into
+/// unary recursion.
+fn bodies(lines: &[Value]) -> BTreeMap<u64, u64> {
+    let mut root = BTreeMap::from([(0, String::new())]);
+    for line in lines {
+        let Some((Ref::Name, id)) = defines(line) else {
+            continue;
+        };
+        let (pre, part) = match (line.get("str"), line.get("num")) {
+            (Some(s), _) => (&s["pre"], s["str"].as_str().unwrap_or("").to_owned()),
+            (_, Some(n)) => (&n["pre"], n["i"].to_string()),
+            _ => continue,
+        };
+        let first = match pre.as_u64().and_then(|p| root.get(&p)) {
+            Some(r) if !r.is_empty() => r.clone(),
+            _ => part,
+        };
+        root.insert(id, first);
+    }
+    let mut out = BTreeMap::new();
+    for line in lines {
+        let d = match (line.get("def"), line.get("thm")) {
+            (Some(d), _) if d["safety"] == "safe" && d["hints"] != "opaque" => d,
+            (_, Some(t)) => t,
+            _ => continue,
+        };
+        let name = d["name"].as_u64().unwrap();
+        let accelerated = matches!(root.get(&name).map(String::as_str), Some("Nat" | "String"));
+        if d["levelParams"].as_array().is_some_and(Vec::is_empty) && !accelerated {
+            out.insert(name, d["value"].as_u64().unwrap());
+        }
+    }
+    out
+}
+
 /// Every mutant of one operator, in file order.
-pub fn mutants(lines: &[Value], op: &'static str, rng: &mut Rng) -> Vec<Mutant> {
+pub fn mutants(lines: &[Value], op: &'static str) -> Vec<Mutant> {
     use Expect::*;
     let mut out = Vec::new();
     let mut push = |expect, edit| out.push(Mutant { op, expect, edit });
@@ -297,6 +409,16 @@ pub fn mutants(lines: &[Value], op: &'static str, rng: &mut Rng) -> Vec<Mutant> 
             .map(|(_, id)| id)
             .max()
             .unwrap_or(0)
+    };
+    let peers = if op == "retarget-expr" {
+        same_type(lines)
+    } else {
+        BTreeMap::new()
+    };
+    let (exprs, bodies) = if op == "unfold" {
+        (expressions(lines), bodies(lines))
+    } else {
+        Default::default()
     };
     let decls: Vec<usize> = (0..lines.len())
         .filter(|&i| is_declaration(&lines[i]))
@@ -361,15 +483,30 @@ pub fn mutants(lines: &[Value], op: &'static str, rng: &mut Rng) -> Vec<Mutant> 
             "retarget-expr" => {
                 let bound = match defines(line) {
                     Some((Ref::Expr, id)) => id,
-                    _ => max(Ref::Expr) + 1,
+                    _ => u64::MAX,
                 };
                 for (kind, ptr) in refs(line) {
-                    if kind == Ref::Expr && bound > 1 {
-                        let old = line.pointer(&ptr).unwrap().as_u64().unwrap();
-                        let new = rng.below(bound as usize) as u64;
-                        if new != old {
-                            push(Agree, Edit::Set(i, ptr, json!(new)));
+                    let old = line.pointer(&ptr).unwrap().as_u64().unwrap();
+                    if kind != Ref::Expr {
+                        continue;
+                    }
+                    for &new in peers.get(&old).into_iter().flatten() {
+                        if new != old && new < bound {
+                            push(Agree, Edit::Set(i, ptr.clone(), json!(new)));
                         }
+                    }
+                }
+            }
+            "unfold" if line.get("const").is_some() => {
+                let id = line["ie"].as_u64().unwrap();
+                let body = line["const"]["name"].as_u64().and_then(|n| bodies.get(&n));
+                if let Some(body) = body.and_then(|b| exprs.get(b)) {
+                    let mut copy = (*body).clone();
+                    copy["ie"] = json!(id);
+                    if refs(&copy).iter().all(|(kind, ptr)| {
+                        *kind != Ref::Expr || copy.pointer(ptr).unwrap().as_u64().unwrap() < id
+                    }) {
+                        push(Same, Edit::Replace(i, copy));
                     }
                 }
             }

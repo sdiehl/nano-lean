@@ -22,7 +22,7 @@ fn seeded_sweep_finds_nothing() {
         let lines = fixture(name);
         let baseline = mutate::check(&lines, Limits::default());
         for op in OPERATORS {
-            let mut candidates = mutate::mutants(&lines, op, &mut rng);
+            let mut candidates = mutate::mutants(&lines, op);
             while candidates.len() > 8 {
                 candidates.swap_remove(rng.below(candidates.len()));
             }
