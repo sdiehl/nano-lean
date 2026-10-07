@@ -109,6 +109,10 @@ jobs:
         run: |
           {
             echo '### Mathlib'
+            if [[ -f .ci/mathlib-report/wall.txt ]]; then
+              echo "**$(cat .ci/mathlib-report/wall.txt)**"
+              echo
+            fi
             echo 'Lean 4.34.1 Mathlib; value core (nl-fast default); one worker; 200M steps and 2 GiB arena per declaration; 11 GiB OS limit; 45 minute runtime cap.'
             echo 'olean-export 0.1.0; 14 GiB export OS limit; cache hits skip generation.'
             echo 'Export coverage must match the pinned 718,577 declaration names.'

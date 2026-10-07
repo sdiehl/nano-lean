@@ -241,6 +241,7 @@ completed = 0
 pending = None
 summary = None
 error = None
+timing = {}
 with (report / 'trace.log').open() as source:
     for line in source:
         if line.startswith('start '):
@@ -254,12 +255,18 @@ with (report / 'trace.log').open() as source:
                 error = 'Missing, repeated or out-of-order declaration completion'
             pending = None
             completed += 1
+        elif line.startswith('import '):
+            match = re.match(r'import ([0-9.]+)s', line)
+            if match:
+                timing['import_seconds'] = float(match.group(1))
         elif line.startswith('experimental checks '):
             match = re.fullmatch(
                 r'experimental checks (.+): (\d+) attempted, (\d+) failures, (\d+) fallbacks\n?', line)
             if match:
                 summary = dict(zip(('attempted', 'failures', 'fallbacks'),
                                    map(int, match.groups()[1:])))
+                if match.group(1).endswith('s'):
+                    timing['check_seconds'] = float(match.group(1)[:-1])
 if (status != 0 or completed != expected_count or pending is not None
         or summary != {'attempted': expected_count, 'failures': 0, 'fallbacks': 0}
         or (report / 'failures.log').stat().st_size):
@@ -273,6 +280,15 @@ result = {
 }
 if error:
     result['error'] = error
+time_file = report / 'time.txt'
+if time_file.exists():
+    for line in time_file.read_text().splitlines():
+        if 'Elapsed (wall clock) time' in line:
+            seconds = 0.0
+            for part in line.rsplit(' ', 1)[1].split(':'):
+                seconds = seconds * 60 + float(part)
+            timing['wall_seconds'] = seconds
+result.update(timing)
 result['instruction_measurement'] = {'status': 'unavailable'}
 perf_file = report / 'perf.jsonl'
 if perf_file.exists():
@@ -298,6 +314,13 @@ if perf_file.exists():
             continue
 (report / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps(result))
+if 'wall_seconds' in timing:
+    wall = timing['wall_seconds']
+    line = f'Wall time {int(wall // 60)}m {wall % 60:.1f}s'
+    if 'import_seconds' in timing and 'check_seconds' in timing:
+        line += f" (import {timing['import_seconds']:.1f}s, check {timing['check_seconds']:.1f}s)"
+    print(line)
+    (report / 'wall.txt').write_text(line + '\n')
 if error:
     raise SystemExit(1)
 PYRESULT
