@@ -9,6 +9,18 @@ macro_rules! fixtures {
 #[test]
 fn fixture_outcomes_match_the_term_checker() {
     let all = fixtures!(
+        "frame-missing-binder-63.ndjson",
+        "frame-missing-binder-64.ndjson",
+        "frame-missing-binder-65.ndjson",
+        "frame-missing-binder-70.ndjson",
+        "frame-valid-63.ndjson",
+        "frame-valid-64.ndjson",
+        "frame-valid-65.ndjson",
+        "frame-valid-70.ndjson",
+        "frame-wrong-value-63.ndjson",
+        "frame-wrong-value-64.ndjson",
+        "frame-wrong-value-65.ndjson",
+        "frame-wrong-value-70.ndjson",
         "foundations.ndjson",
         "inductive-boundaries.ndjson",
         "invalid-loose-bvar.ndjson",

@@ -88,19 +88,27 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn same_env(&self, mut a: Env<'t>, mut b: Env<'t>, fuel: &mut u32) -> bool {
         loop {
-            match (a.0, b.0) {
-                (None, None) => return true,
-                (Some(x), Some(y)) => {
-                    if std::ptr::eq(x, y) {
-                        return true;
-                    }
+            if a.key() == b.key() {
+                return true;
+            }
+            match (a, b) {
+                (Env::Node(x), Env::Node(y)) => {
                     if !self.same(x.head, y.head, fuel) {
                         return false;
                     }
                     a = x.tail;
                     b = y.tail;
                 }
-                _ => return false,
+                _ => {
+                    let (mut i, mut j) = (a.iter(), b.iter());
+                    loop {
+                        match (i.next(), j.next()) {
+                            (None, None) => return true,
+                            (Some(x), Some(y)) if self.same(x, y, fuel) => {}
+                            _ => return false,
+                        }
+                    }
+                }
             }
         }
     }

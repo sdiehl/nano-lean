@@ -1,0 +1,3 @@
+reference: rejected: line 151: unbound variable: #71.0
+fast: rejected: frameIdentity70_missing-binder: unexpected bound variable
+value: rejected: frameIdentity70_missing-binder: unexpected bound variable

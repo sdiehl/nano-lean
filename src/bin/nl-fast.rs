@@ -13,7 +13,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const SESSION_BYTES: usize = 64 << 20;
 
 fn main() {
-    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--value-core] [--declaration NAME] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
+    const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
     let mut args = std::env::args().skip(1);
     let mut path = None;
     let mut threads = 1usize;
@@ -22,8 +22,11 @@ fn main() {
     let mut import_only = false;
     let mut trace = false;
     let mut native_only = true;
-    let mut value_core = false;
-    let mut limits = checker::Limits::default();
+    let mut value_core = true;
+    let mut limits = checker::Limits {
+        steps: 200_000_000,
+        arena_bytes: 2048 << 20,
+    };
     let usage = || -> ! {
         eprintln!("{USAGE}");
         std::process::exit(2)
@@ -41,7 +44,7 @@ fn main() {
             "--import-only" => import_only = true,
             "--trace" => trace = true,
             "--fallback" => native_only = false,
-            "--value-core" => value_core = true,
+            "--term-core" => value_core = false,
             "--steps" => limits.steps = value(&mut args).parse().unwrap_or_else(|_| usage()),
             "--arena-mib" => {
                 limits.arena_bytes = value(&mut args)
@@ -246,6 +249,8 @@ fn main() {
             b[2].load(Relaxed),
             b[3].load(Relaxed)
         );
+        #[cfg(feature = "vstats")]
+        nano_lean::value_checker::report();
     }
     if exit.load(Relaxed) != 0 {
         std::process::exit(exit.load(Relaxed) as i32);

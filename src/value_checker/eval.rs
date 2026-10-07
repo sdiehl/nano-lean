@@ -7,18 +7,25 @@ use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
 
+/// Node chains up to this depth are kept as they are when dense.
+const SHALLOW: u32 = 8;
+
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn push(&mut self, env: Env<'t>, v: V<'t>) -> Env<'t> {
+        stat!(self, push_req);
         let k = (key(v), env.key());
         let open = v.open || env.open();
         if let Some(&e) = self.t.envs[usize::from(open)].get(&k) {
             return e;
         }
-        let e = Env(Some(&*self.ctx.arena.alloc(EnvNode {
+        stat!(self, push_new);
+        let e = Env::Node(self.ctx.arena.alloc(EnvNode {
             head: v,
             tail: env,
             open,
-        })));
+            depth: env.depth() + 1,
+            len: env.size() as u32 + 1,
+        }));
         self.t.envs[usize::from(open)].insert(k, e);
         e
     }
@@ -40,6 +47,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(v);
         }
         stat!(self, evals);
+        #[cfg(feature = "vstats")]
+        match *e {
+            Expr::App { .. } => self.stats.ev_app += 1,
+            Expr::Lam { .. } => self.stats.ev_lam += 1,
+            Expr::Pi { .. } => self.stats.ev_pi += 1,
+            Expr::Let { .. } => self.stats.ev_let += 1,
+            _ => self.stats.ev_other += 1,
+        }
         self.work();
         let v = match *e {
             Expr::Var { idx, .. } => env
@@ -141,36 +156,56 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// Keep only the slots `e` reads, so closures equal up to unused
     /// captures share one value.
     pub(crate) fn trim(&mut self, env: Env<'t>, e: ExprPtr<'t>) -> Env<'t> {
+        stat!(self, trims);
         let sup = self.support_of(e);
         let Some(&max) = sup.last() else {
             return Env::EMPTY;
         };
-        if sup.len() == usize::from(max) + 1 {
+        let n = usize::from(max) + 1;
+        if sup.len() == n && env.size() == n && env.depth() <= SHALLOW {
             return env;
         }
-        let mut vals = [self.dummy; 64];
-        let mut keep = Vec::new();
-        let vals: &mut [V<'t>] = if max < 64 {
-            &mut vals[..=usize::from(max)]
-        } else {
-            keep.resize(usize::from(max) + 1, self.dummy);
-            &mut keep
-        };
-        let (mut node, mut i, mut it) = (env.0, 0u16, sup.iter().peekable());
-        while let (Some(n), Some(&&j)) = (node, it.peek()) {
-            if i == j {
-                vals[usize::from(i)] = n.head;
-                it.next();
+        let mut buf = SmallVec::<[V<'t>; 32]>::from_elem(self.dummy, n);
+        let mut it = sup.iter().copied().peekable();
+        let mut e = env;
+        let mut at = 0u16;
+        while let Some(&j) = it.peek() {
+            match e {
+                Env::Nil => break,
+                Env::Node(node) => {
+                    if j == at {
+                        buf[usize::from(j)] = node.head;
+                        it.next();
+                    }
+                    e = node.tail;
+                    at += 1;
+                }
+                Env::Frame(f) => {
+                    for j in it.by_ref() {
+                        match f.vals.get(usize::from(j - at)) {
+                            Some(&v) => buf[usize::from(j)] = v,
+                            None => reject!("unexpected bound variable"),
+                        }
+                    }
+                }
             }
-            node = n.tail.0;
-            i += 1;
         }
         ensure!(it.peek().is_none(), "unexpected bound variable");
-        let mut out = Env::EMPTY;
-        for &v in vals.iter().rev() {
-            out = self.push(out, v);
+        self.frame(&buf)
+    }
+
+    fn frame(&mut self, vals: &[V<'t>]) -> Env<'t> {
+        stat!(self, frame_req);
+        let open = vals.iter().any(|v| v.open);
+        let o = usize::from(open);
+        if let Some(&f) = self.t.frames[o].get(super::Ptrs::new(vals)) {
+            return Env::Frame(f);
         }
-        out
+        stat!(self, frame_new);
+        let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
+        let f = &*self.ctx.arena.alloc(Frame { vals, open });
+        self.t.frames[o].insert(super::Ptrs::new(vals), f);
+        Env::Frame(f)
     }
 
     /// A projection value, reduced when the structure is already a constructor application.
@@ -218,15 +253,47 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         while i < args.len() {
             self.tick()?;
             match f.k {
+                K::Lam(_, c) if !c.typed => {
+                    // Bind successive arguments through nested lambdas and
+                    // evaluate the innermost body once, skipping the
+                    // intermediate closures.
+                    stat!(self, applies);
+                    stat!(self, beta_runs);
+                    let (mut env, mut body) = (self.push(c.env, args[i]), c.body);
+                    i += 1;
+                    while i < args.len()
+                        && let Expr::Lam { body: b, .. } = *body
+                    {
+                        self.tick()?;
+                        stat!(self, beta_chain);
+                        env = self.push(env, args[i]);
+                        body = b;
+                        i += 1;
+                    }
+                    f = self.eval(env, c.sub, body)?;
+                }
                 K::Lam(_, c) => {
                     f = self.inst(c, args[i])?;
                     i += 1;
                 }
                 K::Neu(h, sp) => {
+                    stat!(self, beta_neu);
                     let rest = &args[i..];
+                    #[cfg(feature = "vstats")]
+                    {
+                        self.stats.spine_old += sp.len() as u64;
+                        self.stats.spine_new_args += rest.len() as u64;
+                        if sp.is_empty() {
+                            self.stats.spine_empty_prefix += 1;
+                        }
+                    }
                     let open = f.open || rest.iter().any(|a| a.open);
-                    let all: SmallVec<[V<'t>; 16]> = sp.iter().chain(rest).copied().collect();
-                    let all = self.spine(&all);
+                    let all = if sp.is_empty() {
+                        self.spine(rest)
+                    } else {
+                        let all: SmallVec<[V<'t>; 16]> = sp.iter().chain(rest).copied().collect();
+                        self.spine(&all)
+                    };
                     return Ok(self.mk(K::Neu(h, all), open));
                 }
                 _ => reject!("expected a function"),

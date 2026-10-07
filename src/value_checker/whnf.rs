@@ -298,6 +298,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn nat(&mut self, n: BigUint) -> V<'t> {
+        stat!(self, nat_req);
         if let Some(&v) = self.t.nats.get(&n) {
             return v;
         }

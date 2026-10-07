@@ -61,36 +61,95 @@ impl Sub<'_> {
     }
 }
 
+/// Bound values, innermost first: cheap pushes over an interned frame that
+/// closures capture and index directly.
 #[derive(Clone, Copy)]
-pub struct Env<'t>(pub Option<&'t EnvNode<'t>>);
+pub enum Env<'t> {
+    Nil,
+    Node(&'t EnvNode<'t>),
+    Frame(&'t Frame<'t>),
+}
 
 pub struct EnvNode<'t> {
     pub head: V<'t>,
     pub tail: Env<'t>,
     pub open: bool,
+    /// Nodes above the nearest frame, including this one.
+    pub depth: u32,
+    /// Values in the whole environment.
+    pub len: u32,
+}
+
+/// `vals[i]` is de Bruijn index `i`.
+pub struct Frame<'t> {
+    pub vals: &'t [V<'t>],
+    pub open: bool,
 }
 
 impl<'t> Env<'t> {
-    pub const EMPTY: Self = Env(None);
+    pub const EMPTY: Self = Env::Nil;
 
     pub fn get(self, mut i: u16) -> Option<V<'t>> {
-        let mut e = self.0;
-        while let Some(n) = e {
-            if i == 0 {
-                return Some(n.head);
+        let mut e = self;
+        loop {
+            match e {
+                Env::Nil => return None,
+                Env::Node(n) if i == 0 => return Some(n.head),
+                Env::Node(n) => {
+                    i -= 1;
+                    e = n.tail;
+                }
+                Env::Frame(f) => return f.vals.get(usize::from(i)).copied(),
             }
-            i -= 1;
-            e = n.tail.0;
         }
-        None
     }
 
     pub fn open(self) -> bool {
-        self.0.is_some_and(|n| n.open)
+        match self {
+            Env::Nil => false,
+            Env::Node(n) => n.open,
+            Env::Frame(f) => f.open,
+        }
+    }
+
+    pub fn depth(self) -> u32 {
+        match self {
+            Env::Node(n) => n.depth,
+            _ => 0,
+        }
+    }
+
+    pub fn size(self) -> usize {
+        match self {
+            Env::Nil => 0,
+            Env::Node(n) => n.len as usize,
+            Env::Frame(f) => f.vals.len(),
+        }
     }
 
     pub fn key(self) -> usize {
-        self.0.map_or(0, |n| n as *const EnvNode as usize)
+        match self {
+            Env::Nil => 0,
+            Env::Node(n) => n as *const EnvNode as usize,
+            Env::Frame(f) => f as *const Frame as usize,
+        }
+    }
+
+    /// All values, innermost first.
+    pub fn iter(self) -> impl Iterator<Item = V<'t>> {
+        let mut e = self;
+        let mut at = 0;
+        std::iter::from_fn(move || match e {
+            Env::Nil => None,
+            Env::Node(n) => {
+                e = n.tail;
+                Some(n.head)
+            }
+            Env::Frame(f) => {
+                at += 1;
+                f.vals.get(at - 1).copied()
+            }
+        })
     }
 }
 

@@ -59,6 +59,7 @@ struct Tables<'t> {
     hc: [FxHashMap<HKey<'t>, V<'t>>; 2],
     spines: [FxHashSet<&'t Ptrs<'t>>; 2],
     envs: [FxHashMap<(usize, usize), Env<'t>>; 2],
+    frames: [FxHashMap<&'t Ptrs<'t>, &'t Frame<'t>>; 2],
     lazies: [FxHashMap<(usize, Sub<'t>, ExprPtr<'t>), &'t Lazy<'t>>; 2],
     nats: FxHashMap<num_bigint::BigUint, V<'t>>,
 }
@@ -137,6 +138,8 @@ impl Tables<'_> {
             self.spines[1],
             self.envs[0],
             self.envs[1],
+            self.frames[0],
+            self.frames[1],
             self.lazies[0],
             self.lazies[1]
         );
@@ -204,17 +207,67 @@ struct Vc<'t, 'a: 't> {
     pub unfolded: FxHashMap<crate::term::ptr::NamePtr<'t>, u64>,
 }
 
+macro_rules! stats {
+    ($($f:ident),*) => {
+        #[cfg(feature = "vstats")]
+        #[derive(Default, Clone, Copy, Debug)]
+        pub struct Stats {
+            $(pub $f: u64,)*
+        }
+
+        #[cfg(feature = "vstats")]
+        impl Stats {
+            fn add(&mut self, o: &Self) {
+                $(self.$f += o.$f;)*
+            }
+        }
+    };
+}
+
+stats!(
+    vals,
+    evals,
+    applies,
+    whnfs,
+    unfolds,
+    memo_hits,
+    probes,
+    exhausted,
+    ev_app,
+    ev_lam,
+    ev_pi,
+    ev_let,
+    ev_other,
+    mk_req,
+    push_req,
+    push_new,
+    spine_req,
+    spine_new,
+    spine_copied,
+    beta_chain,
+    beta_neu,
+    trims,
+    beta_runs,
+    spine_old,
+    spine_new_args,
+    spine_hashed,
+    nat_req,
+    spine_empty_prefix,
+    frame_req,
+    frame_new
+);
+
+/// Totals over every declaration checked by a session, for `NL_VSTATS`.
 #[cfg(feature = "vstats")]
-#[derive(Default, Clone, Copy, Debug)]
-pub struct Stats {
-    pub vals: u64,
-    pub evals: u64,
-    pub applies: u64,
-    pub whnfs: u64,
-    pub unfolds: u64,
-    pub memo_hits: u64,
-    pub probes: u64,
-    pub exhausted: u64,
+pub static TOTAL: std::sync::Mutex<Option<Stats>> = std::sync::Mutex::new(None);
+
+#[cfg(feature = "vstats")]
+pub fn report() {
+    if std::env::var_os("NL_VSTATS").is_some()
+        && let Some(s) = *TOTAL.lock().unwrap()
+    {
+        eprintln!("vstats total {s:?}");
+    }
 }
 
 macro_rules! stat {
@@ -309,6 +362,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             K::Nat(n) => return self.nat(n.clone()),
             K::Str(x) => HKey::Str(x.as_ptr() as usize, x.len()),
         };
+        stat!(self, mk_req);
         let hc = &mut self.t.hc[usize::from(open)];
         if let Some(&v) = hc.get(&hk) {
             return v;
@@ -320,11 +374,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn spine(&mut self, a: &[V<'t>]) -> &'t [V<'t>] {
+        stat!(self, spine_req);
+        #[cfg(feature = "vstats")]
+        {
+            self.stats.spine_hashed += a.len() as u64;
+        }
         let o = usize::from(a.iter().any(|v| v.open));
         if let Some(s) = self.t.spines[o].get(Ptrs::new(a)) {
             return &s.0;
         }
         let s: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(a);
+        #[cfg(feature = "vstats")]
+        {
+            self.stats.spine_new += 1;
+            self.stats.spine_copied += a.len() as u64;
+        }
         self.t.spines[o].insert(Ptrs::new(s));
         s
     }
@@ -561,6 +625,8 @@ impl<'a> Session<'a> {
             }
         }
         let result = outcome::run(|| vc.check(idx));
+        #[cfg(feature = "vstats")]
+        TOTAL.lock().unwrap().get_or_insert_default().add(&vc.stats);
         if result.is_ok() {
             let ctx = std::mem::replace(&mut vc.ctx, Ctx::new(store, arena));
             let t = vc.t.durable();

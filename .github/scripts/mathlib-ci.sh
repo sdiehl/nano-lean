@@ -191,7 +191,7 @@ PYPROBE
     cat "$report/perf-status.txt"
     started=$SECONDS
     bounded nano-mathlib-check 11G 2700 "${perf_command[@]}" /usr/bin/time -v -o "$report/time.txt" \
-      "$root/target/release/nl-fast" "$input" --trace \
+      "$root/target/release/nl-fast" "$input" -j 1 --trace \
       > "$report/failures.log" 2> "$report/trace.log" &
     check_pid=$!
     progress() {
