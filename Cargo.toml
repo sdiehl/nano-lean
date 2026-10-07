@@ -15,7 +15,7 @@ profile = []
 vstats = []
 
 [dependencies]
-unbound = { git = "https://github.com/sdiehl/unbound", rev = "0d9e678d6d3a3f8b7bcc0a41c9ba05f7e9f91cce" }
+unbound = { git = "https://github.com/sdiehl/unbound", rev = "133e29e3ef661a09cedb9b342eb306e136fb7122" }
 logos = "0.16"
 lalrpop-util = "0.23.1"
 offsides = "0.2.1"

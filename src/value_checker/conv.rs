@@ -92,8 +92,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             if a.key() == b.key() {
                 return true;
             }
-            match (a, b) {
-                (Env::Node(x), Env::Node(y)) => {
+            match (a.view(), b.view()) {
+                (View::Node(x), View::Node(y)) => {
                     if !self.same(x.head, y.head, fuel) {
                         return false;
                     }
@@ -361,9 +361,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 body = next;
                 consumed += 1;
             }
-            let support = self.support_of(body);
-            for (i, used) in mask[..consumed].iter_mut().enumerate() {
-                *used = support.binary_search(&((consumed - 1 - i) as u16)).is_ok();
+            mask[..consumed].fill(false);
+            for j in self.slots(body) {
+                if let Some(i) = consumed.checked_sub(usize::from(j) + 1) {
+                    mask[i] = true;
+                }
             }
         }
         let m: std::rc::Rc<[bool]> = mask.into();

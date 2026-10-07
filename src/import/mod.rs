@@ -242,12 +242,17 @@ impl<'a> Importer<'a> {
             body: self.expr(body)?,
             nondep,
         };
-        let (hash, nlb) = mk::let_(d);
-        let p = match self.dag.find_expr(&Expr::Let { data: &d, hash }) {
+        let (hash, sup, nlb) = mk::let_(d);
+        let p = match self.dag.find_expr(&Expr::Let {
+            data: &d,
+            hash,
+            sup,
+        }) {
             Some(p) => p,
             None => {
                 let data = self.arena.alloc(d);
-                self.dag.add_expr(self.arena, Expr::Let { data, hash }, nlb)
+                self.dag
+                    .add_expr(self.arena, Expr::Let { data, hash, sup }, nlb)
             }
         };
         self.stats.expressions += 1;

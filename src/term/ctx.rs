@@ -194,8 +194,12 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             body,
             nondep,
         };
-        let (hash, nlb) = mk::let_(probe);
-        let e = Expr::Let { data: &probe, hash };
+        let (hash, sup, nlb) = mk::let_(probe);
+        let e = Expr::Let {
+            data: &probe,
+            hash,
+            sup,
+        };
         if let Some(p) = self
             .store
             .dag
@@ -205,7 +209,8 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             return p;
         }
         let data = self.arena.alloc(probe);
-        self.dag.add_expr(self.arena, Expr::Let { data, hash }, nlb)
+        self.dag
+            .add_expr(self.arena, Expr::Let { data, hash, sup }, nlb)
     }
 
     pub fn proj(&mut self, name: NamePtr<'t>, idx: u16, e: ExprPtr<'t>) -> ExprPtr<'t> {

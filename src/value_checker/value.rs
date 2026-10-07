@@ -62,9 +62,16 @@ impl Sub<'_> {
 }
 
 /// Bound values, innermost first: cheap pushes over an interned frame that
-/// closures capture and index directly.
+/// closures capture and index directly. One pointer wide.
 #[derive(Clone, Copy)]
-pub enum Env<'t> {
+pub struct Env<'t>(Option<&'t EnvObj<'t>>);
+
+pub enum EnvObj<'t> {
+    Node(EnvNode<'t>),
+    Frame(Frame<'t>),
+}
+
+pub enum View<'t> {
     Nil,
     Node(&'t EnvNode<'t>),
     Frame(&'t Frame<'t>),
@@ -87,65 +94,74 @@ pub struct Frame<'t> {
 }
 
 impl<'t> Env<'t> {
-    pub const EMPTY: Self = Env::Nil;
+    pub const EMPTY: Self = Env(None);
+
+    pub fn new(o: &'t EnvObj<'t>) -> Self {
+        Env(Some(o))
+    }
+
+    #[inline]
+    pub fn view(self) -> View<'t> {
+        match self.0 {
+            None => View::Nil,
+            Some(EnvObj::Node(n)) => View::Node(n),
+            Some(EnvObj::Frame(f)) => View::Frame(f),
+        }
+    }
 
     pub fn get(self, mut i: u16) -> Option<V<'t>> {
         let mut e = self;
         loop {
-            match e {
-                Env::Nil => return None,
-                Env::Node(n) if i == 0 => return Some(n.head),
-                Env::Node(n) => {
+            match e.view() {
+                View::Nil => return None,
+                View::Node(n) if i == 0 => return Some(n.head),
+                View::Node(n) => {
                     i -= 1;
                     e = n.tail;
                 }
-                Env::Frame(f) => return f.vals.get(usize::from(i)).copied(),
+                View::Frame(f) => return f.vals.get(usize::from(i)).copied(),
             }
         }
     }
 
     pub fn open(self) -> bool {
-        match self {
-            Env::Nil => false,
-            Env::Node(n) => n.open,
-            Env::Frame(f) => f.open,
+        match self.view() {
+            View::Nil => false,
+            View::Node(n) => n.open,
+            View::Frame(f) => f.open,
         }
     }
 
     pub fn depth(self) -> u32 {
-        match self {
-            Env::Node(n) => n.depth,
+        match self.view() {
+            View::Node(n) => n.depth,
             _ => 0,
         }
     }
 
     pub fn size(self) -> usize {
-        match self {
-            Env::Nil => 0,
-            Env::Node(n) => n.len as usize,
-            Env::Frame(f) => f.vals.len(),
+        match self.view() {
+            View::Nil => 0,
+            View::Node(n) => n.len as usize,
+            View::Frame(f) => f.vals.len(),
         }
     }
 
     pub fn key(self) -> usize {
-        match self {
-            Env::Nil => 0,
-            Env::Node(n) => n as *const EnvNode as usize,
-            Env::Frame(f) => f as *const Frame as usize,
-        }
+        self.0.map_or(0, |o| o as *const EnvObj as usize)
     }
 
     /// All values, innermost first.
     pub fn iter(self) -> impl Iterator<Item = V<'t>> {
         let mut e = self;
         let mut at = 0;
-        std::iter::from_fn(move || match e {
-            Env::Nil => None,
-            Env::Node(n) => {
+        std::iter::from_fn(move || match e.view() {
+            View::Nil => None,
+            View::Node(n) => {
                 e = n.tail;
                 Some(n.head)
             }
-            Env::Frame(f) => {
+            View::Frame(f) => {
                 at += 1;
                 f.vals.get(at - 1).copied()
             }

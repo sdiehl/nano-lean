@@ -1,7 +1,7 @@
 use super::value::*;
 use super::{R, Vc, stat};
 use crate::term::decl::Declar;
-use crate::term::expr::Expr;
+use crate::term::expr::{Expr, WIDE};
 use crate::term::ptr::ExprPtr;
 use crate::{ensure, reject};
 use smallvec::SmallVec;
@@ -19,13 +19,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return e;
         }
         stat!(self, push_new);
-        let e = Env::Node(self.ctx.arena.alloc(EnvNode {
+        let e = Env::new(self.ctx.arena.alloc(EnvObj::Node(EnvNode {
             head: v,
             tail: env,
             open,
             depth: env.depth() + 1,
             len: env.size() as u32 + 1,
-        }));
+        })));
         self.t.envs[usize::from(open)].insert(k, e);
         e
     }
@@ -157,22 +157,22 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// captures share one value.
     pub(crate) fn trim(&mut self, env: Env<'t>, e: ExprPtr<'t>) -> Env<'t> {
         stat!(self, trims);
-        let sup = self.support_of(e);
-        let Some(&max) = sup.last() else {
+        let sup = self.slots(e);
+        let Some((max, len)) = sup.bounds() else {
             return Env::EMPTY;
         };
         let n = usize::from(max) + 1;
-        if sup.len() == n && env.size() == n && env.depth() <= SHALLOW {
+        if len == n && env.size() == n && env.depth() <= SHALLOW {
             return env;
         }
         let mut buf = SmallVec::<[V<'t>; 32]>::from_elem(self.dummy, n);
-        let mut it = sup.iter().copied().peekable();
+        let mut it = sup.peekable();
         let mut e = env;
         let mut at = 0u16;
         while let Some(&j) = it.peek() {
-            match e {
-                Env::Nil => break,
-                Env::Node(node) => {
+            match e.view() {
+                View::Nil => break,
+                View::Node(node) => {
                     if j == at {
                         buf[usize::from(j)] = node.head;
                         it.next();
@@ -180,7 +180,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     e = node.tail;
                     at += 1;
                 }
-                Env::Frame(f) => {
+                View::Frame(f) => {
                     for j in it.by_ref() {
                         match f.vals.get(usize::from(j - at)) {
                             Some(&v) => buf[usize::from(j)] = v,
@@ -199,13 +199,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let open = vals.iter().any(|v| v.open);
         let o = usize::from(open);
         if let Some(&f) = self.t.frames[o].get(super::Ptrs::new(vals)) {
-            return Env::Frame(f);
+            return f;
         }
         stat!(self, frame_new);
         let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
-        let f = &*self.ctx.arena.alloc(Frame { vals, open });
+        let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame { vals, open })));
         self.t.frames[o].insert(super::Ptrs::new(vals), f);
-        Env::Frame(f)
+        f
     }
 
     /// A projection value, reduced when the structure is already a constructor application.
@@ -245,7 +245,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     /// Whether a closure body reads its own argument.
     pub(crate) fn uses_arg(&mut self, c: Clo<'t>) -> bool {
-        !c.body.closed() && self.support_of(c.body).first() == Some(&0)
+        !c.body.closed() && self.slots(c.body).next() == Some(0)
     }
 
     pub(crate) fn apply(&mut self, mut f: V<'t>, args: &[V<'t>]) -> R<V<'t>> {
@@ -302,10 +302,17 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(f)
     }
 
-    pub(crate) fn support_of(&mut self, e: ExprPtr<'t>) -> &'t [u16] {
-        if e.closed() {
-            return &[];
+    /// Loose bound variables of `e` in ascending order.
+    pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Slots<'t> {
+        #[cfg(debug_assertions)]
+        assert!(e.sup() == WIDE || Slots::Mask(e.sup()).eq(naive_support(e)));
+        match e.sup() {
+            WIDE => Slots::Wide(self.support_of(e).iter()),
+            m => Slots::Mask(m),
         }
+    }
+
+    fn support_of(&mut self, e: ExprPtr<'t>) -> &'t [u16] {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
         }
@@ -313,27 +320,19 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         match *e {
             Expr::Var { idx, .. } => slots.push(idx),
             Expr::App { fun, arg, .. } => {
-                slots.extend_from_slice(self.support_of(fun));
-                slots.extend_from_slice(self.support_of(arg));
+                slots.extend(self.slots(fun));
+                slots.extend(self.slots(arg));
             }
             Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-                slots.extend_from_slice(self.support_of(ty));
-                slots.extend(
-                    self.support_of(body)
-                        .iter()
-                        .filter_map(|i| i.checked_sub(1)),
-                );
+                slots.extend(self.slots(ty));
+                slots.extend(self.slots(body).filter_map(|i| i.checked_sub(1)));
             }
             Expr::Let { data, .. } => {
-                slots.extend_from_slice(self.support_of(data.ty));
-                slots.extend_from_slice(self.support_of(data.val));
-                slots.extend(
-                    self.support_of(data.body)
-                        .iter()
-                        .filter_map(|i| i.checked_sub(1)),
-                );
+                slots.extend(self.slots(data.ty));
+                slots.extend(self.slots(data.val));
+                slots.extend(self.slots(data.body).filter_map(|i| i.checked_sub(1)));
             }
-            Expr::Proj { e, .. } => slots.extend_from_slice(self.support_of(e)),
+            Expr::Proj { e, .. } => slots.extend(self.slots(e)),
             _ => {}
         }
         slots.sort_unstable();
@@ -360,4 +359,64 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.t.const_ty.insert((n, ls), v);
         Ok(v)
     }
+}
+
+/// Ascending loose bound variables: an inline mask, or a memoized wide list.
+#[derive(Clone)]
+pub(crate) enum Slots<'t> {
+    Mask(u32),
+    Wide(std::slice::Iter<'t, u16>),
+}
+
+impl Slots<'_> {
+    /// Largest slot and slot count, if any.
+    fn bounds(&self) -> Option<(u16, usize)> {
+        match self {
+            Slots::Mask(0) => None,
+            Slots::Mask(m) => Some((31 - m.leading_zeros() as u16, m.count_ones() as usize)),
+            Slots::Wide(it) => it.as_slice().last().map(|&m| (m, it.len())),
+        }
+    }
+}
+
+impl Iterator for Slots<'_> {
+    type Item = u16;
+    #[inline]
+    fn next(&mut self) -> Option<u16> {
+        match self {
+            Slots::Mask(m) => (*m != 0).then(|| {
+                let i = m.trailing_zeros() as u16;
+                *m &= *m - 1;
+                i
+            }),
+            Slots::Wide(it) => it.next().copied(),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn naive_support(e: ExprPtr<'_>) -> Vec<u16> {
+    let under = |b| {
+        naive_support(b)
+            .into_iter()
+            .filter_map(|i: u16| i.checked_sub(1))
+    };
+    let mut out: Vec<u16> = match *e {
+        _ if e.closed() => vec![],
+        Expr::Var { idx, .. } => vec![idx],
+        Expr::App { fun, arg, .. } => [naive_support(fun), naive_support(arg)].concat(),
+        Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
+            naive_support(ty).into_iter().chain(under(body)).collect()
+        }
+        Expr::Let { data, .. } => [naive_support(data.ty), naive_support(data.val)]
+            .concat()
+            .into_iter()
+            .chain(under(data.body))
+            .collect(),
+        Expr::Proj { e, .. } => naive_support(e),
+        _ => vec![],
+    };
+    out.sort_unstable();
+    out.dedup();
+    out
 }

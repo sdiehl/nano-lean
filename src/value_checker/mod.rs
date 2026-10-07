@@ -59,7 +59,7 @@ struct Tables<'t> {
     hc: [FxHashMap<HKey<'t>, V<'t>>; 2],
     spines: [FxHashSet<&'t Ptrs<'t>>; 2],
     envs: [FxHashMap<(usize, usize), Env<'t>>; 2],
-    frames: [FxHashMap<&'t Ptrs<'t>, &'t Frame<'t>>; 2],
+    frames: [FxHashMap<&'t Ptrs<'t>, Env<'t>>; 2],
     lazies: [FxHashMap<(usize, Sub<'t>, ExprPtr<'t>), &'t Lazy<'t>>; 2],
     nats: FxHashMap<num_bigint::BigUint, V<'t>>,
 }

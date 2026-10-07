@@ -196,7 +196,7 @@ pub fn meta_of(e: &Expr<'_>) -> u16 {
         Expr::Var { idx, .. } => mk::var(idx).1,
         Expr::App { fun, arg, .. } => mk::app(fun, arg).1,
         Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => mk::lam(ty, body).1,
-        Expr::Let { data, .. } => mk::let_(*data).1,
+        Expr::Let { data, .. } => mk::let_(*data).2,
         Expr::Proj { e, .. } => e.meta(),
         Expr::Local { .. } => super::expr::HAS_LOCAL,
         _ => 0,

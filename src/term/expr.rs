@@ -34,26 +34,31 @@ pub enum Expr<'a> {
         fun: ExprPtr<'a>,
         arg: ExprPtr<'a>,
         hash: u64,
+        sup: u32,
     },
     Lam {
         ty: ExprPtr<'a>,
         body: ExprPtr<'a>,
         hash: u64,
+        sup: u32,
     },
     Pi {
         ty: ExprPtr<'a>,
         body: ExprPtr<'a>,
         hash: u64,
+        sup: u32,
     },
     Let {
         data: &'a LetData<'a>,
         hash: u64,
+        sup: u32,
     },
     Proj {
         name: NamePtr<'a>,
         idx: u16,
         e: ExprPtr<'a>,
         hash: u64,
+        sup: u32,
     },
     NatLit {
         n: BigUintPtr<'a>,
@@ -132,6 +137,46 @@ impl<'a> ExprPtr<'a> {
     }
 }
 
+const _: () = assert!(std::mem::size_of::<Expr<'_>>() == 32);
+
+/// Loose bound variables below 32 as a bitmask, or `WIDE` when unknown.
+pub const WIDE: u32 = u32::MAX;
+
+impl ExprPtr<'_> {
+    #[inline]
+    pub fn sup(self) -> u32 {
+        if self.closed() {
+            return 0;
+        }
+        match *self {
+            Expr::Var { idx, .. } if idx < 32 => 1 << idx,
+            Expr::App { sup, .. }
+            | Expr::Lam { sup, .. }
+            | Expr::Pi { sup, .. }
+            | Expr::Let { sup, .. }
+            | Expr::Proj { sup, .. } => sup,
+            _ => WIDE,
+        }
+    }
+}
+
+#[inline]
+fn sup_join(parts: &[u32], nlb: u16) -> u32 {
+    if nlb > 32 || parts.contains(&WIDE) {
+        WIDE
+    } else {
+        parts.iter().fold(0, |a, &b| a | b)
+    }
+}
+
+#[inline]
+fn sup_under(body: ExprPtr<'_>) -> u32 {
+    match body.sup() {
+        WIDE => WIDE,
+        s => s >> 1,
+    }
+}
+
 /// Pointer metadata: loose bound variable count in the low 15 bits, has-locals on top.
 pub type Meta = u16;
 pub const HAS_LOCAL: Meta = 1 << 15;
@@ -189,6 +234,7 @@ pub mod mk {
                 fun,
                 arg,
                 hash: hash64!(APP_HASH, fun, arg),
+                sup: sup_join(&[fun.sup(), arg.sup()], join(fun, arg) & 0x7fff),
             },
             join(fun, arg),
         )
@@ -200,6 +246,7 @@ pub mod mk {
                 ty,
                 body,
                 hash: hash64!(LAM_HASH, ty, body),
+                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & 0x7fff),
             },
             under(ty, body),
         )
@@ -211,13 +258,14 @@ pub mod mk {
                 ty,
                 body,
                 hash: hash64!(PI_HASH, ty, body),
+                sup: sup_join(&[ty.sup(), sup_under(body)], under(ty, body) & 0x7fff),
             },
             under(ty, body),
         )
     }
 
-    /// Hash and metadata of a let node; the caller allocates the payload on a miss.
-    pub fn let_(d: LetData<'_>) -> (u64, Meta) {
+    /// Hash, support and metadata of a let node; the caller allocates the payload on a miss.
+    pub fn let_(d: LetData<'_>) -> (u64, u32, Meta) {
         let hash = hash64!(LET_HASH, d.ty, d.val, d.body, d.nondep);
         let nlb =
             d.ty.nlb()
@@ -225,6 +273,7 @@ pub mod mk {
                 .max(d.body.nlb().saturating_sub(1));
         (
             hash,
+            sup_join(&[d.ty.sup(), d.val.sup(), sup_under(d.body)], nlb),
             nlb | ((d.ty.meta() | d.val.meta() | d.body.meta()) & HAS_LOCAL),
         )
     }
@@ -236,6 +285,7 @@ pub mod mk {
                 idx,
                 e,
                 hash: hash64!(PROJ_HASH, name, idx, e),
+                sup: e.sup(),
             },
             e.meta(),
         )
