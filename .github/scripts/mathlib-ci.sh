@@ -318,13 +318,31 @@ if perf_file.exists():
         except (ValueError, KeyError, InvalidOperation, OverflowError):
             continue
 (report / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-print(json.dumps(result))
+def duration(value):
+    return f'{int(value // 60)}m {value % 60:.1f}s' if value >= 60 else f'{value:.2f}s'
+rows = [('Status', result['status']), ('Declarations', f"{result['declarations']:,}")]
+if summary:
+    rows.append(('Checked', f"{summary['attempted']:,} attempted, {summary['failures']:,} failures, "
+                            f"{summary['fallbacks']:,} fallbacks"))
+for key, label in (('wall_seconds', 'Wall time'), ('import_seconds', 'Import'),
+                   ('check_seconds', 'Check')):
+    if key in timing:
+        rows.append((label, duration(timing[key])))
+measurement = result['instruction_measurement']
+if 'instructions' in measurement:
+    rows.append(('Instructions', f"{measurement['instructions'] / 1e12:.3f}T ({measurement['status']})"))
+else:
+    rows.append(('Instructions', measurement['status']))
+rows += [('Exit code', str(status)), ('Export SHA-256', result['sha256'])]
+if error:
+    rows.append(('Error', error))
+text = '\n'.join(f'{label:<16}{value}' for label, value in rows) + '\n'
+(report / 'summary.txt').write_text(text)
+print(text, end='')
 if 'wall_seconds' in timing:
-    wall = timing['wall_seconds']
-    line = f'Wall time {int(wall // 60)}m {wall % 60:.1f}s'
+    line = f"Wall time {duration(timing['wall_seconds'])}"
     if 'import_seconds' in timing and 'check_seconds' in timing:
         line += f" (import {timing['import_seconds']:.1f}s, check {timing['check_seconds']:.1f}s)"
-    print(line)
     (report / 'wall.txt').write_text(line + '\n')
 if error:
     raise SystemExit(1)

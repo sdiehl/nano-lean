@@ -119,7 +119,7 @@ jobs:
             echo '```text'
             cat .ci/mathlib-report/export-time.txt 2>/dev/null || true
             cat .ci/mathlib-report/perf-status.txt 2>/dev/null || true
-            cat .ci/mathlib-report/result.json .ci/mathlib-report/time.txt 2>/dev/null || true
+            cat .ci/mathlib-report/summary.txt 2>/dev/null || true
             tail -n 3 .ci/mathlib-report/trace.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

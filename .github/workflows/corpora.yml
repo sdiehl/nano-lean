@@ -72,7 +72,7 @@ jobs:
             echo "### $CORPUS — Lean 4.34.1"
             echo 'One worker; 100M steps and 256 MiB arena per declaration; 11 GiB OS limit.'
             echo '```text'
-            cat ".ci/$CORPUS-report/result.json" ".ci/$CORPUS-report/time.txt" 2>/dev/null || true
+            cat ".ci/$CORPUS-report/summary.txt" 2>/dev/null || true
             tail -n 3 ".ci/$CORPUS-report/trace.log" 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
