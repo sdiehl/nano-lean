@@ -155,3 +155,25 @@ fn progress_stays_on_stderr_and_preserves_json_results() {
         assert!(!stderr.contains("assigned_checked"));
     }
 }
+
+/// Unfolding `Nat.add` defeats literal acceleration, so conversion recurses
+/// deeply; the binary's worker stack must give up cleanly, not overflow.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "needs release speed")]
+fn deep_conversion_exhausts_budget_without_overflow() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cli/deep-conversion.ndjson"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_nl-fast"))
+        .args(["--declaration", "PrimitiveFixture.hugeAdd"])
+        .args(["--steps", "30000000", path])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.code().is_some(), "{:?}", output.status);
+    assert!(
+        stdout.contains("hugeAdd unsupported: declaration work budget exhausted"),
+        "{stdout}"
+    );
+}

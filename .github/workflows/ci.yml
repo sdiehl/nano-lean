@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release --locked --test verdicts --test mutate
+      - run: cargo test --release --locked --test verdicts --test mutate --test cli
       - name: Mutation sweep
         run: |
           cargo build --release --locked --bin nl-mutate

@@ -35,7 +35,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(true);
         }
         let mut fuel = 512;
-        let r = self.same(t, s, &mut fuel) || self.def_eq_core(t, s)?;
+        let r = self.same(t, s, &mut fuel)
+            || stacker::maybe_grow(256 << 10, 16 << 20, || self.def_eq_core(t, s))?;
         if r {
             self.t.eq_cache.insert((key(t), key(s)));
             self.t.eq_cache.insert((key(s), key(t)));
