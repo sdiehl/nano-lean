@@ -1,0 +1,15 @@
+inductive Nat Nat.zero Nat.succ Nat.rec
+inductive Eq Eq.refl Eq.rec
+error: type mismatch:
+  expected: (((@Eq.{1} @Nat) 2) 3)
+  inferred: (((@Eq.{1} @Nat) 2) 2)
+error: negative inductive occurrence
+error: constructor field universe exceeds inductive universe
+error: invalid constructor return type
+error: duplicate inductive declaration name
+error: undeclared universe: v
+error: unknown constant: String
+error: type mismatch:
+  expected: @Nat
+  inferred: (((@Eq.{1} @Nat) 0) 0)
+error: theorem type is not a proposition

@@ -1,0 +1,3 @@
+reference: rejected: line 4: unbound variable: #1.0
+fast: rejected: badLooseBinder: unexpected bound variable
+value: rejected: badLooseBinder: unexpected bound variable

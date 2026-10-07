@@ -20,7 +20,85 @@ fn telescope(locals: &[(Name<Expr>, Expr)], result: Expr) -> Expr {
     })
 }
 
+/// The type the kernel expects for a quotient primitive.
+fn signature(kind: &str, params: &[String], encoded: bool) -> Expr {
+    let c = |s: &str, levels| Expr::Const(symbol(s, encoded), levels);
+    let u = Level::Param(params[0].clone());
+    let v = params
+        .get(1)
+        .map(|p| Level::Param(p.clone()))
+        .unwrap_or(Level::Nat(0));
+    let a_ty = Name::new("A");
+    let av = Expr::Var(a_ty.clone());
+    let rel = Name::new("r");
+    let rv = Expr::Var(rel.clone());
+    let relation = arrow(av.clone(), arrow(av.clone(), Expr::Sort(Level::Nat(0))));
+    let mut locals = vec![(a_ty, Expr::Sort(u.clone())), (rel, relation)];
+    let quot = c("Quot", vec![u.clone()]).app(av.clone()).app(rv.clone());
+    let a = Name::new("a");
+    let a_expr = Expr::Var(a.clone());
+    let result = match kind {
+        "type" => Expr::Sort(u.clone()),
+        "ctor" => arrow(av.clone(), quot.clone()),
+        "lift" => {
+            let b_ty = Name::new("B");
+            let bv = Expr::Var(b_ty.clone());
+            let f = Name::new("f");
+            let fv = Expr::Var(f.clone());
+            locals.push((b_ty, Expr::Sort(v.clone())));
+            locals.push((f, arrow(av.clone(), bv.clone())));
+            let b = Name::new("b");
+            let b_expr = Expr::Var(b.clone());
+            let eq = c("Eq", vec![v])
+                .app(bv.clone())
+                .app(fv.clone().app(a_expr.clone()))
+                .app(fv.app(b_expr.clone()));
+            let respects = telescope(
+                &[(a, av.clone()), (b, av.clone())],
+                arrow(rv.app(a_expr).app(b_expr), eq),
+            );
+            arrow(respects, arrow(quot, bv))
+        }
+        "ind" => {
+            let motive = Name::new("motive");
+            let mv = Expr::Var(motive.clone());
+            locals.push((motive, arrow(quot.clone(), Expr::Sort(Level::Nat(0)))));
+            let mk = c("Quot.mk", vec![u]).app(av.clone()).app(rv).app(a_expr);
+            let minor = Expr::pi(a, av, mv.clone().app(mk));
+            let q = Name::new("q");
+            arrow(minor, Expr::pi(q.clone(), quot, mv.app(Expr::Var(q))))
+        }
+        _ => unreachable!(),
+    };
+    telescope(&locals, result)
+}
+
+/// Lean's `init_quot` primitives: name, kind, universe parameters and type.
+pub fn primitives() -> Vec<(&'static str, &'static str, Vec<String>, Expr)> {
+    [
+        ("Quot", "type", &["u"][..]),
+        ("Quot.mk", "ctor", &["u"]),
+        ("Quot.lift", "lift", &["u", "v"]),
+        ("Quot.ind", "ind", &["u"]),
+    ]
+    .into_iter()
+    .map(|(name, kind, params)| {
+        let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+        let ty = signature(kind, &params, false);
+        (name, kind, params, ty)
+    })
+    .collect()
+}
+
 impl Environment {
+    /// Declare the quotient primitives, as Lean's `init_quot` does.
+    pub fn init_quotient(&mut self) -> Result<()> {
+        for (name, kind, params, ty) in primitives() {
+            self.declare_quotient(name.into(), params, ty, kind)?;
+        }
+        Ok(())
+    }
+
     /// Validate the exported primitive against a signature constructed by the checker.
     pub fn declare_quotient(
         &mut self,
@@ -49,55 +127,7 @@ impl Environment {
             }
         }
         self.validate_quotient_equality(encoded)?;
-        let u = Level::Param(params[0].clone());
-        let v = params
-            .get(1)
-            .map(|p| Level::Param(p.clone()))
-            .unwrap_or(Level::Nat(0));
-        let c = |s: &str, levels| Expr::Const(sym(s), levels);
-        let a_ty = Name::new("A");
-        let av = Expr::Var(a_ty.clone());
-        let rel = Name::new("r");
-        let rv = Expr::Var(rel.clone());
-        let relation = arrow(av.clone(), arrow(av.clone(), Expr::Sort(Level::Nat(0))));
-        let mut locals = vec![(a_ty, Expr::Sort(u.clone())), (rel, relation)];
-        let quot = c("Quot", vec![u.clone()]).app(av.clone()).app(rv.clone());
-        let a = Name::new("a");
-        let a_expr = Expr::Var(a.clone());
-        let result = match kind {
-            "type" => Expr::Sort(u.clone()),
-            "ctor" => arrow(av.clone(), quot.clone()),
-            "lift" => {
-                let b_ty = Name::new("B");
-                let bv = Expr::Var(b_ty.clone());
-                let f = Name::new("f");
-                let fv = Expr::Var(f.clone());
-                locals.push((b_ty, Expr::Sort(v.clone())));
-                locals.push((f, arrow(av.clone(), bv.clone())));
-                let b = Name::new("b");
-                let b_expr = Expr::Var(b.clone());
-                let eq = c("Eq", vec![v])
-                    .app(bv.clone())
-                    .app(fv.clone().app(a_expr.clone()))
-                    .app(fv.app(b_expr.clone()));
-                let respects = telescope(
-                    &[(a, av.clone()), (b, av.clone())],
-                    arrow(rv.app(a_expr).app(b_expr), eq),
-                );
-                arrow(respects, arrow(quot, bv))
-            }
-            "ind" => {
-                let motive = Name::new("motive");
-                let mv = Expr::Var(motive.clone());
-                locals.push((motive, arrow(quot.clone(), Expr::Sort(Level::Nat(0)))));
-                let mk = c("Quot.mk", vec![u]).app(av.clone()).app(rv).app(a_expr);
-                let minor = Expr::pi(a, av, mv.clone().app(mk));
-                let q = Name::new("q");
-                arrow(minor, Expr::pi(q.clone(), quot, mv.app(Expr::Var(q))))
-            }
-            _ => unreachable!(),
-        };
-        let expected = telescope(&locals, result);
+        let expected = signature(kind, &params, encoded);
         let mut tc = Checker::new(self);
         tc.uparams = params.iter().cloned().collect();
         tc.sort(&ty)?;

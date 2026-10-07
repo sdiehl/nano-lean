@@ -1,0 +1,13 @@
+inductive Nat Nat.zero Nat.succ Nat.rec
+inductive List List.nil List.cons List.rec
+inductive Eq Eq.refl Eq.rec
+inductive Prod Prod.mk Prod.rec
+defined Nat.add
+5
+equal
+defined List.length
+2
+theorem two_eq
+2
+quotient
+@Quot.mk.{1} : (forall (A : Type), (forall (r : (forall (_ : A), (forall (_ : A), Prop))), (forall (_ : A), ((@Quot.{1} A) r))))

@@ -1,0 +1,30 @@
+-- Reduction stress: literals, recursor unfolding, sharing, lets, proof irrelevance.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+inductive Bool : Type
+  | Bool.false : Bool
+  | Bool.true : Bool
+def Nat.add : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) m (fun (k : Nat) (ih : Nat) => Nat.succ ih) n
+def Nat.mul : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) 0 (fun (k : Nat) (ih : Nat) => Nat.add ih m) n
+def Nat.pow : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) 1 (fun (k : Nat) (ih : Nat) => Nat.mul ih m) n
+-- Literal arithmetic: large literals must be handled without unary expansion.
+theorem big_add : Eq.{1} Nat (Nat.add 1000000000000 1) 1000000000001 := Eq.refl.{1} Nat 1000000000001
+-- Unary recursion through the recursor on small literals.
+theorem pow_small : Eq.{1} Nat (Nat.pow 2 10) 1024 := Eq.refl.{1} Nat 1024
+-- Exponential tree via sharing: double n builds 2^n nodes if unshared.
+def twice : (Nat -> Nat) -> Nat -> Nat := fun (f : Nat -> Nat) (x : Nat) => f (f x)
+theorem twice_deep : Eq.{1} Nat (twice (twice (twice (twice (twice (twice Nat.succ)))))  0) 64 := Eq.refl.{1} Nat 64
+-- Deep let chain whose types depend on earlier values.
+theorem lets : Eq.{1} Nat (let a : Nat := 1 in let b : Nat := Nat.add a a in let c : Nat := Nat.add b b in let d : Nat := Nat.add c c in let e : Nat := Nat.add d d in Nat.add e e) 32 := Eq.refl.{1} Nat 32
+-- Proof irrelevance: two different proofs of the same proposition are equal.
+axiom p : Eq.{1} Nat 0 0
+equal p == Eq.refl.{1} Nat 0
+-- Large elimination into Sort from a Bool scrutinee.
+def T : Bool -> Type := fun (b : Bool) => Bool.rec.{2} (fun (b : Bool) => Type) Nat Bool b
+def t : T Bool.false := 5

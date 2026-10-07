@@ -1,0 +1,15 @@
+inductive Nat Nat.zero Nat.succ Nat.rec
+inductive Eq Eq.refl Eq.rec
+inductive Bool Bool.false Bool.true Bool.rec
+defined Nat.add
+defined Nat.mul
+defined Nat.pow
+theorem big_add
+theorem pow_small
+defined twice
+theorem twice_deep
+theorem lets
+axiom p
+equal
+defined T
+defined t

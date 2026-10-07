@@ -10,6 +10,20 @@ pub enum Token {
     Axiom,
     #[token("def")]
     Def,
+    #[token("theorem")]
+    Theorem,
+    #[token("inductive")]
+    Inductive,
+    #[token("init_quot")]
+    InitQuot,
+    #[token("proj")]
+    Proj,
+    #[token("succ")]
+    Succ,
+    #[token("max")]
+    Max,
+    #[token("imax")]
+    IMax,
     #[token("infer")]
     Infer,
     #[token("check")]
@@ -51,13 +65,23 @@ pub enum Token {
     Semi,
     #[token("@")]
     At,
+    #[token("|")]
+    Bar,
+    #[token("+")]
+    Plus,
+    #[token(".{")]
+    DotBrace,
+    #[token("}")]
+    RBrace,
     #[token("(")]
     LParen,
     #[token(")")]
     RParen,
-    #[regex(r"[0-9]+", |l| l.slice().parse::<u32>().ok())]
-    Num(u32),
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_']*", |l| l.slice().to_owned())]
+    #[regex(r"[0-9]+", |l| l.slice().to_owned())]
+    Num(String),
+    #[regex(r#""([^"\\]|\\.)*""#, |l| serde_json::from_str::<String>(l.slice()).ok())]
+    Str(String),
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_']*(\.[a-zA-Z_][a-zA-Z0-9_']*)*", |l| l.slice().to_owned())]
     Ident(String),
     VOpen,
     VClose,
@@ -80,7 +104,8 @@ impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ident(n) => f.write_str(n),
-            Self::Num(n) => write!(f, "{n}"),
+            Self::Num(n) => f.write_str(n),
+            Self::Str(s) => write!(f, "{s:?}"),
             _ => write!(f, "{self:?}"),
         }
     }

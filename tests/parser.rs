@@ -48,8 +48,11 @@ fn malformed_layout_and_lexical_errors_are_rejected() {
         "(",
         ")",
         "()",
-        "(Sort nope)",
-        "(Sort 1 2)",
+        "(Sort fun)",
+        "(Sort (max u))",
+        "@f.{}",
+        "(Sort 1 +)",
+        "\"unterminated",
         "(fun x x)",
         "(let (x Type) Type)",
     ] {

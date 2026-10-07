@@ -1,6 +1,7 @@
-use crate::parser::{Term, Command, Binding, LocalDef};
+use crate::parser::{Term, Command, Binding, LocalDef, Signature, offset};
 use crate::lexer::Token;
-use crate::Error;
+use crate::{Error, Level};
+use lalrpop_util::ParseError;
 
 grammar;
 
@@ -20,13 +21,22 @@ Separators: () = <Separator+> => ();
 Separator: () = { ";" => (), "v;" => () };
 
 Command: Command = {
-    "axiom" <n:"ident"> ":" <ty:Expr> => Command::Axiom(n, ty),
-    "def" <n:"ident"> ":" <ty:Expr> ":=" <value:Expr> => Command::Define(n, ty, value),
+    "axiom" <s:Signature> ":" <ty:Expr> => Command::Axiom(s, ty),
+    "def" <s:Signature> ":" <ty:Expr> ":=" <value:Expr> => Command::Define(s, ty, value),
+    "theorem" <s:Signature> ":" <ty:Expr> ":=" <value:Expr> => Command::Theorem(s, ty, value),
+    "inductive" <s:Signature> <params:Binder*> ":" <ty:Expr> <ctors:Ctor*> =>
+        Command::Inductive(s, params, ty, ctors),
+    "init_quot" => Command::InitQuot,
     "infer" <e:Expr> => Command::Infer(e),
     "check" <e:Expr> ":" <ty:Expr> => Command::Check(e, ty),
     "eval" <e:Expr> => Command::Eval(e),
     "equal" <a:Expr> "==" <b:Expr> => Command::Equal(a, b),
 };
+Signature: Signature = {
+    <n:"ident"> => (n, Vec::new()),
+    <n:"ident"> ".{" <ps:Comma<"ident">> "}" => (n, ps),
+};
+Ctor: (String, Term) = "|" <n:"ident"> ":" <ty:Expr> => (n, ty);
 
 pub Expr: Term = {
     "fun" <params:Binder+> "=>" <body:Expr> => Term::binders(params, body, false),
@@ -45,15 +55,42 @@ LocalDef: LocalDef = <n:"ident"> ":" <ty:Expr> ":=" <value:Expr> => (n, ty, valu
 
 App: Term = {
     <f:App> <a:Atom> => Term::App(Box::new(f), Box::new(a)),
+    "proj" <n:"ident"> <i:Small> <e:Atom> => Term::Proj(n, i, Box::new(e)),
     Atom,
 };
 Atom: Term = {
-    "Prop" => Term::Sort(0),
-    "Type" => Term::Sort(1),
-    "Sort" <u:"num"> => Term::Sort(u),
+    "Prop" => Term::Sort(Level::Nat(0)),
+    "Type" => Term::Sort(Level::Nat(1)),
+    "Sort" <u:LevelAtom> => Term::Sort(u),
     <n:"ident"> => Term::Name(n),
-    "@" <n:"ident"> => Term::Global(n),
+    <n:"ident"> ".{" <us:Comma<Level>> "}" => Term::Const(n, us),
+    "@" <n:"ident"> => Term::Const(n, Vec::new()),
+    "@" <n:"ident"> ".{" <us:Comma<Level>> "}" => Term::Const(n, us),
+    <n:"num"> => Term::Nat(n),
+    <s:"str"> => Term::Str(s),
     "(" <e:Expr> ")" => e,
+};
+
+Level: Level = {
+    "succ" <u:LevelAtom> => offset(u, 1),
+    "max" <a:LevelAtom> <b:LevelAtom> => Level::Max(Box::new(a), Box::new(b)),
+    "imax" <a:LevelAtom> <b:LevelAtom> => Level::IMax(Box::new(a), Box::new(b)),
+    <u:LevelAtom> "+" <n:Small> => offset(u, n as u32),
+    LevelAtom,
+};
+LevelAtom: Level = {
+    <n:Small> => Level::Nat(n as u32),
+    <p:"ident"> => Level::Param(p),
+    "(" <u:Level> ")" => u,
+};
+Small: usize = <n:"num"> =>? n.parse::<u32>().map(|n| n as usize).map_err(|_| ParseError::User {
+    error: Error(format!("number too large: {n}")),
+});
+
+Comma<T>: Vec<T> = <head:T> <tail:("," T)*> => {
+    let mut items = vec![head];
+    items.extend(tail.into_iter().map(|(_, t)| t));
+    items
 };
 
 extern {
@@ -61,6 +98,9 @@ extern {
     type Error = Error;
     enum Token {
         "axiom" => Token::Axiom, "def" => Token::Def,
+        "theorem" => Token::Theorem, "inductive" => Token::Inductive,
+        "init_quot" => Token::InitQuot, "proj" => Token::Proj,
+        "succ" => Token::Succ, "max" => Token::Max, "imax" => Token::IMax,
         "infer" => Token::Infer, "check" => Token::Check,
         "eval" => Token::Eval, "equal" => Token::Equal,
         "fun" => Token::Fun, "forall" => Token::Forall,
@@ -69,8 +109,11 @@ extern {
         "->" => Token::Arrow, "=>" => Token::FatArrow,
         ":=" => Token::Assign, "==" => Token::EqEq,
         ":" => Token::Colon, "," => Token::Comma, ";" => Token::Semi,
+        "|" => Token::Bar, "+" => Token::Plus,
+        ".{" => Token::DotBrace, "}" => Token::RBrace,
         "@" => Token::At, "(" => Token::LParen, ")" => Token::RParen,
-        "num" => Token::Num(<u32>), "ident" => Token::Ident(<String>),
+        "num" => Token::Num(<String>), "str" => Token::Str(<String>),
+        "ident" => Token::Ident(<String>),
         "v{" => Token::VOpen, "v}" => Token::VClose, "v;" => Token::VSep,
     }
 }

@@ -565,7 +565,32 @@ impl Environment {
         })
     }
 
+    /// The block the kernel derives from the types and constructors of
+    /// `block`: recursors, rules, nesting and recursion metadata filled in.
+    pub fn complete_inductive(&self, block: &InductiveBlock) -> Result<InductiveBlock> {
+        self.clone().expected_inductive(block, &mut Vec::new())
+    }
+
     fn build_inductive(&mut self, actual: &InductiveBlock, added: &mut Vec<String>) -> Result<()> {
+        let expected = self.expected_inductive(actual, added)?;
+        self.validate_inductive_export(actual, &expected)?;
+        for t in expected.types {
+            self.inductives.insert(t.name.clone(), Rc::new(t));
+        }
+        for c in expected.constructors {
+            self.constructors.insert(c.name.clone(), Rc::new(c));
+        }
+        for r in expected.recursors {
+            self.recursors.insert(r.name.clone(), Rc::new(r));
+        }
+        Ok(())
+    }
+
+    fn expected_inductive(
+        &mut self,
+        actual: &InductiveBlock,
+        added: &mut Vec<String>,
+    ) -> Result<InductiveBlock> {
         demand(!actual.types.is_empty(), "empty inductive block")?;
         let mut reserved = BTreeSet::new();
         for name in actual
@@ -614,17 +639,7 @@ impl Environment {
                 self.insert_generated(&r.name, &r.params, r.ty.clone(), added)?;
             }
         }
-        self.validate_inductive_export(actual, &expected)?;
-        for t in expected.types {
-            self.inductives.insert(t.name.clone(), Rc::new(t));
-        }
-        for c in expected.constructors {
-            self.constructors.insert(c.name.clone(), Rc::new(c));
-        }
-        for r in expected.recursors {
-            self.recursors.insert(r.name.clone(), Rc::new(r));
-        }
-        Ok(())
+        Ok(expected)
     }
 
     fn validate_inductive_export(

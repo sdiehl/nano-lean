@@ -6,6 +6,7 @@ Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 
 
 - `nl-fast`: fast interned-term checker for Lean NDJSON exports.
 - `nl-ref`: reference kernel for core-syntax files and exports.
+- `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict.
 
 ```sh
 # Install nl-fast and nl-ref
@@ -21,7 +22,13 @@ nl-ref examples/core.ltc
 nl-ref --export FILE.ndjson
 nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson
 
-# Run the tests
+# Write a core-syntax file's declarations as an NDJSON export
+nl-ref --emit FILE.ltc > FILE.ndjson
+
+# Mutate an export and report checker disagreements, shrinking each finding
+nl-mutate [--seed N] [--per-op N] [--op NAME] [--out DIR] FILE.ndjson
+
+# Run the tests (BLESS=1 regenerates golden .out and .verdict files)
 cargo test
 ```
 

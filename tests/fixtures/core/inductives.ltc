@@ -1,0 +1,23 @@
+-- Inductive types, recursors, universe polymorphism and quotients.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive List.{u} (A : Sort (u+1)) : Sort (u+1)
+  | List.nil : List A
+  | List.cons : A -> List A -> List A
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+inductive Prod.{u, v} (A : Sort (u+1)) (B : Sort (v+1)) : Sort (max (u+1) (v+1))
+  | Prod.mk : A -> B -> Prod A B
+def Nat.add : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) m (fun (k : Nat) (ih : Nat) => Nat.succ ih) n
+eval Nat.add 2 3
+equal Nat.add 2 3 == 5
+def List.length.{u} : forall (A : Sort (u+1)), List.{u} A -> Nat :=
+  fun (A : Sort (u+1)) (xs : List.{u} A) =>
+    List.rec.{1, u} A (fun (ys : List.{u} A) => Nat) 0 (fun (x : A) (ys : List.{u} A) (ih : Nat) => Nat.succ ih) xs
+eval List.length.{0} Nat (List.cons.{0} Nat 7 (List.cons.{0} Nat 8 (List.nil.{0} Nat)))
+theorem two_eq : Eq.{1} Nat 2 (Nat.succ 1) := Eq.refl.{1} Nat 2
+eval proj Prod 1 (Prod.mk.{0, 0} Nat Nat 1 2)
+init_quot
+infer Quot.mk.{1}

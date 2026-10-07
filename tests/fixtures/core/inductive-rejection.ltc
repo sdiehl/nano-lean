@@ -1,0 +1,19 @@
+-- Each declaration is invalid; the emitted export stops at the first.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+theorem bad_eq : Eq.{1} Nat 2 3 := Eq.refl.{1} Nat 2
+inductive Bad : Type
+  | Bad.mk : (Bad -> Nat) -> Bad
+inductive Big : Type
+  | Big.mk : Type -> Big
+inductive Wrong : Type
+  | Wrong.mk : Nat
+inductive Dup : Type
+  | Nat.zero : Dup
+axiom scoped.{u} : Sort v
+infer "hello"
+def notprop : Nat := Eq.refl.{1} Nat 0
+theorem data : Nat := 0

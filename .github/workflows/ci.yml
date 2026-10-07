@@ -21,3 +21,22 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
       - run: cargo test --locked --doc
+
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release --locked --test verdicts --test mutate
+      - name: Mutation sweep
+        run: |
+          cargo build --release --locked --bin nl-mutate
+          for f in tests/fixtures/*.ndjson; do
+            echo "== $f"
+            ./target/release/nl-mutate --seed 1 --per-op 200 --out mutants "$f"
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mutants
+          path: mutants

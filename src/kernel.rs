@@ -13,6 +13,7 @@ mod inductive;
 mod primitive;
 mod quotient;
 pub use inductive::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
+pub use quotient::primitives as quotient_primitives;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error(pub String);

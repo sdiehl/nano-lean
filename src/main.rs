@@ -79,24 +79,35 @@ fn main() -> ExitCode {
             }
         };
     }
+    if let [flag, path] = args.as_slice()
+        && flag == "--emit"
+    {
+        let result = read_source(path)
+            .and_then(|source| Ok(parser::declarations(&source)?))
+            .and_then(|ds| Ok(nano_lean::emit::ndjson(&ds)?));
+        return match result {
+            Ok(ndjson) => {
+                print!("{ndjson}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "Usage: nl-ref [FILE|-]\n       nl-ref --export FILE.ndjson\n       nl-ref --export-stream FILE.ndjson\n       nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson\nCheck a core-language script or a Lean export.\nCommands: axiom, def, infer, check, eval, equal. See examples/core.ltc."
+            "Usage: nl-ref [FILE|-]\n       nl-ref --export FILE.ndjson\n       nl-ref --export-stream FILE.ndjson\n       nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson\n       nl-ref --emit FILE.ltc\nCheck a core-language script or a Lean export, or write a script's declarations as an export.\nCommands: axiom, def, theorem, inductive, init_quot, infer, check, eval, equal. See examples/core.ltc."
         );
         return ExitCode::SUCCESS;
     }
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut source = String::new();
-        match args.as_slice() {
-            [] => {
-                io::stdin().read_to_string(&mut source)?;
-            }
-            [path] if path == "-" => {
-                io::stdin().read_to_string(&mut source)?;
-            }
-            [path] => source = fs::read_to_string(path)?,
+        let source = match args.as_slice() {
+            [] => read_source("-")?,
+            [path] => read_source(path)?,
             _ => return Err("usage: nl-ref [FILE|-]".into()),
-        }
+        };
         for line in parser::run(&source, &mut Environment::new())? {
             println!("{line}");
         }
@@ -108,6 +119,16 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn read_source(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if path == "-" {
+        let mut source = String::new();
+        io::stdin().read_to_string(&mut source)?;
+        Ok(source)
+    } else {
+        Ok(fs::read_to_string(path)?)
     }
 }
 

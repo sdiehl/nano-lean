@@ -1,0 +1,5 @@
+reference: rejected: line 10: type mismatch:
+  expected: @["A"]
+  inferred: (Sort 2)
+fast: rejected: line 15: duplicate declaration A
+value: rejected: line 15: duplicate declaration A

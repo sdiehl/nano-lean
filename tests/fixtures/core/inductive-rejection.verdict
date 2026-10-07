@@ -1,0 +1,5 @@
+reference: rejected: line 105: type mismatch:
+  expected: (((@["Eq"].{1} @["Nat"]) 2) 3)
+  inferred: (((@["Eq"].{1} @["Nat"]) 2) 2)
+fast: rejected: bad_eq: declaration type mismatch
+value: rejected: bad_eq: declaration type mismatch
