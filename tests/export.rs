@@ -1,10 +1,5 @@
 use nano_lean::export::{ExportError, check_export, check_export_file};
-use std::{
-    io::Cursor,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-
-static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+use std::io::Cursor;
 
 #[test]
 fn reducibility_hints_do_not_skip_definition_validation() {
@@ -43,14 +38,9 @@ fn reducibility_hints_do_not_skip_definition_validation() {
 }
 
 fn check(s: &str) -> Result<nano_lean::export::ExportReport, ExportError> {
-    let path = std::env::temp_dir().join(format!(
-        "nano-lean-export-{}-{}.ndjson",
-        std::process::id(),
-        NEXT_FILE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, s).unwrap();
-    let file = check_export_file(&path);
-    std::fs::remove_file(path).unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(&file, s).unwrap();
+    let file = check_export_file(file.path());
     let stream = check_export(Cursor::new(s));
     match (&stream, &file) {
         (Ok(a), Ok(b)) => assert_eq!(a.json(), b.json()),

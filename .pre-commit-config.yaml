@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --locked --all-targets -- -D warnings
+        language: system
+        files: \.(rs|lalrpop)$|^Cargo\.(toml|lock)$
+        pass_filenames: false
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --locked --all-targets
+        language: system
+        files: \.(rs|lalrpop|ndjson|ltc)$|^Cargo\.(toml|lock)$
+        pass_filenames: false

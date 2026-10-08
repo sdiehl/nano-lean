@@ -1,5 +1,6 @@
 mod parallel;
 
+use clap::{ArgGroup, Parser};
 use nano_lean::{
     Environment, emit,
     export::{ExportError, ExportReport, check_export, check_export_file, check_export_file_shard},
@@ -7,60 +8,81 @@ use nano_lean::{
 };
 use serde_json::{Value, json};
 use std::{
-    env,
     error::Error,
     fs::{self, File},
     io::{self, BufReader, Read},
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: nl-ref [FILE|-]
-       nl-ref --export FILE.ndjson
-       nl-ref --export-stream FILE.ndjson
-       nl-ref --export-parallel JOBS [--memory-mib MIB] FILE.ndjson
-       nl-ref --emit FILE.ltc
-Check a core-language script or a Lean export, or write a script's declarations as an export.
-Commands: axiom, def, theorem, inductive, init_quot, infer, check, eval, equal. See examples/core.ltc.";
-const DEFAULT_MEMORY_MIB: usize = 2048;
 const STDIN: &str = "-";
 
+#[derive(Parser)]
+#[command(
+    name = "nl-ref",
+    about = "Check a core-language script or a Lean export, or write a script's declarations as an export.",
+    after_help = "Commands: axiom, def, theorem, inductive, init_quot, infer, check, eval, equal. See examples/core.ltc."
+)]
+#[command(group(ArgGroup::new("mode").args(["export", "export_stream", "export_parallel", "export_shard", "emit"])))]
+struct Cli {
+    /// Check a Lean export
+    #[arg(long, value_name = "FILE.ndjson")]
+    export: Option<String>,
+    /// Check a Lean export read as a stream
+    #[arg(long, value_name = "FILE.ndjson")]
+    export_stream: Option<String>,
+    /// Check FILE across JOBS worker processes
+    #[arg(long, value_name = "JOBS", requires = "file")]
+    export_parallel: Option<usize>,
+    /// Memory budget for parallel workers
+    #[arg(
+        long,
+        value_name = "MIB",
+        default_value_t = 2048,
+        requires = "export_parallel"
+    )]
+    memory_mib: usize,
+    #[arg(long, hide = true, num_args = 3, value_names = ["FILE", "INDEX", "JOBS"])]
+    export_shard: Option<Vec<String>>,
+    /// Write a script's declarations as an export
+    #[arg(long, value_name = "FILE.ltc")]
+    emit: Option<String>,
+    /// Core-language script, or `-` for stdin
+    #[arg(conflicts_with_all = ["export", "export_stream", "export_shard", "emit"])]
+    file: Option<String>,
+}
+
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match args.as_slice() {
-        ["--export-parallel", jobs, path] => report(
-            number(jobs, "worker count")
-                .and_then(|jobs| parallel::run(path, jobs, DEFAULT_MEMORY_MIB)),
-        ),
-        ["--export-parallel", jobs, "--memory-mib", memory, path] => report((|| {
-            let jobs = number(jobs, "worker count")?;
-            parallel::run(path, jobs, number(memory, "memory budget")?)
-        })()),
-        ["--export-shard", path, index, jobs] => report((|| {
-            let index = number(index, "shard index")?;
-            check_export_file_shard(path, index, number(jobs, "worker count")?)
+    let cli = Cli::parse();
+    if let Some(jobs) = cli.export_parallel {
+        report(parallel::run(
+            cli.file.as_deref().unwrap(),
+            jobs,
+            cli.memory_mib,
+        ))
+    } else if let Some(shard) = cli.export_shard {
+        report((|| {
+            let index = number(&shard[1], "shard index")?;
+            check_export_file_shard(&shard[0], index, number(&shard[2], "worker count")?)
                 .map(|r| r.json())
                 .map_err(|e| e.to_string())
-        })()),
-        ["--export", path] => verdict(check_export_file(path)),
-        ["--export-stream", path] => verdict(
+        })())
+    } else if let Some(path) = cli.export {
+        verdict(check_export_file(&path))
+    } else if let Some(path) = cli.export_stream {
+        verdict(
             File::open(path)
                 .map_err(|e| ExportError::Invalid(e.to_string()))
                 .and_then(|file| check_export(BufReader::new(file))),
-        ),
-        ["--emit", path] => finish(
-            read_source(path)
+        )
+    } else if let Some(path) = cli.emit {
+        finish(
+            read_source(&path)
                 .and_then(|source| Ok(parser::declarations(&source)?))
                 .and_then(|ds| Ok(emit::ndjson(&ds)?))
                 .map(|ndjson| print!("{ndjson}")),
-        ),
-        ["--help" | "-h"] => {
-            println!("{USAGE}");
-            ExitCode::SUCCESS
-        }
-        [] => finish(script(STDIN)),
-        [path] => finish(script(path)),
-        _ => finish(Err("usage: nl-ref [FILE|-]".into())),
+        )
+    } else {
+        finish(script(cli.file.as_deref().unwrap_or(STDIN)))
     }
 }
 

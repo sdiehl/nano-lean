@@ -1,63 +1,42 @@
+use clap::Parser;
 use nano_lean::checker::Limits;
 use nano_lean::mutate::{self, Expect, Operator, Rng};
 use std::{
     collections::BTreeMap,
-    env, fs,
+    fs,
     path::PathBuf,
     process::ExitCode,
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "Usage: nl-mutate [--seed N] [--per-op N] [--op NAME] [--out DIR] FILE.ndjson
-Apply single edits to a valid export and report mutants where the reference
-kernel, the fast checker and the value core disagree, accept an invalid
-export, or change verdict under a performance-only edit. With --out, each
-finding is shrunk and written as a standalone export. The summary counts
-verdict signatures per operator: one letter per checker (reference, fast,
-value) for Accepted, Rejected, Unsupported or Internal.";
-
+/// Apply single edits to a valid export and report mutants where the reference
+/// kernel, the fast checker and the value core disagree, accept an invalid
+/// export, or change verdict under a performance-only edit.
+#[derive(Parser)]
+#[command(name = "nl-mutate", after_help = AFTER_HELP)]
 struct Options {
+    #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Mutants tried per operator
+    #[arg(long, default_value_t = 50)]
     per_op: usize,
-    ops: Vec<Operator>,
+    /// Run a single operator
+    #[arg(long, value_name = "NAME")]
+    op: Option<Operator>,
+    /// Shrink each finding and write it here as a standalone export
+    #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    #[arg(value_name = "FILE.ndjson")]
     path: PathBuf,
 }
 
-fn options() -> Result<Options, String> {
-    let mut args = env::args().skip(1);
-    let mut o = Options {
-        seed: 0,
-        per_op: 50,
-        ops: Operator::ALL.to_vec(),
-        out: None,
-        path: PathBuf::new(),
-    };
-    let mut path = None;
-    while let Some(arg) = args.next() {
-        let mut value = || args.next().ok_or(format!("{arg} needs a value"));
-        match arg.as_str() {
-            "--seed" => o.seed = value()?.parse().map_err(|_| "invalid seed")?,
-            "--per-op" => o.per_op = value()?.parse().map_err(|_| "invalid count")?,
-            "--op" => o.ops = vec![value()?.parse()?],
-            "--out" => o.out = Some(value()?.into()),
-            "-h" | "--help" => return Err(USAGE.into()),
-            _ if path.is_none() => path = Some(arg.into()),
-            _ => return Err(USAGE.into()),
-        }
-    }
-    o.path = path.ok_or(USAGE)?;
-    Ok(o)
-}
+const AFTER_HELP: &str =
+    "The summary counts verdict signatures per operator: one letter per checker
+(reference, fast, value) for Accepted, Rejected, Unsupported or Internal.";
 
 fn main() -> ExitCode {
-    let o = match options() {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let o = Options::parse();
+    let ops = o.op.map_or_else(|| Operator::ALL.to_vec(), |op| vec![op]);
     let lines = match fs::read_to_string(&o.path)
         .map_err(|e| e.to_string())
         .and_then(|s| mutate::parse(&s).map_err(|e| e.to_string()))
@@ -80,7 +59,7 @@ fn main() -> ExitCode {
     let mut rng = Rng::new(o.seed);
     let (mut tried, mut findings) = (0, 0);
     let mut tally: BTreeMap<(&str, String), usize> = BTreeMap::new();
-    for &op in &o.ops {
+    for &op in &ops {
         let mut candidates = mutate::mutants(&lines, op);
         while candidates.len() > o.per_op {
             candidates.swap_remove(rng.below(candidates.len()));

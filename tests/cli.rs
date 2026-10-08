@@ -87,10 +87,8 @@ fn parallel_export_rejects_invalid_declarations_in_each_partition() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let path = std::env::temp_dir().join(format!(
-        "nano-parallel-invalid-{}.ndjson",
-        std::process::id()
-    ));
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path();
     let mut corrupted = 0;
     for index in 0..items.len() {
         if items[index].get("def").is_none() {
@@ -99,7 +97,7 @@ fn parallel_export_rejects_invalid_declarations_in_each_partition() {
         let mut data = items.clone();
         data[index]["def"]["value"] = data[index]["def"]["type"].clone();
         std::fs::write(
-            &path,
+            path,
             data.iter()
                 .map(Value::to_string)
                 .collect::<Vec<_>>()
@@ -113,7 +111,6 @@ fn parallel_export_rejects_invalid_declarations_in_each_partition() {
         corrupted += 1;
     }
     assert!(corrupted >= 2);
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

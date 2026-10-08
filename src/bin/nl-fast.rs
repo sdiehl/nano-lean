@@ -1,36 +1,66 @@
+use clap::{Parser, value_parser};
 use indicatif::{ProgressBar, ProgressStyle};
+use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
 use nano_lean::checker::{Adapter, Limits};
 use nano_lean::import::{self, ImportError, blean};
 use nano_lean::term::{arena::Arena, intern::Store, outcome};
 use nano_lean::value_checker::{self, Session};
 use nano_lean::verdict::Core;
 use std::collections::HashSet;
-use std::ffi::c_long;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use std::{env, fs, process, thread};
+use std::{fs, process, thread};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const USAGE: &str = "usage: nl-fast [FILE|-] [-j THREADS] [--fallback] [--term-core] [--declaration NAME] [--only FILE] [--limit N] [--steps N] [--arena-mib N] [--import-only] [--trace]\nReads stdin when FILE is omitted or `-`.";
 const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
 const DEFAULT_STEPS: u64 = 200_000_000;
-const DEFAULT_ARENA_MIB: usize = 2048;
+const DEFAULT_ARENA_MIB: u32 = 2048;
 const MIB: usize = 1 << 20;
-const MAX_THREADS: usize = 64;
+const MAX_THREADS: i64 = 64;
 const WORKER_STACK_BYTES: usize = 64 << 20;
 const FAILURES_SHOWN: usize = 30;
 const TICK: Duration = Duration::from_millis(250);
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const SESSION_BYTES: usize = 64 << 20;
-const MI_OPTION_PURGE_DELAY: i32 = 15;
+const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
 
-unsafe extern "C" {
-    fn mi_option_set(option: i32, value: c_long);
-    fn mi_collect(force: bool);
+/// Check a Lean export (ndjson or blean) with the fast checker.
+#[derive(Parser)]
+#[command(name = "nl-fast")]
+struct Cli {
+    /// Export to check, or `-` for stdin
+    path: Option<String>,
+    #[arg(short = 'j', long, default_value_t = 1, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
+    threads: u16,
+    /// Check only this declaration
+    #[arg(long, value_name = "NAME")]
+    declaration: Option<String>,
+    /// Check only the declarations listed one per line in FILE
+    #[arg(long, value_name = "FILE")]
+    only: Option<String>,
+    /// Check at most N declarations
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+    /// Work budget per declaration
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_STEPS)]
+    steps: u64,
+    #[arg(long, value_name = "MIB", default_value_t = DEFAULT_ARENA_MIB)]
+    arena_mib: u32,
+    /// Stop after import
+    #[arg(long)]
+    import_only: bool,
+    #[arg(long)]
+    trace: bool,
+    /// Retry with a reset arena when a declaration exhausts it
+    #[arg(long)]
+    fallback: bool,
+    /// Use the term core instead of the value core
+    #[arg(long)]
+    term_core: bool,
 }
 
 struct Options {
@@ -46,19 +76,6 @@ struct Options {
     limits: Limits,
 }
 
-fn usage() -> ! {
-    eprintln!("{USAGE}");
-    process::exit(2)
-}
-
-fn number<T: std::str::FromStr>(args: &mut impl Iterator<Item = String>) -> T {
-    value(args).parse().unwrap_or_else(|_| usage())
-}
-
-fn value(args: &mut impl Iterator<Item = String>) -> String {
-    args.next().unwrap_or_else(|| usage())
-}
-
 fn names(file: &str) -> HashSet<String> {
     let text = fs::read_to_string(file).unwrap_or_else(|e| {
         eprintln!("{file}: {e}");
@@ -71,54 +88,27 @@ fn names(file: &str) -> HashSet<String> {
         .collect()
 }
 
-fn options() -> Option<Options> {
-    let mut o = Options {
-        path: None,
-        threads: 1,
-        selected: None,
-        only: None,
-        limit: usize::MAX,
-        import_only: false,
-        trace: false,
-        native_only: true,
-        core: Core::Value,
-        limits: Limits {
-            steps: DEFAULT_STEPS,
-            arena_bytes: DEFAULT_ARENA_MIB * MIB,
+fn options() -> Options {
+    let cli = Cli::parse();
+    Options {
+        path: cli.path.filter(|p| p != "-"),
+        threads: cli.threads.into(),
+        selected: cli.declaration,
+        only: cli.only.as_deref().map(names),
+        limit: cli.limit.unwrap_or(usize::MAX),
+        import_only: cli.import_only,
+        trace: cli.trace,
+        native_only: !cli.fallback,
+        core: if cli.term_core {
+            Core::Term
+        } else {
+            Core::Value
         },
-    };
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return None;
-            }
-            "-j" | "--threads" => o.threads = number(&mut args),
-            "--declaration" => o.selected = Some(value(&mut args)),
-            "--only" => o.only = Some(names(&value(&mut args))),
-            "--limit" => o.limit = number(&mut args),
-            "--import-only" => o.import_only = true,
-            "--trace" => o.trace = true,
-            "--fallback" => o.native_only = false,
-            "--term-core" => o.core = Core::Term,
-            "--steps" => o.limits.steps = number(&mut args),
-            "--arena-mib" => {
-                o.limits.arena_bytes = number::<usize>(&mut args)
-                    .checked_mul(MIB)
-                    .unwrap_or_else(|| usage())
-            }
-            "-" => o.path = None,
-            a if a.starts_with('-') => usage(),
-            _ if o.path.is_none() => o.path = Some(arg),
-            _ => usage(),
-        }
+        limits: Limits {
+            steps: cli.steps,
+            arena_bytes: cli.arena_mib as usize * MIB,
+        },
     }
-    assert!(
-        (1..=MAX_THREADS).contains(&o.threads),
-        "thread count must be between 1 and 64"
-    );
-    Some(o)
 }
 
 fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
@@ -147,9 +137,7 @@ fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
 }
 
 fn main() {
-    let Some(o) = options() else {
-        return;
-    };
+    let o = options();
     let t = Instant::now();
     let arena = Arena::new();
     let store = load(&arena, o.path.as_deref());
