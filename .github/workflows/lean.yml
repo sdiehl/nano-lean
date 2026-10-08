@@ -1,90 +1,89 @@
 # Downstream Lean projects from the README, each pinned to its own toolchain.
-# Disabled until nano-lean supports those Lean versions and their export pins
-# are recorded. Uncomment an entry once its toolchain is supported.
-#
-# name: Lean projects
-#
-# on:
-#   push:
-#   workflow_dispatch:
-#
-# permissions:
-#   contents: read
-#
-# concurrency:
-#   group: lean-${{ github.ref }}
-#   cancel-in-progress: true
-#
-# jobs:
-#   project:
-#     name: ${{ matrix.project }} (Lean ${{ matrix.lean }})
-#     runs-on: ubuntu-24.04
-#     timeout-minutes: 100
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         include:
-#           - project: navier-stokes-euler
-#             repository: openai/NavierStokesAndEuler
-#             ref: f9e8bc5b38b6e212696e8a30e3e91517af887bbd
-#             root: .
-#             lean: 4.34.0-rc2
-#             modules: NavierStokes.ComparatorSolution Euler.Solution
-#           - project: cslib
-#             repository: leanprover/cslib
-#             ref: cd48dc2ae0e13e563d5f7085b19e170c5c273eb2
-#             root: .
-#             lean: 4.35.0-rc4
-#             modules: Cslib
-#           - project: quasi-riemann
-#             repository: openai/math
-#             ref: fd4aeeb2ee4fc729c18d98444fed42fd0529eeeb
-#             root: lean
-#             lean: 4.34.1
-#             modules: ComparatorChallenges.QuasiRiemannHypothesis
-#           - project: erdos-reciprocal
-#             repository: openai/math
-#             ref: fd4aeeb2ee4fc729c18d98444fed42fd0529eeeb
-#             root: lean
-#             lean: 4.34.1
-#             modules: ComparatorChallenges.ErdosReciprocal
-#     env:
-#       CARGO_BUILD_JOBS: 2
-#       EXPORTER_VERSION: 0.1.0
-#       LEAN_VERSION: ${{ matrix.lean }}
-#       MODULES: ${{ matrix.modules }}
-#       PROJECT: .ci/${{ matrix.project }}/${{ matrix.root }}
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: dtolnay/rust-toolchain@stable
-#       - run: cargo build --release --locked --bin nl-fast
-#       - uses: actions/checkout@v4
-#         with:
-#           repository: ${{ matrix.repository }}
-#           ref: ${{ matrix.ref }}
-#           path: .ci/${{ matrix.project }}
-#       - name: Check the project pins the matrix toolchain
-#         run: test "$(cat "$PROJECT/lean-toolchain")" = "leanprover/lean4:v$LEAN_VERSION"
-#       - name: Export and check
-#         run: |
-#           sudo systemd-run --unit=nano-project-check --wait --pipe --collect \
-#             --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
-#             --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
-#             --setenv="LEAN_VERSION=$LEAN_VERSION" --setenv="MODULES=$MODULES" \
-#             --setenv="PROJECT=$PROJECT" --setenv="EXPORTER_VERSION=$EXPORTER_VERSION" \
-#             --property=MemoryMax=14G --property=MemorySwapMax=0 \
-#             --property=OOMPolicy=kill --property=RuntimeMaxSec=5400 \
-#             bash -euxo pipefail <<'RUN'
-#           root=$PWD
-#           curl --fail --location --retry 3 \
-#             https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o .ci/elan-init.sh
-#           bash .ci/elan-init.sh -y --default-toolchain "leanprover/lean4:v$LEAN_VERSION"
-#           export PATH="$HOME/.elan/bin:$PATH"
-#           cargo install olean-export --version "=$EXPORTER_VERSION" --locked -j 2 \
-#             --root "$root/.ci/exporter"
-#           cd "$PROJECT"
-#           lake exe cache get
-#           lake build $MODULES
-#           lake env "$root/.ci/exporter/bin/olean-export" $MODULES -j 2 -o "$root/.ci/project.ndjson"
-#           "$root/target/release/nl-fast" "$root/.ci/project.ndjson" --trace
-#           RUN
+# Disabled until nano-lean supports those Lean versions. To enable, remove
+# `if: false`, add `push:` under `on`, and drop unsupported matrix entries.
+
+name: Lean projects
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  project:
+    name: ${{ matrix.project }} (Lean ${{ matrix.lean }})
+    if: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: navier-stokes-euler
+            repository: openai/NavierStokesAndEuler
+            ref: f9e8bc5b38b6e212696e8a30e3e91517af887bbd
+            root: .
+            lean: 4.34.0-rc2
+            modules: NavierStokes.ComparatorSolution Euler.Solution
+          - project: cslib
+            repository: leanprover/cslib
+            ref: cd48dc2ae0e13e563d5f7085b19e170c5c273eb2
+            root: .
+            lean: 4.35.0-rc4
+            modules: Cslib
+          - project: quasi-riemann
+            repository: openai/math
+            ref: fd4aeeb2ee4fc729c18d98444fed42fd0529eeeb
+            root: lean
+            lean: 4.34.1
+            modules: ComparatorChallenges.QuasiRiemannHypothesis
+          - project: erdos-reciprocal
+            repository: openai/math
+            ref: fd4aeeb2ee4fc729c18d98444fed42fd0529eeeb
+            root: lean
+            lean: 4.34.1
+            modules: ComparatorChallenges.ErdosReciprocal
+    env:
+      CARGO_BUILD_JOBS: 2
+      EXPORTER_VERSION: 0.1.0
+      LEAN_VERSION: ${{ matrix.lean }}
+      MODULES: ${{ matrix.modules }}
+      PROJECT: .ci/${{ matrix.project }}/${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked --bin nl-fast
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          path: .ci/${{ matrix.project }}
+      - name: Check the project pins the matrix toolchain
+        run: test "$(cat "$PROJECT/lean-toolchain")" = "leanprover/lean4:v$LEAN_VERSION"
+      - name: Export and check
+        run: |
+          sudo systemd-run --unit=nano-project-check --wait --pipe --collect \
+            --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
+            --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
+            --setenv="LEAN_VERSION=$LEAN_VERSION" --setenv="MODULES=$MODULES" \
+            --setenv="PROJECT=$PROJECT" --setenv="EXPORTER_VERSION=$EXPORTER_VERSION" \
+            --property=MemoryMax=14G --property=MemorySwapMax=0 \
+            --property=OOMPolicy=kill --property=RuntimeMaxSec=5400 \
+            bash -euxo pipefail <<'RUN'
+          root=$PWD
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o .ci/elan-init.sh
+          bash .ci/elan-init.sh -y --default-toolchain "leanprover/lean4:v$LEAN_VERSION"
+          export PATH="$HOME/.elan/bin:$PATH"
+          cargo install olean-export --version "=$EXPORTER_VERSION" --locked -j 2 \
+            --root "$root/.ci/exporter"
+          cd "$PROJECT"
+          lake exe cache get
+          lake build $MODULES
+          lake env "$root/.ci/exporter/bin/olean-export" $MODULES -j 2 -o "$root/.ci/project.ndjson"
+          "$root/target/release/nl-fast" "$root/.ci/project.ndjson" --trace
+          RUN
