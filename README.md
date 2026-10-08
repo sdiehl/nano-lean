@@ -78,6 +78,16 @@ Checking the full imported environment of [OpenAI's Navier–Stokes and Euler pr
 | Cycles                | 333.2 G       | 426.4 G        | 471.3 G        | 483.5 G        | 566.2 G        |
 | Peak memory footprint | 10.14 GB      | 11.56 GB       | 12.29 GB       | 14.62 GB       | 19.86 GB       |
 
+Checking the full imported environment of [CSLib](https://github.com/leanprover/cslib) from the blean binary export
+
+|                       | M4 Max `-j 1` | M4 Max `-j 10` | M4 Max `-j 14` | M4 Max `-j 28` | M4 Max `-j 64` |
+| --------------------- | ------------- | -------------- | -------------- | -------------- | -------------- |
+| Wall time             | 21.74 s       | 4.61 s         | 4.42 s         | 4.56 s         | 4.74 s         |
+| Kernel check          | 20.04 s       | 2.96 s         | 2.75 s         | 2.81 s         | 3.04 s         |
+| Instructions          | 258.0 G       | 296.1 G        | 300.8 G        | 305.5 G        | 309.2 G        |
+| Cycles                | 87.5 G        | 120.4 G        | 136.6 G        | 141.1 G        | 142.4 G        |
+| Peak memory footprint | 3.18 GB       | 5.89 GB        | 6.92 GB        | 8.92 GB        | 12.08 GB       |
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
