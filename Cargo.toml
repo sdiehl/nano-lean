@@ -15,7 +15,7 @@ profile = []
 vstats = []
 
 [dependencies]
-unbound = { git = "https://github.com/sdiehl/unbound", rev = "133e29e3ef661a09cedb9b342eb306e136fb7122" }
+unbound = "0.4.0"
 logos = "0.16"
 lalrpop-util = "0.23.1"
 offsides = "0.2.1"
@@ -31,7 +31,7 @@ hashbrown = "0.17.1"
 smallvec = { version = "1", features = ["union"] }
 mimalloc = "0.1.52"
 indicatif = "0.18.6"
-olean-export = { git = "https://github.com/sdiehl/olean-export", rev = "29b21a386f79e36131060a50175673f583fb57c0" }
+olean-export = "0.2.0"
 memmap2 = "0.9.11"
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 memchr = "2.8.3"

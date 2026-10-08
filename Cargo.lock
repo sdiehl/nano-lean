@@ -653,8 +653,9 @@ checksum = "da038d8d8338082be2ca0d8ecd3f096233c7f2b69e69be0e6fbb2c8b193336a4"
 
 [[package]]
 name = "olean-export"
-version = "0.1.0"
-source = "git+https://github.com/sdiehl/olean-export?rev=29b21a386f79e36131060a50175673f583fb57c0#29b21a386f79e36131060a50175673f583fb57c0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d6ca8cfa21c6c4319b593499ef69111ddbdd3d85f3c8d2fcb203bf29e81364b"
 dependencies = [
  "clap",
  "hashbrown 0.17.1",
@@ -1054,7 +1055,8 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "unbound"
 version = "0.4.0"
-source = "git+https://github.com/sdiehl/unbound?rev=133e29e3ef661a09cedb9b342eb306e136fb7122#133e29e3ef661a09cedb9b342eb306e136fb7122"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c9259de1fdefc2f2d48063c137bff622a1e3bd8236609dcf9f6131350a80995"
 dependencies = [
  "foldhash 0.2.0",
  "hashbrown 0.17.1",
@@ -1064,7 +1066,8 @@ dependencies = [
 [[package]]
 name = "unbound-derive"
 version = "0.4.0"
-source = "git+https://github.com/sdiehl/unbound?rev=133e29e3ef661a09cedb9b342eb306e136fb7122#133e29e3ef661a09cedb9b342eb306e136fb7122"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77834d117ea47669d2da0ac20f4703d6f68598847180399115732a5cdb48d326"
 dependencies = [
  "proc-macro2",
  "quote",
