@@ -98,6 +98,16 @@ Checking [OpenAI's quasi-Riemann hypothesis proof](https://github.com/openai/mat
 | Cycles                | 84.0 G        | 108.0 G        | 122.6 G        | 125.2 G        | 127.2 G        |
 | Peak memory footprint | 3.12 GB       | 6.80 GB        | 7.42 GB        | 10.15 GB       | 12.08 GB       |
 
+Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/blob/main/lean/docs/159.md) and its dependencies from the blean binary export
+
+|                       | M4 Max `-j 1` | M4 Max `-j 14` |
+| --------------------- | ------------- | -------------- |
+| Wall time             | 94.58 s       | 23.33 s        |
+| Kernel check          | 91.80 s       | 19.11 s        |
+| Instructions          | 796.9 G       | 837.9 G        |
+| Cycles                | 375.6 G       | 550.0 G        |
+| Peak memory footprint | 12.64 GB      | 26.42 GB       |
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
