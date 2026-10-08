@@ -89,7 +89,9 @@ impl Family<'_> {
             let (is, result) = tc.telescope(&rest)?;
             demand(is.len() == t.num_indices, "incorrect inductive index count")?;
             let Expr::Sort(level) = result else {
-                return Err(Error("inductive type does not end in a sort".into()));
+                return Err(Error::Rejected(
+                    "inductive type does not end in a sort".into(),
+                ));
             };
             if i == 0 {
                 result_level = level;
@@ -117,7 +119,7 @@ impl Family<'_> {
                 let c = constructors
                     .iter()
                     .find(|c| c.name == *name)
-                    .ok_or_else(|| Error("missing constructor".into()))?;
+                    .ok_or_else(|| Error::Rejected("missing constructor".into()))?;
                 demand(
                     c.inductive == t.name
                         && c.index == index
@@ -146,7 +148,7 @@ impl Family<'_> {
                     shapes.reflexive |= has && matches!(ty, Expr::Pi(..));
                 }
                 let Some((i, args)) = self.application(&ret) else {
-                    return Err(Error("invalid constructor return type".into()));
+                    return Err(Error::Rejected("invalid constructor return type".into()));
                 };
                 demand(i == owner, "constructor returns the wrong inductive type")?;
                 shapes.shapes.push(ConstructorShape {

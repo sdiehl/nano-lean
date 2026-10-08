@@ -67,7 +67,7 @@ impl Checker<'_> {
             .env
             .constructors
             .get(&name)
-            .ok_or_else(|| Error("missing recursor constructor".into()))?
+            .ok_or_else(|| Error::Rejected("missing recursor constructor".into()))?
             .num_params;
         if fields.len() != ctor_params + rule.num_fields {
             return Ok(None);
@@ -124,7 +124,7 @@ impl Checker<'_> {
                 subst
                     .get(n)
                     .cloned()
-                    .ok_or_else(|| Error("missing recursor universe argument".into()))
+                    .ok_or_else(|| Error::Rejected("missing recursor universe argument".into()))
             })
             .collect::<Result<Vec<_>>>()?;
         let replacement = apply(
@@ -170,14 +170,14 @@ impl Checker<'_> {
         let ty = self.whnf(&ty)?;
         let (head, args) = spine(&ty);
         let Expr::Const(n, levels) = head else {
-            return Err(Error("projection from non-inductive type".into()));
+            return Err(Error::Rejected("projection from non-inductive type".into()));
         };
         demand(n == name, "projection type name mismatch")?;
         let info = self
             .env
             .inductives
             .get(name)
-            .ok_or_else(|| Error("projection from non-inductive type".into()))?;
+            .ok_or_else(|| Error::Rejected("projection from non-inductive type".into()))?;
         demand(
             info.constructors.len() == 1 && args.len() == info.num_params + info.num_indices,
             "projection requires a single-constructor inductive",
@@ -188,14 +188,14 @@ impl Checker<'_> {
         let mut field_ty = self.substitute_levels(&ctor.ty, &subst)?;
         for arg in args.into_iter().take(ctor.num_params) {
             let Expr::Pi(_, body) = self.whnf(&field_ty)? else {
-                return Err(Error("invalid constructor telescope".into()));
+                return Err(Error::Rejected("invalid constructor telescope".into()));
             };
             field_ty = (*body.instantiate(&arg)).clone();
         }
         let prop = is_zero(&self.sort(&ty)?)?;
         for i in 0..index {
             let Expr::Pi(domain, body) = self.whnf(&field_ty)? else {
-                return Err(Error("invalid projection telescope".into()));
+                return Err(Error::Rejected("invalid projection telescope".into()));
             };
             let (n, opened) = body.unbind_ref();
             let depends = opened.fv().contains(&n.to_any().unwrap());
@@ -208,7 +208,7 @@ impl Checker<'_> {
             field_ty = (*body.instantiate(&Expr::Proj(name.into(), i, e.clone()))).clone();
         }
         let Expr::Pi(domain, _) = self.whnf(&field_ty)? else {
-            return Err(Error("invalid projection telescope".into()));
+            return Err(Error::Rejected("invalid projection telescope".into()));
         };
         if prop {
             demand(

@@ -84,7 +84,7 @@ LevelAtom: Level = {
     "(" <u:Level> ")" => u,
 };
 Small: usize = <n:"num"> =>? n.parse::<u32>().map(|n| n as usize).map_err(|_| ParseError::User {
-    error: Error(format!("number too large: {n}")),
+    error: Error::Rejected(format!("number too large: {n}")),
 });
 
 Comma<T>: Vec<T> = <head:T> <tail:("," T)*> => {

@@ -63,7 +63,7 @@ fn malformed_layout_and_lexical_errors_are_rejected() {
 #[test]
 fn run_reports_failing_command_and_accepts_empty_programs() {
     let err = run("axiom A : Type; check A : Prop", &mut Environment::new()).unwrap_err();
-    assert!(err.0.starts_with("command 2:"));
+    assert!(err.to_string().starts_with("command 2:"));
     assert!(
         run("-- empty\n", &mut Environment::new())
             .unwrap()

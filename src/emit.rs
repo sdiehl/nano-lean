@@ -79,7 +79,7 @@ impl Writer {
         let mut node = match e {
             Expr::Var(n) => match n.coordinates() {
                 Some((index, _)) => json!({"bvar": index}),
-                None => return Err(Error(format!("open term: free variable {n}"))),
+                None => return Err(Error::Rejected(format!("open term: free variable {n}"))),
             },
             Expr::Sort(u) => json!({"sort": self.level(u)}),
             Expr::Const(n, us) => {

@@ -10,10 +10,6 @@ pub(super) fn unsupported(s: impl Into<String>) -> ExportError {
     ExportError::Unsupported(s.into())
 }
 
-pub(super) fn io(e: std::io::Error) -> ExportError {
-    invalid(e.to_string())
-}
-
 pub(super) fn index(v: &Value) -> Result<usize> {
     v.as_u64()
         .and_then(|n| usize::try_from(n).ok())

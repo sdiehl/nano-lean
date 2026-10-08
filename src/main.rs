@@ -3,10 +3,9 @@ mod parallel;
 use clap::{ArgGroup, Parser};
 use nano_lean::{
     Environment, emit,
-    export::{ExportError, ExportReport, check_export, check_export_file, check_export_file_shard},
+    export::{ExportError, Report, check_export, check_export_file, check_export_file_shard},
     parser,
 };
-use serde_json::{Value, json};
 use std::{
     error::Error,
     fs::{self, File},
@@ -54,25 +53,26 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(jobs) = cli.export_parallel {
-        report(parallel::run(
-            cli.file.as_deref().unwrap(),
-            jobs,
-            cli.memory_mib,
-        ))
+        print_report(
+            parallel::run(cli.file.as_deref().unwrap(), jobs, cli.memory_mib)
+                .unwrap_or_else(|reason| Report::Rejected { reason }),
+        )
     } else if let Some(shard) = cli.export_shard {
-        report((|| {
-            let index = number(&shard[1], "shard index")?;
-            check_export_file_shard(&shard[0], index, number(&shard[2], "worker count")?)
-                .map(|r| r.json())
-                .map_err(|e| e.to_string())
-        })())
+        print_report(
+            number(&shard[1], "shard index")
+                .and_then(|index| Ok((index, number(&shard[2], "worker count")?)))
+                .map_err(ExportError::Invalid)
+                .and_then(|(index, jobs)| check_export_file_shard(&shard[0], index, jobs))
+                .map_or_else(Report::from, Report::from),
+        )
     } else if let Some(path) = cli.export {
-        verdict(check_export_file(&path))
+        print_report(check_export_file(&path).map_or_else(Report::from, Report::from))
     } else if let Some(path) = cli.export_stream {
-        verdict(
+        print_report(
             File::open(path)
-                .map_err(|e| ExportError::Invalid(e.to_string()))
-                .and_then(|file| check_export(BufReader::new(file))),
+                .map_err(ExportError::from)
+                .and_then(|file| check_export(BufReader::new(file)))
+                .map_or_else(Report::from, Report::from),
         )
     } else if let Some(path) = cli.emit {
         finish(
@@ -117,34 +117,11 @@ fn finish(result: Result<(), Box<dyn Error>>) -> ExitCode {
     }
 }
 
-fn verdict(result: Result<ExportReport, ExportError>) -> ExitCode {
-    match result {
-        Ok(report) => {
-            println!("{}", report.json());
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            let unsupported = matches!(e, ExportError::Unsupported(_));
-            let status = if unsupported {
-                "unsupported"
-            } else {
-                "rejected"
-            };
-            println!("{}", json!({"status": status, "reason": e.to_string()}));
-            ExitCode::from(if unsupported { 2 } else { 1 })
-        }
-    }
-}
-
-fn report(result: Result<Value, String>) -> ExitCode {
-    match result {
-        Ok(report) => {
-            println!("{report}");
-            ExitCode::SUCCESS
-        }
-        Err(reason) => {
-            println!("{}", json!({"status": "rejected", "reason": reason}));
-            ExitCode::FAILURE
-        }
-    }
+fn print_report(report: Report) -> ExitCode {
+    println!("{report}");
+    ExitCode::from(match report {
+        Report::Checked { .. } | Report::ShardChecked(_) => 0,
+        Report::Rejected { .. } => 1,
+        Report::Unsupported { .. } => 2,
+    })
 }

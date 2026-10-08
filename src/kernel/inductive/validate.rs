@@ -36,7 +36,7 @@ impl Environment {
                 .constructors
                 .iter()
                 .find(|c| c.name == e.name)
-                .ok_or_else(|| Error("missing constructor".into()))?;
+                .ok_or_else(|| Error::Rejected("missing constructor".into()))?;
             let mut tc = self.checker(&e.params);
             tc.sort(&a.ty)?;
             demand(tc.conv(&a.ty, &e.ty)?, "incorrect constructor type")?;
@@ -46,7 +46,7 @@ impl Environment {
                 .recursors
                 .iter()
                 .find(|r| r.name == e.name)
-                .ok_or_else(|| Error("missing recursor".into()))?;
+                .ok_or_else(|| Error::Rejected("missing recursor".into()))?;
             self.validate_recursor(a, e, &expected.types[0].params)?;
         }
         Ok(())

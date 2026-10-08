@@ -43,7 +43,7 @@ fn check(s: &str) -> Result<nano_lean::export::ExportReport, ExportError> {
     let file = check_export_file(file.path());
     let stream = check_export(Cursor::new(s));
     match (&stream, &file) {
-        (Ok(a), Ok(b)) => assert_eq!(a.json(), b.json()),
+        (Ok(a), Ok(b)) => assert_eq!(a, b),
         (Err(a), Err(b)) => assert_eq!(std::mem::discriminant(a), std::mem::discriminant(b)),
         _ => panic!("stream/file mismatch: {stream:?} versus {file:?}"),
     }

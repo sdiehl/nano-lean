@@ -52,7 +52,7 @@ impl Environment {
                 name,
                 params,
                 ty,
-                value.ok_or_else(|| Error("missing theorem body".into()))?,
+                value.ok_or_else(|| Error::Rejected("missing theorem body".into()))?,
             ),
             ExportDependency::Ordinary {
                 name,
@@ -121,7 +121,7 @@ impl ExportSession {
     ) -> Result<()> {
         let index = self
             .target
-            .ok_or_else(|| Error("missing export target".into()))?;
+            .ok_or_else(|| Error::Rejected("missing export target".into()))?;
         self.env.export_work = Some(work);
         let result = self.extend(dependencies, target, theorem, index);
         if result.is_err() {
@@ -139,7 +139,7 @@ impl ExportSession {
     ) -> Result<()> {
         for (dependency_index, dependency) in dependencies {
             if dependency_index >= index || self.known.contains(&dependency_index) {
-                return Err(Error("invalid cached export dependency".into()));
+                return Err(Error::Rejected("invalid cached export dependency".into()));
             }
             let name = ordinary_name(&dependency);
             self.env.assume_dependency(dependency)?;

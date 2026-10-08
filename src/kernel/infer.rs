@@ -12,7 +12,9 @@ impl Checker<'_> {
     pub(super) fn sort_type(&mut self, e: &Expr, ty: Expr) -> Result<Level> {
         match self.whnf(&ty)? {
             Expr::Sort(u) => Ok(u),
-            other => Err(Error(format!("expected a type, but {e} has type {other}"))),
+            other => Err(Error::Rejected(format!(
+                "expected a type, but {e} has type {other}"
+            ))),
         }
     }
     pub(super) fn check(&mut self, e: &Expr, expected: &Expr) -> Result<()> {
@@ -26,7 +28,7 @@ impl Checker<'_> {
         if self.conv(&actual, expected)? {
             Ok(())
         } else {
-            Err(Error(format!(
+            Err(Error::Rejected(format!(
                 "type mismatch: {e}\n  expected: {expected}\n  inferred: {actual}"
             )))
         }
@@ -82,7 +84,7 @@ impl Checker<'_> {
                     .rev()
                     .find(|(m, _)| n == m)
                     .map(|(_, ty)| ty.clone())
-                    .ok_or_else(|| Error(format!("unbound variable: {n}")))
+                    .ok_or_else(|| Error::Rejected(format!("unbound variable: {n}")))
             }
             Expr::Sort(u) => {
                 self.valid_level(u)?;
@@ -137,7 +139,7 @@ impl Checker<'_> {
                             Ok((**body.body()).clone())
                         }
                     }
-                    other => Err(Error(format!(
+                    other => Err(Error::Rejected(format!(
                         "expected a function, but {fun} has type {other}"
                     ))),
                 }

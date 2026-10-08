@@ -150,17 +150,19 @@ impl Environment {
         let primitive = PRIMITIVES
             .iter()
             .find(|p| p.kind.label() == kind)
-            .ok_or_else(|| Error("invalid quotient kind".into()))?;
+            .ok_or_else(|| Error::Rejected("invalid quotient kind".into()))?;
         let encoded = name.starts_with('[');
         let sym = |s: &str| symbol(s, encoded);
         if name != sym(primitive.name) || params.len() != primitive.params.len() {
-            return Err(Error(
+            return Err(Error::Rejected(
                 "incorrect quotient name or universe parameter count".into(),
             ));
         }
         for dependency in primitive.prerequisites {
             if !self.quotients.contains(&sym(dependency)) {
-                return Err(Error("missing validated quotient primitive".into()));
+                return Err(Error::Rejected(
+                    "missing validated quotient primitive".into(),
+                ));
             }
         }
         self.validate_quotient_equality(encoded)?;
@@ -169,7 +171,9 @@ impl Environment {
         tc.uparams = params.iter().cloned().collect();
         tc.sort(&ty)?;
         if !tc.conv(&ty, &expected)? {
-            return Err(Error("incorrect quotient primitive signature".into()));
+            return Err(Error::Rejected(
+                "incorrect quotient primitive signature".into(),
+            ));
         }
         self.declare(name.clone(), params, ty, None, false)?;
         self.quotients.insert(name);
@@ -179,8 +183,11 @@ impl Environment {
     fn validate_quotient_equality(&self, encoded: bool) -> Result<()> {
         let eq_name = symbol(EQ, encoded);
         let refl_name = symbol(EQ_REFL, encoded);
-        let bad =
-            || Error("quotient requires the standard Eq inductive and Eq.refl constructor".into());
+        let bad = || {
+            Error::Rejected(
+                "quotient requires the standard Eq inductive and Eq.refl constructor".into(),
+            )
+        };
         let eq = self.inductives.get(&eq_name).ok_or_else(bad)?;
         let refl = self.constructors.get(&refl_name).ok_or_else(bad)?;
         if eq.params.len() != 1
@@ -260,7 +267,7 @@ mod tests {
                 "type",
             )
             .unwrap_err();
-        assert!(error.0.contains("standard Eq"));
+        assert!(error.to_string().contains("standard Eq"));
         assert!(env.infer(&Expr::constant(QUOT)).is_err());
     }
 }

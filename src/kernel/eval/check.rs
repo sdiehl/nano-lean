@@ -201,9 +201,9 @@ impl<'b, 'a> Session<'b, 'a> {
         match self.view(&ty, true)? {
             View::Value(v) if v.args.is_empty() => match &v.head {
                 Expr::Sort(u) => Ok(u.clone()),
-                _ => Err(Error("expected a type".into())),
+                _ => Err(Error::Rejected("expected a type".into())),
             },
-            _ => Err(Error("expected a type".into())),
+            _ => Err(Error::Rejected("expected a type".into())),
         }
     }
     fn type_sort(&mut self, ty: &Type) -> Result<Level> {
@@ -231,7 +231,7 @@ impl<'b, 'a> Session<'b, 'a> {
         }
         let actual = self.quote_type(actual)?;
         let expected = self.ev.quote(expected, 0);
-        Err(Error(format!(
+        Err(Error::Rejected(format!(
             "type mismatch:\n  expected: {expected}\n  inferred: {actual}"
         )))
     }
@@ -267,7 +267,7 @@ impl<'b, 'a> Session<'b, 'a> {
                     .get(n)
                     .cloned()
                     .map(Type::Term)
-                    .ok_or_else(|| Error(format!("unbound variable: {n}")));
+                    .ok_or_else(|| Error::Rejected(format!("unbound variable: {n}")));
             }
             Expr::Pi(d, b) | Expr::Lam(d, b) => {
                 let domain = self.child(d, e);
@@ -315,7 +315,7 @@ impl<'b, 'a> Session<'b, 'a> {
                 let mut ty = self.infer(&head, checking)?;
                 for arg in args.into_iter().rev() {
                     let View::Pi(domain, body) = self.view(&ty, true)? else {
-                        return Err(Error("expected a function".into()));
+                        return Err(Error::Rejected("expected a function".into()));
                     };
                     if checking {
                         let actual = self.infer(&arg, true)?;
@@ -367,13 +367,13 @@ impl<'b, 'a> Session<'b, 'a> {
     ) -> Result<Type> {
         let ty = self.infer(source, checking)?;
         let View::Value(v) = self.view(&ty, true)? else {
-            return Err(Error("projection from non-inductive type".into()));
+            return Err(Error::Rejected("projection from non-inductive type".into()));
         };
         let Expr::Const(n, levels) = &v.head else {
-            return Err(Error("projection from non-inductive type".into()));
+            return Err(Error::Rejected("projection from non-inductive type".into()));
         };
         if n != name {
-            return Err(Error("projection type name mismatch".into()));
+            return Err(Error::Rejected("projection type name mismatch".into()));
         }
         let info = self
             .ev
@@ -381,29 +381,29 @@ impl<'b, 'a> Session<'b, 'a> {
             .env
             .inductives
             .get(name)
-            .ok_or_else(|| Error("projection from non-inductive type".into()))?;
+            .ok_or_else(|| Error::Rejected("projection from non-inductive type".into()))?;
         if info.constructors.len() != 1 || v.args.len() != info.num_params + info.num_indices {
-            return Err(Error(
+            return Err(Error::Rejected(
                 "projection requires a single-constructor inductive".into(),
             ));
         }
         let ctor = self.ev.tc.env.constructors[&info.constructors[0]].clone();
         if index >= ctor.num_fields {
-            return Err(Error("projection field out of range".into()));
+            return Err(Error::Rejected("projection field out of range".into()));
         }
         let subst = self.ev.tc.level_arguments(&ctor.params, levels)?;
         let expr = self.ev.tc.substitute_levels(&ctor.ty, &subst)?;
         let mut field = Type::Term(self.ev.term(expr, None));
         for arg in v.args.iter().take(ctor.num_params) {
             let View::Pi(_, body) = self.view(&field, true)? else {
-                return Err(Error("invalid constructor telescope".into()));
+                return Err(Error::Rejected("invalid constructor telescope".into()));
             };
             field = self.apply_body(&body, arg)?;
         }
         let prop = self.type_sort(&ty)?.equivalent(&Level::Nat(0))?;
         for i in 0..=index {
             let View::Pi(domain, body) = self.view(&field, true)? else {
-                return Err(Error("invalid projection telescope".into()));
+                return Err(Error::Rejected("invalid projection telescope".into()));
             };
             let body_id = self.ev.tc.cache.id(&body.expr);
             let dependent = match self.ev.tc.cache.bound_support(body_id) {
@@ -418,7 +418,9 @@ impl<'b, 'a> Session<'b, 'a> {
                 && (i == index || dependent)
                 && !self.sort(&domain, false)?.equivalent(&Level::Nat(0))?
             {
-                return Err(Error("projection eliminates proposition into data".into()));
+                return Err(Error::Rejected(
+                    "projection eliminates proposition into data".into(),
+                ));
             }
             if i == index {
                 return Ok(Type::Term(domain));

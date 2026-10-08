@@ -1,8 +1,6 @@
 use super::*;
 use num_bigint::BigUint;
 
-const PROBE_EXHAUSTED: &str = "conversion probe exhausted";
-
 impl Session<'_, '_> {
     pub(super) fn conv(&mut self, a: &Type, b: &Type, types: bool) -> Result<bool> {
         if a.id() == b.id() {
@@ -21,9 +19,7 @@ impl Session<'_, '_> {
     }
     fn conv_core(&mut self, a: &Type, b: &Type, types: bool) -> Result<bool> {
         if let Some(fuel) = &mut self.ev.tc.probe_fuel {
-            *fuel = fuel
-                .checked_sub(1)
-                .ok_or_else(|| Error(PROBE_EXHAUSTED.into()))?;
+            *fuel = fuel.checked_sub(1).ok_or(Error::ProbeExhausted)?;
         }
         self.ev.tc.tick()?;
         #[cfg(feature = "profile")]
@@ -195,7 +191,7 @@ impl Session<'_, '_> {
             }
             match result {
                 // An interrupted comparison is not a cached inequality.
-                Err(e) if probe && e.0 == PROBE_EXHAUSTED => return Ok(false),
+                Err(Error::ProbeExhausted) if probe => return Ok(false),
                 Err(e) => return Err(e),
                 Ok(false) => return Ok(false),
                 Ok(true) => {}

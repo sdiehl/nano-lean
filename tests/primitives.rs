@@ -111,12 +111,10 @@ fn large_naturals_stay_exact_and_resource_limits_are_explicit() {
     let huge_shift = Expr::constant("Nat.shiftLeft")
         .app(Expr::nat(1u32))
         .app(Expr::nat(big.clone()));
-    assert!(
-        env.normalize(&huge_shift)
-            .unwrap_err()
-            .0
-            .starts_with("unsupported:")
-    );
+    assert!(matches!(
+        env.normalize(&huge_shift),
+        Err(nano_lean::Error::Unsupported(_))
+    ));
     for a in [0u32, 1] {
         let term = Expr::constant("Nat.pow")
             .app(Expr::nat(a))

@@ -637,11 +637,13 @@ dependencies = [
  "olean-export",
  "postcard",
  "rustc-hash",
+ "serde",
  "serde_json",
  "sha2",
  "smallvec",
  "stacker",
  "tempfile",
+ "thiserror",
  "unbound",
 ]
 

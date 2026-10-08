@@ -78,7 +78,7 @@ fn negative_recursive_occurrences_are_rejected() {
         block.constructors[0].ty = expr(ty);
         block.constructors[0].num_fields = 1;
         let error = Environment::new().declare_inductive(block).unwrap_err();
-        assert_eq!(error.0, "negative inductive occurrence");
+        assert_eq!(error.to_string(), "negative inductive occurrence");
     }
 }
 
@@ -97,12 +97,12 @@ fn forged_recursor_rules_are_rejected() {
     )))
     .clone();
     let error = Environment::new().declare_inductive(block).unwrap_err();
-    assert_eq!(error.0, "incorrect recursor computation rule");
+    assert_eq!(error.to_string(), "incorrect recursor computation rule");
 
     let mut block = switch();
     block.recursors[0].rules.swap(0, 1);
     let error = Environment::new().declare_inductive(block).unwrap_err();
-    assert_eq!(error.0, "incorrect recursor rule metadata");
+    assert_eq!(error.to_string(), "incorrect recursor rule metadata");
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn incorrect_constructor_metadata_is_rejected() {
         }
         let error = Environment::new().declare_inductive(block).unwrap_err();
         assert_eq!(
-            error.0,
+            error.to_string(),
             if field == "fields" {
                 "incorrect constructor field count"
             } else {
@@ -138,7 +138,10 @@ fn large_elimination_from_prop_is_rejected() {
     let error = Environment::new()
         .declare_inductive(block.clone())
         .unwrap_err();
-    assert_eq!(error.0, "invalid large elimination from proposition");
+    assert_eq!(
+        error.to_string(),
+        "invalid large elimination from proposition"
+    );
 
     let levels = [("u".into(), Level::Nat(0))].into_iter().collect();
     let recursor = &mut block.recursors[0];
@@ -164,7 +167,7 @@ fn rejected_inductive_blocks_roll_back() {
         }
         let error = env.declare_inductive(block).unwrap_err();
         assert!(
-            error.0.contains(if late_failure {
+            error.to_string().contains(if late_failure {
                 "type mismatch"
             } else {
                 "incorrect constructor field count"
@@ -277,7 +280,7 @@ fn dependent_projection_type_inference() {
         );
     }
     assert_eq!(
-        env.infer(&project(2, expr("p"))).unwrap_err().0,
+        env.infer(&project(2, expr("p"))).unwrap_err().to_string(),
         "projection field out of range"
     );
 }
@@ -289,7 +292,10 @@ fn data_projections_from_prop_are_rejected() {
         for value in ["p", "mk a b"] {
             for index in [0, 1] {
                 let error = env.infer(&project(index, expr(value))).unwrap_err();
-                assert_eq!(error.0, "projection eliminates proposition into data");
+                assert_eq!(
+                    error.to_string(),
+                    "projection eliminates proposition into data"
+                );
             }
         }
     }

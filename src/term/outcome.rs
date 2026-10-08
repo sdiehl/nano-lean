@@ -1,10 +1,20 @@
-//! Checking failures unwind as panics with one of two payloads. Others are internal errors.
+//! Checking failures unwind as panics with a `Reject` or `Decline` payload. Others are internal
+//! errors. This is a performance decision: failure is rare and fatal to the declaration, so
+//! unwinding keeps every evaluation and conversion step free of a `Result` branch.
 
+use crate::resource::Budget;
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub struct Reject(pub String);
-pub struct Decline(pub String);
+
+#[derive(Debug, thiserror::Error)]
+pub enum Decline {
+    #[error("{0}")]
+    Exhausted(Budget),
+    #[error("{0}")]
+    Unsupported(String),
+}
 
 pub(crate) struct ProbeExhausted;
 
@@ -15,7 +25,7 @@ macro_rules! reject {
 
 #[macro_export]
 macro_rules! unsupported {
-    ($($a:tt)+) => { ::std::panic::panic_any($crate::term::outcome::Decline(::std::format!($($a)+))) };
+    ($($a:tt)+) => { ::std::panic::panic_any($crate::term::outcome::Decline::Unsupported(::std::format!($($a)+))) };
 }
 
 #[macro_export]
@@ -26,7 +36,7 @@ macro_rules! ensure {
 
 pub enum Failure {
     Rejected(String),
-    Declined(String),
+    Declined(Decline),
     Internal(String),
 }
 
@@ -41,7 +51,9 @@ impl Failure {
 
     pub fn reason(&self) -> &str {
         match self {
-            Failure::Rejected(s) | Failure::Declined(s) | Failure::Internal(s) => s,
+            Failure::Rejected(s) | Failure::Internal(s) => s,
+            Failure::Declined(Decline::Exhausted(b)) => b.message(),
+            Failure::Declined(Decline::Unsupported(s)) => s,
         }
     }
 
@@ -56,7 +68,7 @@ impl Failure {
         match p.downcast::<Reject>() {
             Ok(r) => Failure::Rejected(r.0),
             Err(p) => match p.downcast::<Decline>() {
-                Ok(d) => Failure::Declined(d.0),
+                Ok(d) => Failure::Declined(*d),
                 Err(p) => Failure::Internal(
                     p.downcast_ref::<String>()
                         .cloned()

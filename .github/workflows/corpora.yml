@@ -14,16 +14,48 @@ concurrency:
 
 jobs:
   check:
-    name: Check ${{ matrix.corpus }}
+    name: Check ${{ matrix.corpus }} (Lean ${{ matrix.lean }})
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
+        lean: ["4.34.1"]
         corpus: [init-prelude, init, std]
+        include:
+          - corpus: init-prelude
+            module: Init.Prelude
+          - corpus: init
+            module: Init
+          - corpus: std
+            module: Std
+          - lean: "4.34.1"
+            githash: 5045d0056413266e57c625dcd7c365b10e377c52
+            format: "3.1.0"
+            exporter: "0.1.0"
+          # Expected declaration names, pinned per Lean version and corpus.
+          - lean: "4.34.1"
+            corpus: init-prelude
+            declarations: 2106
+            coverage: a6085bdbb8b9d6507f309e3c3fe567baba2806425be6e25f884b7ed28082f16b
+          - lean: "4.34.1"
+            corpus: init
+            declarations: 59626
+            coverage: 57d65adc8c42b881e677f9a5319f9950b26d064b8fd6f214e783119ea1dd9063
+          - lean: "4.34.1"
+            corpus: std
+            declarations: 100829
+            coverage: cae9e2c520253e1f4bbacf5c3d6145e31b5d40c346b68962c4cc0d48589cc118
     env:
       CARGO_BUILD_JOBS: 2
       CORPUS: ${{ matrix.corpus }}
+      MODULE: ${{ matrix.module }}
+      LEAN_VERSION: ${{ matrix.lean }}
+      LEAN_GITHASH: ${{ matrix.githash }}
+      EXPORT_FORMAT: ${{ matrix.format }}
+      EXPORTER_VERSION: ${{ matrix.exporter }}
+      DECLARATIONS: ${{ matrix.declarations }}
+      COVERAGE: ${{ matrix.coverage }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,7 +67,7 @@ jobs:
           path: |
             .ci/${{ matrix.corpus }}.ndjson
             .ci/${{ matrix.corpus }}.ndjson.sha256
-          key: corpus-export-v1-${{ runner.os }}-${{ matrix.corpus }}-lean-4.34.1-olean-export-0.1.0
+          key: corpus-export-v1-${{ runner.os }}-${{ matrix.corpus }}-lean-${{ matrix.lean }}-olean-export-${{ matrix.exporter }}
       - name: Generate pinned export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 15
@@ -69,7 +101,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### $CORPUS — Lean 4.34.1"
+            echo "### $CORPUS, Lean $LEAN_VERSION"
             echo 'One worker; 100M steps and 256 MiB arena per declaration; 11 GiB OS limit.'
             echo '```text'
             cat ".ci/$CORPUS-report/summary.txt" 2>/dev/null || true
@@ -79,52 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ matrix.corpus }}-${{ github.sha }}
+          name: ${{ matrix.corpus }}-lean-${{ matrix.lean }}-${{ github.sha }}
           path: .ci/${{ matrix.corpus }}-report/
           if-no-files-found: warn
           retention-days: 14
-
-  # Optional larger corpus. Keep disabled until the pinned project supports
-  # Lean 4.34.1: this revision currently requires 4.34.0-rc2. The version check
-  # deliberately prevents silently running it with a different Lean release.
-  # navier-stokes-euler:
-  #   runs-on: ubuntu-24.04
-  #   timeout-minutes: 100
-  #   env:
-  #     CARGO_BUILD_JOBS: 2
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo build --release --locked --bin nl-fast
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         repository: openai/NavierStokesAndEuler
-  #         ref: f9e8bc5b38b6e212696e8a30e3e91517af887bbd
-  #         path: .ci/navier-stokes-euler
-  #     - name: Prepare and check pinned results
-  #       run: |
-  #         sudo systemd-run --unit=nano-navier-check --wait --pipe --collect \
-  #           --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
-  #           --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
-  #           --property=MemoryMax=14G --property=MemorySwapMax=0 \
-  #           --property=OOMPolicy=kill --property=RuntimeMaxSec=5400 \
-  #           bash -euxo pipefail <<'RUN'
-  #         root=$PWD
-  #         project="$root/.ci/navier-stokes-euler"
-  #         test "$(cat "$project/lean-toolchain")" = leanprover/lean4:v4.34.1
-  #         curl --fail --location --retry 3 https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o .ci/elan-init.sh
-  #         bash .ci/elan-init.sh -y --default-toolchain leanprover/lean4:v4.34.1
-  #         export PATH="$HOME/.elan/bin:$PATH"
-  #         cargo install olean-export --version '=0.1.0' --locked -j 2 --root "$root/.ci/exporter"
-  #         cd "$project"
-  #         lake exe cache get
-  #         lake build NavierStokes.ComparatorSolution Euler.Solution
-  #         lake env "$root/.ci/exporter/bin/olean-export" \
-  #           NavierStokes.ComparatorSolution Euler.Solution -j 2 \
-  #           -c NavierStokes.Comparator.navier_stokes_breakdown_R3 \
-  #           -c NavierStokes.Comparator.navier_stokes_breakdown_periodic \
-  #           -c Euler.euler_breakdown_R3 \
-  #           -c Euler.exists_compact_smooth_euler_singularity \
-  #           -o "$root/.ci/navier-stokes-euler.ndjson"
-  #         "$root/target/release/nl-fast" "$root/.ci/navier-stokes-euler.ndjson" --trace
-  #         RUN

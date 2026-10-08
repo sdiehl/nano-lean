@@ -2,7 +2,8 @@ use clap::{Parser, value_parser};
 use indicatif::{ProgressBar, ProgressStyle};
 use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
 use nano_lean::checker::{Adapter, Limits};
-use nano_lean::import::{self, ImportError, blean};
+use nano_lean::export::ExportError;
+use nano_lean::import::{self, blean};
 use nano_lean::term::{arena::Arena, intern::Store, outcome};
 use nano_lean::value_checker::{self, Session};
 use nano_lean::verdict::Core;
@@ -120,7 +121,7 @@ fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
                 let mut bytes = Vec::new();
                 match stdin.read_to_end(&mut bytes) {
                     Ok(_) => import::import_bytes(arena, &bytes),
-                    Err(e) => Err(ImportError::Invalid(e.to_string())),
+                    Err(e) => Err(ExportError::Invalid(e.to_string())),
                 }
             } else {
                 import::import_reader(arena, stdin, 0)
@@ -130,8 +131,8 @@ fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
     imported.unwrap_or_else(|e| {
         println!("{e}");
         process::exit(match e {
-            ImportError::Invalid(_) => 1,
-            ImportError::Unsupported(_) => 2,
+            ExportError::Invalid(_) => 1,
+            ExportError::Unsupported(_) => 2,
         })
     })
 }

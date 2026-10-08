@@ -119,7 +119,7 @@ pub fn lex(
 ) -> impl Iterator<Item = Result<(usize, Token, usize), Error>> + '_ {
     let raw = Token::lexer(source).spanned().map(|(t, span)| {
         t.map(|t| (span.start, t, span.end))
-            .map_err(|_| Error(format!("invalid token at byte {}", span.start)))
+            .map_err(|_| Error::Rejected(format!("invalid token at byte {}", span.start)))
     });
     let config = LayoutConfig::new(|t| matches!(t, Token::Let))
         .with_mode(mode)

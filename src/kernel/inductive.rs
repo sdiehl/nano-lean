@@ -98,7 +98,7 @@ fn demand(ok: bool, message: &str) -> Result<()> {
     if ok {
         Ok(())
     } else {
-        Err(Error(message.into()))
+        Err(Error::Rejected(message.into()))
     }
 }
 
@@ -196,7 +196,7 @@ impl Checker<'_> {
         let mut params = Vec::with_capacity(count);
         for _ in 0..count {
             let Expr::Pi(domain, body) = self.whnf(&ty)? else {
-                return Err(Error("missing inductive parameter".into()));
+                return Err(Error::Rejected("missing inductive parameter".into()));
             };
             let local = self.fresh_local((*domain).clone());
             ty = (*body.instantiate(&variable(&local))).clone();
@@ -209,7 +209,7 @@ impl Checker<'_> {
         let mut ty = ty.clone();
         for local in params {
             let Expr::Pi(domain, body) = self.whnf(&ty)? else {
-                return Err(Error("missing inductive parameter".into()));
+                return Err(Error::Rejected("missing inductive parameter".into()));
             };
             demand(
                 self.conv(&domain, &local.1)?,

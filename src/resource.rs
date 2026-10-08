@@ -3,7 +3,6 @@ use crate::term::outcome::Decline;
 use std::fmt;
 use std::panic::panic_any;
 
-const EXHAUSTED: &str = "budget exhausted";
 const STACK_RED_ZONE: usize = 256 << 10;
 const STACK_SEGMENT: usize = 16 << 20;
 
@@ -12,8 +11,8 @@ pub(crate) fn grow<T>(f: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(STACK_RED_ZONE, STACK_SEGMENT, f)
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Budget {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Budget {
     Work,
     Arena,
     Checking,
@@ -22,7 +21,7 @@ pub(crate) enum Budget {
 }
 
 impl Budget {
-    pub(crate) const fn message(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         match self {
             Self::Work => "declaration work budget exhausted",
             Self::Arena => "declaration arena budget exhausted",
@@ -32,14 +31,10 @@ impl Budget {
         }
     }
 
-    pub(crate) fn exhausted(message: &str) -> bool {
-        message.contains(EXHAUSTED)
-    }
-
     #[cold]
     #[inline(never)]
     pub(crate) fn decline(self) -> ! {
-        panic_any(Decline(self.message().to_owned()))
+        panic_any(Decline::Exhausted(self))
     }
 }
 
@@ -53,6 +48,6 @@ impl From<Budget> for Error {
     #[cold]
     #[inline(never)]
     fn from(budget: Budget) -> Self {
-        Error(budget.to_string())
+        Error::Exhausted(budget)
     }
 }

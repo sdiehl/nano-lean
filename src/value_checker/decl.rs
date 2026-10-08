@@ -1,12 +1,12 @@
 use super::value::*;
 use super::{R, Vc};
 use crate::checker::Limits;
+use crate::ensure;
 use crate::term::ctx::Ctx;
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::outcome::{self, Failure};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr};
-use crate::{ensure, unsupported};
 use smallvec::SmallVec;
 use std::mem::swap;
 
@@ -188,7 +188,7 @@ pub(crate) fn check_recursor<'t, 'a: 't>(
     match result {
         Ok(()) => Ok(()),
         Err(Failure::Rejected(_)) => Err(at),
-        Err(Failure::Declined(m)) => unsupported!("{m}"),
+        Err(Failure::Declined(d)) => std::panic::panic_any(d),
         Err(Failure::Internal(m)) => panic!("{m}"),
     }
 }

@@ -18,7 +18,7 @@ use crate::term::ctx::Ctx;
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Names, Store};
-use crate::term::outcome::{self, Failure};
+use crate::term::outcome::{self, Decline, Failure};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
@@ -62,7 +62,7 @@ pub fn check_with_adapter<'a>(
     let (result, steps) = check_shared(store, arena, idx, limits, adapter.as_deref_mut());
     limits.steps = steps;
     match result {
-        Err(Failure::Declined(reason)) if !native_only && reason == Budget::Arena.message() => {
+        Err(Failure::Declined(Decline::Exhausted(Budget::Arena))) if !native_only => {
             arena.reset();
             check_existing_only(store, arena, idx, limits, adapter).map(|()| true)
         }

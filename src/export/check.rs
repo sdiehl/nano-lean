@@ -1,10 +1,13 @@
-use super::json::{append, array, boolean, index, invalid, io, lookup, string, unsupported};
+use super::json::{append, array, boolean, index, invalid, lookup, string, unsupported};
 use super::prepass::references;
-use super::{CheckPlan, EXPRESSION, ExportReport, Kind, Result, TRACE_VAR, current_format};
+use super::{
+    CheckPlan, EXPRESSION, ExportError, ExportReport, Kind, Result, TRACE_VAR, Trace,
+    current_format,
+};
 use crate::kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 use crate::{Environment, Expr, Level};
 use num_bigint::BigUint;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use sha2::Digest;
 use std::collections::{BTreeSet, HashMap};
 use std::io::BufRead;
@@ -229,14 +232,16 @@ impl Loader<'_> {
         } else {
             &d["name"]
         };
-        eprintln!(
-            "{}",
-            json!({
-                "line": line + 1, "checked": self.plan.shard.is_none().then_some(self.declarations),
-                "imported": self.declarations, "shard": self.plan.shard.map(|(i, _)| i),
-                "assigned_checked": self.plan.assigned, "kind": key, "name": self.tables.name(n).ok()
-            })
-        );
+        let trace = Trace {
+            line: line + 1,
+            checked: self.plan.shard.is_none().then_some(self.declarations),
+            imported: self.declarations,
+            shard: self.plan.shard.map(|(i, _)| i),
+            assigned_checked: self.plan.assigned,
+            kind: key.to_owned(),
+            name: self.tables.name(n).ok(),
+        };
+        eprintln!("{}", serde_json::to_string(&trace).unwrap());
     }
 
     fn quotient(&mut self, d: &Value) -> Result<()> {
@@ -446,20 +451,20 @@ pub(super) fn run(
     let mut text = String::new();
     for line in 0.. {
         text.clear();
-        if reader.read_line(&mut text).map_err(io)? == 0 {
+        if reader.read_line(&mut text)? == 0 {
             break;
         }
         if loader.plan.shard.is_some() {
             loader.plan.digest.update(text.as_bytes());
         }
         let item: Value =
-            serde_json::from_str(&text).map_err(|e| invalid(e.to_string()).at_line(line))?;
+            serde_json::from_str(&text).map_err(|e| ExportError::from(e).at("line", line))?;
         let result = if metadata {
             loader.entry(&item, line)
         } else {
             header(&item)
         };
-        result.map_err(|e| e.at_line(line))?;
+        result.map_err(|e| e.at("line", line))?;
         metadata = true;
         loader.release(&item)?;
     }

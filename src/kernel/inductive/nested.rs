@@ -34,7 +34,7 @@ fn auxiliary_rec_name(base: &str, index: usize) -> String {
 fn instantiate_params(mut ty: Expr, args: &[Expr]) -> Result<Expr> {
     for arg in args {
         let Expr::Pi(_, body) = ty else {
-            return Err(Error("missing nested inductive parameter".into()));
+            return Err(Error::Rejected("missing nested inductive parameter".into()));
         };
         ty = (*body.instantiate(arg)).clone();
     }
@@ -143,7 +143,7 @@ impl NestedExpansion {
         let mut ty = first.ty.clone();
         for _ in 0..first.num_params {
             let Expr::Pi(domain, body) = ty else {
-                return Err(Error("missing inductive parameter".into()));
+                return Err(Error::Rejected("missing inductive parameter".into()));
             };
             let local = (Name::new(PARAMETER_NAME), (*domain).clone());
             ty = (*body.instantiate(&variable(&local))).clone();
@@ -168,7 +168,7 @@ impl NestedExpansion {
                     .iter()
                     .find(|c| &c.name == name)
                     .cloned()
-                    .ok_or_else(|| Error("missing constructor".into()))
+                    .ok_or_else(|| Error::Rejected("missing constructor".into()))
             })
             .collect::<Result<_>>()?;
         demand(
@@ -191,7 +191,7 @@ impl NestedExpansion {
             let mut locals = Vec::new();
             for p in &result.params {
                 let Expr::Pi(domain, rest) = body else {
-                    return Err(Error("missing constructor parameter".into()));
+                    return Err(Error::Rejected("missing constructor parameter".into()));
                 };
                 locals.push((p.0.clone(), (*domain).clone()));
                 body = (*rest.instantiate(&variable(p))).clone();
@@ -267,7 +267,7 @@ impl NestedExpansion {
                     found = Some(aux_name);
                 }
             }
-            found.ok_or_else(|| Error("invalid nested mutual family".into()))?
+            found.ok_or_else(|| Error::Rejected("invalid nested mutual family".into()))?
         };
         let levels = self
             .universe_params()
@@ -442,7 +442,9 @@ impl NestedExpansion {
                 let restored = if let Some((_, original)) = ctor {
                     let (container, params) = spine(&nested);
                     let Expr::Const(_, us) = container else {
-                        return Err(Error("invalid nested constructor restoration".into()));
+                        return Err(Error::Rejected(
+                            "invalid nested constructor restoration".into(),
+                        ));
                     };
                     apply(Expr::Const(original.clone(), us), params)
                 } else {

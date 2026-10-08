@@ -20,14 +20,28 @@ mod quotient;
 pub use inductive::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
 pub use quotient::primitives as quotient_primitives;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error(pub String);
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    #[error("{0}")]
+    Rejected(String),
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+    #[error("{0}")]
+    Exhausted(Budget),
+    #[error("conversion probe exhausted")]
+    ProbeExhausted,
+}
+
+impl Error {
+    pub fn context(self, context: impl fmt::Display) -> Self {
+        match self {
+            Self::Rejected(s) => Self::Rejected(format!("{context}: {s}")),
+            Self::Unsupported(s) => Self::Unsupported(format!("{context}: {s}")),
+            e => Self::Unsupported(format!("{context}: {e}")),
+        }
     }
 }
-impl std::error::Error for Error {}
+
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Debug)]
@@ -68,12 +82,12 @@ impl Environment {
         transparent: bool,
     ) -> Result<()> {
         if self.declarations.contains_key(&name) {
-            return Err(Error(format!("duplicate declaration: {name}")));
+            return Err(Error::Rejected(format!("duplicate declaration: {name}")));
         }
         let mut tc = Checker::new(self);
         tc.uparams = params.iter().cloned().collect();
         if tc.uparams.len() != params.len() {
-            return Err(Error("duplicate universe parameter".into()));
+            return Err(Error::Rejected("duplicate universe parameter".into()));
         }
         tc.sort(&ty)?;
         if let Some(v) = &value {
@@ -105,7 +119,7 @@ impl Environment {
         transparent: bool,
     ) -> Result<()> {
         if self.declarations.contains_key(&name) {
-            return Err(Error(format!("duplicate declaration: {name}")));
+            return Err(Error::Rejected(format!("duplicate declaration: {name}")));
         }
         self.insert(name, params, ty, value.filter(|_| transparent));
         Ok(())
@@ -123,7 +137,7 @@ impl Environment {
         let mut tc = Checker::new(self);
         tc.uparams = params.iter().cloned().collect();
         if !tc.sort(&ty)?.equivalent(&Level::Nat(0))? {
-            return Err(Error("theorem type is not a proposition".into()));
+            return Err(Error::Rejected("theorem type is not a proposition".into()));
         }
         // Theorem bodies may reduce when a recursor needs a proof's constructor.
         self.declare(name, params, ty, Some(value), true)
@@ -209,7 +223,7 @@ impl<'a> Checker<'a> {
             .declarations
             .get(name)
             .cloned()
-            .ok_or_else(|| Error(format!("unknown constant: {name}")))
+            .ok_or_else(|| Error::Rejected(format!("unknown constant: {name}")))
     }
     fn substitute_levels(&mut self, e: &Expr, subst: &BTreeMap<String, Level>) -> Result<Expr> {
         if subst.is_empty() {
@@ -230,7 +244,7 @@ impl<'a> Checker<'a> {
         let mut params = BTreeSet::new();
         level.params(&mut params);
         if let Some(n) = params.difference(&self.uparams).next() {
-            return Err(Error(format!("undeclared universe: {n}")));
+            return Err(Error::Rejected(format!("undeclared universe: {n}")));
         }
         Ok(())
     }
@@ -240,7 +254,7 @@ impl<'a> Checker<'a> {
         values: &[Level],
     ) -> Result<BTreeMap<String, Level>> {
         if params.len() != values.len() {
-            return Err(Error("universe argument count mismatch".into()));
+            return Err(Error::Rejected("universe argument count mismatch".into()));
         }
         for value in values {
             self.valid_level(value)?;

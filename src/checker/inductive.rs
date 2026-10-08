@@ -3,7 +3,6 @@ use crate::kernel;
 use crate::kernel::export_validation::{
     ExportDependency, ExportSession, validate_export_dependencies,
 };
-use crate::resource::Budget;
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Block, Store};
@@ -238,11 +237,10 @@ fn with_work(
 }
 
 fn accept(result: Result<(), kernel::Error>) {
-    if let Err(error) = result {
-        if Budget::exhausted(&error.0) {
-            unsupported!("validation: {error}");
-        }
-        reject!("declaration validation: {error}");
+    match result {
+        Ok(()) => {}
+        Err(error @ kernel::Error::Rejected(_)) => reject!("declaration validation: {error}"),
+        Err(error) => unsupported!("validation: {error}"),
     }
 }
 

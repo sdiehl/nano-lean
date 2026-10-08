@@ -1,6 +1,6 @@
 use crate::checker::{self, Adapter, Limits};
 use crate::export::{ExportError, check_export};
-use crate::import::{self, ImportError};
+use crate::import;
 use crate::term::{
     arena::Arena,
     intern::Store,
@@ -43,7 +43,7 @@ impl From<Failure> for Verdict {
     fn from(f: Failure) -> Self {
         match f {
             Failure::Rejected(s) => Self::Rejected(s),
-            Failure::Declined(s) => Self::Unsupported(s),
+            Failure::Declined(d) => Self::Unsupported(d.to_string()),
             Failure::Internal(s) => Self::Internal(s),
         }
     }
@@ -124,8 +124,8 @@ fn fast(source: &str, limits: Limits, core: Core) -> Verdict {
     let arena = Arena::new();
     let store = match import::import_reader(&arena, source.as_bytes(), source.len()) {
         Ok(store) => store,
-        Err(ImportError::Invalid(s)) => return Verdict::Rejected(s),
-        Err(ImportError::Unsupported(s)) => return Verdict::Unsupported(s),
+        Err(ExportError::Invalid(s)) => return Verdict::Rejected(s),
+        Err(ExportError::Unsupported(s)) => return Verdict::Unsupported(s),
     };
     let mut session = Session::new(&store);
     let mut adapter = Adapter::new(&store);

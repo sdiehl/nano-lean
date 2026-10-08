@@ -3,15 +3,15 @@ mod json;
 mod prepass;
 
 use crate::Error;
-use crate::resource::Budget;
-use json::{invalid, io};
+use json::invalid;
 use prepass::count_uses;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     fmt,
     fs::File,
-    io::{BufRead, BufReader, Seek},
+    io::{self, BufRead, BufReader, Seek},
     path::Path,
 };
 
@@ -20,34 +20,41 @@ pub const TRACE_VAR: &str = "NANO_LEAN_TRACE";
 const STACK_BYTES: usize = 64 * 1024 * 1024;
 const EXPRESSION: &str = "ie";
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ExportError {
+    #[error("invalid export: {0}")]
     Invalid(String),
+    #[error("unsupported: {0}")]
     Unsupported(String),
 }
-impl fmt::Display for ExportError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+
+impl ExportError {
+    pub(crate) fn at(self, unit: &str, n: usize) -> Self {
         match self {
-            Self::Invalid(s) => write!(f, "invalid export: {s}"),
-            Self::Unsupported(s) => write!(f, "unsupported: {s}"),
+            Self::Invalid(s) => Self::Invalid(format!("{unit} {}: {s}", n + 1)),
+            Self::Unsupported(s) => Self::Unsupported(format!("{unit} {}: {s}", n + 1)),
         }
     }
 }
-impl std::error::Error for ExportError {}
+
+impl From<io::Error> for ExportError {
+    fn from(e: io::Error) -> Self {
+        Self::Invalid(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ExportError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Invalid(e.to_string())
+    }
+}
+
 impl From<Error> for ExportError {
     fn from(e: Error) -> Self {
-        if Budget::exhausted(&e.0) || e.0.starts_with("unsupported:") {
-            Self::Unsupported(e.0)
-        } else {
-            Self::Invalid(e.0)
-        }
-    }
-}
-impl ExportError {
-    fn at_line(self, line: usize) -> Self {
-        match self {
-            Self::Invalid(s) => Self::Invalid(format!("line {}: {s}", line + 1)),
-            Self::Unsupported(s) => Self::Unsupported(format!("line {}: {s}", line + 1)),
+        match e {
+            Error::Rejected(s) => Self::Invalid(s),
+            Error::Unsupported(s) => Self::Unsupported(s),
+            e => Self::Unsupported(e.to_string()),
         }
     }
 }
@@ -97,42 +104,89 @@ fn current_format(item: &Value) -> bool {
     item["meta"]["format"]["version"] == FORMAT_VERSION
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportReport {
     pub declarations: usize,
     pub expressions: usize,
     pub names: usize,
     pub levels: usize,
 }
-impl ExportReport {
-    fn counts(&self) -> Value {
-        json!({"declarations":self.declarations,"expressions":self.expressions,"names":self.names,"levels":self.levels})
-    }
-
-    pub fn json(&self) -> Value {
-        let mut report = self.counts();
-        report["status"] = json!("checked");
-        report
-    }
-}
 
 /// Valid only if every partition succeeds on the same input digest.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardReport {
-    report: ExportReport,
-    index: usize,
-    workers: usize,
-    assigned: usize,
-    ordinary: usize,
-    digest: String,
+    pub shard: usize,
+    pub workers: usize,
+    pub assigned: usize,
+    pub ordinary: usize,
+    pub sha256: String,
+    pub report: ExportReport,
 }
-impl ShardReport {
-    pub fn json(&self) -> Value {
-        json!({"status": "shard_checked", "shard": self.index, "workers": self.workers,
-            "assigned": self.assigned, "ordinary": self.ordinary, "sha256": self.digest,
-            "report": self.report.counts()})
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Report {
+    Checked {
+        #[serde(flatten)]
+        report: ExportReport,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workers: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
+    ShardChecked(ShardReport),
+    Rejected {
+        reason: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+}
+
+impl From<ExportReport> for Report {
+    fn from(report: ExportReport) -> Self {
+        Self::Checked {
+            report,
+            workers: None,
+            sha256: None,
+        }
     }
 }
+
+impl From<ShardReport> for Report {
+    fn from(report: ShardReport) -> Self {
+        Self::ShardChecked(report)
+    }
+}
+
+impl From<ExportError> for Report {
+    fn from(e: ExportError) -> Self {
+        let reason = e.to_string();
+        match e {
+            ExportError::Invalid(_) => Self::Rejected { reason },
+            ExportError::Unsupported(_) => Self::Unsupported { reason },
+        }
+    }
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&serde_json::to_string(self).map_err(|_| fmt::Error)?)
+    }
+}
+
+/// One stderr line per declaration when tracing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Trace {
+    pub line: usize,
+    pub checked: Option<usize>,
+    pub imported: usize,
+    pub shard: Option<usize>,
+    pub assigned_checked: usize,
+    pub kind: String,
+    pub name: Option<String>,
+}
+
 #[derive(Default)]
 struct CheckPlan {
     shard: Option<(usize, usize)>,
@@ -148,9 +202,9 @@ pub fn check_export(reader: impl BufRead) -> Result<ExportReport> {
 }
 
 fn open_counted(path: impl AsRef<Path>) -> Result<(BufReader<File>, Option<Vec<u32>>)> {
-    let mut reader = BufReader::new(File::open(path).map_err(io)?);
+    let mut reader = BufReader::new(File::open(path)?);
     let counts = count_uses(&mut reader)?;
-    reader.rewind().map_err(io)?;
+    reader.rewind()?;
     Ok((reader, counts))
 }
 
@@ -178,12 +232,12 @@ pub fn check_export_file_shard(
     };
     let report = stacker::grow(STACK_BYTES, || check::run(reader, counts, &mut plan))?;
     Ok(ShardReport {
-        report,
-        index: shard,
+        shard,
         workers,
         assigned: plan.assigned,
         ordinary: plan.ordinary,
-        digest: format!("{:x}", plan.digest.finalize()),
+        sha256: format!("{:x}", plan.digest.finalize()),
+        report,
     })
 }
 
@@ -211,7 +265,7 @@ mod tests {
         assert_eq!(counts, [2, 0, 0]);
         let reclaimed = check_with_counts(Cursor::new(input), Some(counts)).unwrap();
         let stream = check_export(Cursor::new(input)).unwrap();
-        assert_eq!(reclaimed.json(), stream.json());
+        assert_eq!(reclaimed, stream);
     }
 
     #[test]
@@ -224,10 +278,7 @@ mod tests {
         }
         let reclaimed = check_with_counts(Cursor::new(input), Some(counts)).unwrap();
         assert_eq!(reclaimed.declarations, 6);
-        assert_eq!(
-            reclaimed.json(),
-            check_export(Cursor::new(input)).unwrap().json()
-        );
+        assert_eq!(reclaimed, check_export(Cursor::new(input)).unwrap());
     }
 
     #[test]
@@ -238,9 +289,6 @@ mod tests {
         assert_eq!(counts.len(), 461);
         let reclaimed = check_with_counts(Cursor::new(&input), Some(counts)).unwrap();
         assert_eq!(reclaimed.declarations, 35);
-        assert_eq!(
-            reclaimed.json(),
-            check_export(Cursor::new(input)).unwrap().json()
-        );
+        assert_eq!(reclaimed, check_export(Cursor::new(input)).unwrap());
     }
 }

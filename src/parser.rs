@@ -202,13 +202,13 @@ pub fn parse_expr(source: &str) -> Result<Expr, Error> {
     grammar::ExprParser::new()
         .parse(lex(source, LayoutMode::Lazy))
         .map(resolve)
-        .map_err(|e| Error(e.to_string()))
+        .map_err(|e| Error::Rejected(e.to_string()))
 }
 
 fn program(source: &str) -> Result<Vec<Command>, Error> {
     grammar::ProgramParser::new()
         .parse(lex(source, LayoutMode::Eager))
-        .map_err(|e| Error(e.to_string()))
+        .map_err(|e| Error::Rejected(e.to_string()))
 }
 
 fn declare(d: Declaration, env: &mut Environment) -> Result<String, Error> {
@@ -286,7 +286,7 @@ fn query(command: Command, env: &mut Environment) -> Result<String, Error> {
         Command::Eval(e) => Ok(env.normalize(&resolve(e))?.to_string()),
         Command::Equal(a, b) => {
             if !env.def_eq(&resolve(a), &resolve(b))? {
-                return Err(Error("terms are not definitionally equal".into()));
+                return Err(Error::Rejected("terms are not definitionally equal".into()));
             }
             Ok("equal".into())
         }
@@ -300,7 +300,7 @@ pub fn run(source: &str, env: &mut Environment) -> Result<Vec<String>, Error> {
         .enumerate()
         .map(|(i, command)| {
             execute(command, env, &mut Vec::new())
-                .map_err(|e| Error(format!("command {}: {e}", i + 1)))
+                .map_err(|e| e.context(format_args!("command {}", i + 1)))
         })
         .collect()
 }

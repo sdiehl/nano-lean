@@ -13,10 +13,30 @@ concurrency:
 
 jobs:
   mathlib:
+    name: Mathlib (Lean ${{ matrix.lean }})
     runs-on: ubuntu-24.04
     timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lean: "4.34.1"
+            githash: 5045d0056413266e57c625dcd7c365b10e377c52
+            format: "3.1.0"
+            exporter: "0.1.0"
+            mathlib: d13f23b723b8a846827a245b89c10fc7d3f11612
+            declarations: 718577
+            coverage: a8e898c54b761ad374648e5b24ca25f040125409f8575a42458a37cb117e5a06
     env:
       CARGO_BUILD_JOBS: 2
+      MODULE: Mathlib
+      LEAN_VERSION: ${{ matrix.lean }}
+      LEAN_GITHASH: ${{ matrix.githash }}
+      EXPORT_FORMAT: ${{ matrix.format }}
+      EXPORTER_VERSION: ${{ matrix.exporter }}
+      MATHLIB_REV: ${{ matrix.mathlib }}
+      DECLARATIONS: ${{ matrix.declarations }}
+      COVERAGE: ${{ matrix.coverage }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,7 +55,7 @@ jobs:
           path: |
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
-          key: mathlib-export-v3-${{ runner.os }}-lean-4.34.1-d13f23b723b8a846827a245b89c10fc7d3f11612-olean-export-0.1.0
+          key: mathlib-export-v3-${{ runner.os }}-lean-${{ matrix.lean }}-${{ matrix.mathlib }}-olean-export-${{ matrix.exporter }}
       - name: Prepare runner disk
         run: |
           mkdir -p .ci/mathlib-report
@@ -52,9 +72,9 @@ jobs:
         with:
           path: ~/.cache/mathlib/*.ltar
           # A new snapshot can include downloads missing from a failed run.
-          key: mathlib-downloads-${{ runner.os }}-d13f23b723b8a846827a245b89c10fc7d3f11612-${{ github.run_id }}-${{ github.run_attempt }}
+          key: mathlib-downloads-${{ runner.os }}-${{ matrix.mathlib }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            mathlib-downloads-${{ runner.os }}-d13f23b723b8a846827a245b89c10fc7d3f11612-
+            mathlib-downloads-${{ runner.os }}-${{ matrix.mathlib }}-
       - name: Build pinned Mathlib export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 40
@@ -108,14 +128,14 @@ jobs:
         if: always()
         run: |
           {
-            echo '### Mathlib'
+            echo "### Mathlib, Lean $LEAN_VERSION"
             if [[ -f .ci/mathlib-report/wall.txt ]]; then
               echo "**$(cat .ci/mathlib-report/wall.txt)**"
               echo
             fi
-            echo 'Lean 4.34.1 Mathlib; value core (nl-fast default); one worker; 200M steps and 2 GiB arena per declaration; 11 GiB OS limit; 45 minute runtime cap.'
-            echo 'olean-export 0.1.0; 14 GiB export OS limit; cache hits skip generation.'
-            echo 'Export coverage must match the pinned 718,577 declaration names.'
+            echo "Mathlib ${MATHLIB_REV:0:12}; value core (nl-fast default); one worker; 200M steps and 2 GiB arena per declaration; 11 GiB OS limit; 45 minute runtime cap."
+            echo "olean-export $EXPORTER_VERSION; 14 GiB export OS limit; cache hits skip generation."
+            echo "Export coverage must match the $DECLARATIONS pinned declaration names."
             echo '```text'
             cat .ci/mathlib-report/export-time.txt 2>/dev/null || true
             cat .ci/mathlib-report/perf-status.txt 2>/dev/null || true
@@ -126,7 +146,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mathlib-${{ github.sha }}
+          name: mathlib-lean-${{ matrix.lean }}-${{ github.sha }}
           path: .ci/mathlib-report/
           if-no-files-found: warn
           retention-days: 14

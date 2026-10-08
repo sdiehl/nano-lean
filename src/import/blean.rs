@@ -1,7 +1,7 @@
 //! Blean reader. Rare metadata and declaration records are rendered as NDJSON to share its validation.
 
 use super::importer::{BYTES_PER_LINE, Importer};
-use super::{ImportError, Result, invalid};
+use super::{ExportError, Result, invalid};
 use crate::term::arena::Arena;
 use crate::term::intern::Store;
 use memmap2::{Advice, Mmap};
@@ -47,8 +47,8 @@ const U32_LAST: u8 = 0x0f;
 const U64_BYTES: usize = 10;
 const U64_LAST: u8 = 0x01;
 
-fn corrupt(e: impl Display) -> ImportError {
-    ImportError::Invalid(format!("blean: {e}"))
+fn corrupt(e: impl Display) -> ExportError {
+    ExportError::Invalid(format!("blean: {e}"))
 }
 
 fn truncated<T>() -> Result<T> {

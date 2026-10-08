@@ -8,7 +8,7 @@ use crate::term::arena::Arena;
 use crate::term::ctx::Ctx;
 use crate::term::decl::Declar;
 use crate::term::intern::Store;
-use crate::term::outcome::{self, Failure};
+use crate::term::outcome::{self, Decline, Failure};
 use std::mem::{replace, transmute};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
@@ -28,7 +28,7 @@ fn bridged(d: Declar<'_>) -> bool {
 }
 
 fn arena_exhausted<T>(r: &Result<T, Failure>, native_only: bool) -> bool {
-    !native_only && matches!(r, Err(Failure::Declined(reason)) if reason == Budget::Arena.message())
+    !native_only && matches!(r, Err(Failure::Declined(Decline::Exhausted(Budget::Arena))))
 }
 
 pub fn check<'a>(

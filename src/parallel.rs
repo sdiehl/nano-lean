@@ -1,5 +1,5 @@
-use nano_lean::export::TRACE_VAR;
-use serde_json::{Value, json};
+use nano_lean::export::{ExportReport, Report, ShardReport, TRACE_VAR, Trace};
+use serde_json::Value;
 use std::{
     env,
     io::{self, BufRead, BufReader, Read},
@@ -42,7 +42,7 @@ impl Drop for Workers {
     }
 }
 
-pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> {
+pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Report, String> {
     let progress = match env::var(PROGRESS_VAR).as_deref() {
         Ok("0") => false,
         Ok(_) => true,
@@ -52,9 +52,9 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
     let result = run_workers(path, jobs, memory_mib, progress);
     if progress {
         match &result {
-            Ok(report) => eprintln!(
+            Ok((report, _)) => eprintln!(
                 "[progress] complete: {} declarations checked in {}s",
-                report["declarations"],
+                report.declarations,
                 start.elapsed().as_secs()
             ),
             Err(reason) => eprintln!(
@@ -64,7 +64,11 @@ pub fn run(path: &str, jobs: usize, memory_mib: usize) -> Result<Value, String> 
             ),
         }
     }
-    result
+    result.map(|(report, sha256)| Report::Checked {
+        report,
+        workers: Some(jobs),
+        sha256: Some(sha256),
+    })
 }
 
 fn brief(text: &str) -> String {
@@ -98,7 +102,7 @@ fn run_workers(
     jobs: usize,
     memory_mib: usize,
     progress: bool,
-) -> Result<Value, String> {
+) -> Result<(ExportReport, String), String> {
     if !(1..=MAX_JOBS).contains(&jobs) {
         return Err(format!("worker count must be between 1 and {MAX_JOBS}"));
     }
@@ -121,7 +125,7 @@ fn run_workers(
         let worker = spawn(&executable, path, index, jobs, progress, trace_requested)?;
         workers.0.push(worker);
     }
-    let mut reports = vec![Value::Null; jobs];
+    let mut reports = vec![None; jobs];
     while !workers.0.is_empty() {
         let mut total = memory_bytes(process::id()).map_err(|e| e.to_string())?;
         for worker in &mut workers.0 {
@@ -177,16 +181,17 @@ fn run_workers(
                     started.elapsed().as_secs()
                 );
             }
-            reports[index] = report;
+            reports[index] = Some(report);
         }
         if !workers.0.is_empty() {
             thread::sleep(POLL_INTERVAL);
         }
     }
-    combine(&reports)
+    let reports: Option<Vec<_>> = reports.into_iter().collect();
+    combine(reports.ok_or("missing worker result")?)
 }
 
-fn finish(worker: Worker) -> Result<(usize, Value), String> {
+fn finish(worker: Worker) -> Result<(usize, ShardReport), String> {
     let Worker {
         index,
         mut child,
@@ -209,9 +214,11 @@ fn finish(worker: Worker) -> Result<(usize, Value), String> {
             String::from_utf8_lossy(&output).trim()
         ));
     }
-    let report: Value = serde_json::from_slice(&output)
-        .map_err(|e| format!("invalid result from worker {index}: {e}"))?;
-    Ok((index, report))
+    match serde_json::from_slice(&output) {
+        Ok(Report::ShardChecked(report)) => Ok((index, report)),
+        Ok(_) => Err(format!("unexpected result from worker {index}")),
+        Err(e) => Err(format!("invalid result from worker {index}: {e}")),
+    }
 }
 
 fn spawn(
@@ -277,8 +284,8 @@ fn spawn(
 }
 
 fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
-    let event: Value = serde_json::from_str(line).ok()?;
-    let name = event["name"].as_str()?;
+    let event: Trace = serde_json::from_str(line).ok()?;
+    let name = event.name.as_deref()?;
     let name = serde_json::from_str::<Vec<Value>>(name)
         .ok()
         .map(|parts| {
@@ -294,8 +301,8 @@ fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
         })
         .unwrap_or_else(|| name.to_owned());
     Some(Snapshot {
-        imported: event["imported"].as_u64()?,
-        assigned: event["assigned_checked"].as_u64()?,
+        imported: event.imported as u64,
+        assigned: event.assigned_checked as u64,
         name,
     })
 }
@@ -342,62 +349,54 @@ fn memory_bytes(_: u32) -> io::Result<u64> {
     ))
 }
 
-fn combine(reports: &[Value]) -> Result<Value, String> {
+fn combine(reports: Vec<ShardReport>) -> Result<(ExportReport, String), String> {
     let first = reports.first().ok_or("no worker results")?;
-    let ordinary = first["ordinary"]
-        .as_u64()
-        .ok_or("missing declaration count")?;
-    let digest = first["sha256"].as_str().ok_or("missing input digest")?;
+    let digest = &first.sha256;
     if digest.len() != 64 || !digest.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err("invalid input digest".into());
     }
-    let jobs = reports.len() as u64;
+    let (jobs, ordinary) = (reports.len(), first.ordinary);
     for (index, report) in reports.iter().enumerate() {
-        let expected = ordinary / jobs + u64::from((index as u64) < ordinary % jobs);
-        if report["status"] != "shard_checked"
-            || report["shard"].as_u64() != Some(index as u64)
-            || report["workers"].as_u64() != Some(jobs)
-            || report["ordinary"].as_u64() != Some(ordinary)
-            || report["assigned"].as_u64() != Some(expected)
-            || report["sha256"] != first["sha256"]
-            || report["report"] != first["report"]
+        let expected = ordinary / jobs + usize::from(index < ordinary % jobs);
+        if report.shard != index
+            || report.workers != jobs
+            || report.ordinary != ordinary
+            || report.assigned != expected
+            || report.sha256 != first.sha256
+            || report.report != first.report
         {
             return Err(format!(
                 "incomplete or inconsistent result from worker {index}"
             ));
         }
     }
-    let mut result = first["report"]
-        .as_object()
-        .ok_or("missing export report")?
-        .clone();
-    for field in ["declarations", "expressions", "names", "levels"] {
-        if result.get(field).and_then(Value::as_u64).is_none() {
-            return Err(format!("missing report field: {field}"));
-        }
-    }
-    result.insert("status".into(), json!("checked"));
-    result.insert("workers".into(), json!(jobs));
-    result.insert("sha256".into(), json!(digest));
-    Ok(Value::Object(result))
+    Ok((first.report.clone(), first.sha256.clone()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn reports() -> Vec<Value> {
+    fn reports() -> Vec<ShardReport> {
         (0..2)
-            .map(|i| {
-                json!({"status":"shard_checked", "shard":i, "workers":2,
-            "ordinary":3, "assigned":if i == 0 {2} else {1}, "sha256":"a".repeat(64),
-            "report":{"declarations":3,"expressions":4,"names":5,"levels":1}})
+            .map(|shard| ShardReport {
+                shard,
+                workers: 2,
+                assigned: 2 - shard,
+                ordinary: 3,
+                sha256: "a".repeat(64),
+                report: ExportReport {
+                    declarations: 3,
+                    expressions: 4,
+                    names: 5,
+                    levels: 1,
+                },
             })
             .collect()
     }
     #[test]
     fn progress_distinguishes_imports_from_checked_partitions() {
-        let event = json!({"imported":200,"assigned_checked":75,"name":"[\"Nat\",\"add\"]"});
-        let snapshot = snapshot_from_trace(&event.to_string()).unwrap();
+        let event = r#"{"line":1,"checked":null,"imported":200,"shard":1,"assigned_checked":75,"kind":"def","name":"[\"Nat\",\"add\"]"}"#;
+        let snapshot = snapshot_from_trace(event).unwrap();
         assert_eq!(snapshot.name, "Nat.add");
         assert!(status(0, 1, Some(&snapshot)).contains("200 declarations checked"));
         assert!(
@@ -411,14 +410,20 @@ mod tests {
 
     #[test]
     fn accepts_only_complete_matching_partitions() {
-        assert_eq!(combine(&reports()).unwrap()["status"], "checked");
-        assert!(combine(&reports()[..1]).is_err());
-        for field in [
-            "shard", "workers", "ordinary", "assigned", "sha256", "report", "status",
-        ] {
+        assert!(combine(reports()).is_ok());
+        assert!(combine(reports()[..1].to_vec()).is_err());
+        let corruptions: [fn(&mut ShardReport); 6] = [
+            |r| r.shard = 0,
+            |r| r.workers = 3,
+            |r| r.ordinary = 4,
+            |r| r.assigned = 2,
+            |r| r.sha256 = "b".repeat(64),
+            |r| r.report.levels = 2,
+        ];
+        for corrupt in corruptions {
             let mut data = reports();
-            data[1][field] = Value::Null;
-            assert!(combine(&data).is_err(), "{field}");
+            corrupt(&mut data[1]);
+            assert!(combine(data).is_err());
         }
     }
 }

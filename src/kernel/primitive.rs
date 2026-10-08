@@ -67,7 +67,7 @@ impl NatOp {
 
     fn apply(self, a: BigUint, b: BigUint) -> Result<BigUint> {
         let resource_limit =
-            || Error("unsupported: natural operation result exceeds resource limit".into());
+            || Error::Unsupported("natural operation result exceeds resource limit".into());
         Ok(match self {
             Self::Add => a + b,
             Self::Sub if a >= b => a - b,
@@ -123,7 +123,7 @@ impl Checker<'_> {
         let ty = self.builtin(path, vec![]);
         let sort = self.infer(&ty)?;
         if !self.conv(&sort, &Expr::Sort(Level::Nat(1)))? {
-            return Err(Error(format!("invalid literal type: {path}")));
+            return Err(Error::Rejected(format!("invalid literal type: {path}")));
         }
         Ok(ty)
     }

@@ -8,7 +8,7 @@ const MAX_SPLIT_PARAMS: usize = 16;
 
 fn succ_nat(n: u32) -> Result<u32, Error> {
     n.checked_add(1)
-        .ok_or_else(|| Error("universe overflow".into()))
+        .ok_or_else(|| Error::Rejected("universe overflow".into()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -101,7 +101,7 @@ impl Level {
             Self::Param(n) => values
                 .get(n)
                 .cloned()
-                .ok_or_else(|| Error(format!("undeclared universe: {n}")))?,
+                .ok_or_else(|| Error::Rejected(format!("undeclared universe: {n}")))?,
             Self::Succ(a) => a.substitute(values)?.succ()?,
             Self::Max(a, b) => Self::max(a.substitute(values)?, b.substitute(values)?),
             Self::IMax(a, b) => Self::imax(a.substitute(values)?, b.substitute(values)?),
@@ -174,7 +174,7 @@ impl Level {
             match (self.polynomial(&cases)?, other.polynomial(&cases)?) {
                 (Some(a), Some(b)) if a == b => {}
                 (Some(_), Some(_)) => return Ok(false),
-                _ => return Err(Error("unresolved universe branch".into())),
+                _ => return Err(Error::Rejected("unresolved universe branch".into())),
             }
         }
         Ok(true)

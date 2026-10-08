@@ -1,5 +1,5 @@
-use super::json::{array, index, invalid, io, unsupported};
-use super::{EXPRESSION, Kind, Result, current_format};
+use super::json::{array, index, invalid, unsupported};
+use super::{EXPRESSION, ExportError, Kind, Result, current_format};
 use serde_json::{Map, Value};
 use std::io::BufRead;
 
@@ -72,9 +72,9 @@ pub(super) fn count_uses(reader: impl BufRead) -> Result<Option<Vec<u32>>> {
     let _prepass = crate::profile::span("prepass");
     let mut counts = Vec::<u32>::new();
     for (line, text) in reader.lines().enumerate() {
-        let text = text.map_err(io)?;
+        let text = text?;
         let item: Value =
-            serde_json::from_str(&text).map_err(|e| invalid(e.to_string()).at_line(line))?;
+            serde_json::from_str(&text).map_err(|e| ExportError::from(e).at("line", line))?;
         let Some(obj) = item.as_object() else {
             return Ok(None);
         };

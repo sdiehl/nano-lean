@@ -17,4 +17,5 @@ pub mod verdict;
 
 pub use kernel::{Environment, Error};
 pub use level::Level;
+pub use resource::Budget;
 pub use syntax::Expr;
