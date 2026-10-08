@@ -88,6 +88,16 @@ Checking the full imported environment of [CSLib](https://github.com/leanprover/
 | Cycles                | 87.5 G        | 120.4 G        | 136.6 G        | 141.1 G        | 142.4 G        |
 | Peak memory footprint | 3.18 GB       | 5.89 GB        | 6.92 GB        | 8.92 GB        | 12.08 GB       |
 
+Checking [OpenAI's quasi-Riemann hypothesis proof](https://github.com/openai/math/blob/main/lean/docs/003.md) and its dependencies from the blean binary export
+
+|                       | M4 Max `-j 1` | M4 Max `-j 10` | M4 Max `-j 14` | M4 Max `-j 28` | M4 Max `-j 64` |
+| --------------------- | ------------- | -------------- | -------------- | -------------- | -------------- |
+| Wall time             | 20.74 s       | 3.75 s         | 3.66 s         | 3.76 s         | 4.04 s         |
+| Kernel check          | 19.71 s       | 2.71 s         | 2.58 s         | 2.70 s         | 2.90 s         |
+| Instructions          | 227.4 G       | 235.2 G        | 236.4 G        | 239.0 G        | 242.6 G        |
+| Cycles                | 84.0 G        | 108.0 G        | 122.6 G        | 125.2 G        | 127.2 G        |
+| Peak memory footprint | 3.12 GB       | 6.80 GB        | 7.42 GB        | 10.15 GB       | 12.08 GB       |
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
