@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{
     checker::Limits,
     mutate::{self, Operator, Rng},

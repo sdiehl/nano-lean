@@ -4,7 +4,7 @@
 
 use crate::resource::Budget;
 use std::any::Any;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
 
 pub struct Reject(pub String);
 
@@ -18,14 +18,21 @@ pub enum Decline {
 
 pub(crate) struct ProbeExhausted;
 
+#[cold]
+#[inline(never)]
+#[allow(clippy::panic)]
+pub fn raise<P: Any + Send>(payload: P) -> ! {
+    panic_any(payload)
+}
+
 #[macro_export]
 macro_rules! reject {
-    ($($a:tt)+) => { ::std::panic::panic_any($crate::term::outcome::Reject(::std::format!($($a)+))) };
+    ($($a:tt)+) => { $crate::term::outcome::raise($crate::term::outcome::Reject(::std::format!($($a)+))) };
 }
 
 #[macro_export]
 macro_rules! unsupported {
-    ($($a:tt)+) => { ::std::panic::panic_any($crate::term::outcome::Decline::Unsupported(::std::format!($($a)+))) };
+    ($($a:tt)+) => { $crate::term::outcome::raise($crate::term::outcome::Decline::Unsupported(::std::format!($($a)+))) };
 }
 
 #[macro_export]

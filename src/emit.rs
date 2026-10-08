@@ -4,6 +4,7 @@ use crate::parser::Declaration;
 use crate::{Error, Expr, Level};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt::Write;
 use unbound::{Name, Shared};
 
 const EXPORTER: &str = "nano-lean";
@@ -278,5 +279,9 @@ pub fn ndjson(declarations: &[Declaration]) -> Result<String, Error> {
     for d in declarations {
         w.declaration(d)?;
     }
-    Ok(w.out.iter().map(|v| format!("{v}\n")).collect())
+    let mut out = String::new();
+    for v in &w.out {
+        let _ = writeln!(out, "{v}");
+    }
+    Ok(out)
 }

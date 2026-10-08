@@ -29,7 +29,7 @@ use stats::Stats;
 use stats::stat;
 use std::mem::{take, transmute};
 use tables::{POOL, Tables};
-use value::*;
+use value::{Head, K, Sub, V, Val};
 
 pub(crate) use decl::{RecCheck, check_recursor};
 pub use session::{BRIDGED, Session, check};

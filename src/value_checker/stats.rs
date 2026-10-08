@@ -138,7 +138,10 @@ pub fn report() {
         let (n, t) = (n.load(Relaxed), t.load(Relaxed));
         eprintln!("vstats ind {path} blocks {n} {:.3} s", t as f64 * 1e-9);
     }
-    if let Some(mut s) = *TOTAL.lock().unwrap() {
+    if let Some(mut s) = *TOTAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         s.resets = RESETS.load(Relaxed);
         eprintln!("vstats total {s:?}");
     }

@@ -1,4 +1,4 @@
-use super::value::*;
+use super::value::{Head, K, V, Val, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};

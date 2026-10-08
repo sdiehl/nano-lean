@@ -64,7 +64,8 @@ impl<'a> ExprPtr<'a> {
         let addr = r as *const Expr<'a> as u64;
         debug_assert_eq!(addr & !ADDR, 0);
         Self(
-            NonZeroU64::new(addr | (u64::from(meta) << META_SHIFT)).unwrap(),
+            NonZeroU64::new(addr | (u64::from(meta) << META_SHIFT))
+                .expect("references are nonnull"),
             PhantomData,
         )
     }

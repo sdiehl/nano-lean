@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use std::{
     io::Write,
     process::{Command, Stdio},

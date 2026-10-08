@@ -1,4 +1,4 @@
-use super::value::*;
+use super::value::{Clo, Env, Head, K, V, View, key};
 use super::{R, Stop, Vc, stat};
 use crate::checker::env::{Decls, positive, strip_pis, unfold_order};
 use crate::resource::grow;

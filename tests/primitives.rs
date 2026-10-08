@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{Environment, Expr, Level, parser::parse_expr};
 use num_bigint::BigUint;
 use unbound::{Alpha, Name, Shared};

@@ -236,7 +236,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 ensure!(!f.occurs(d), "negative inductive occurrence");
                 let x = self.fresh_local(d);
                 let b = self.ctx.inst(body, &[x]);
-                self.positive(f, b)
+                self.positive(f, b);
             }
             _ => ensure!(
                 f.application(ty).is_some(),

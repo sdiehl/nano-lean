@@ -95,7 +95,7 @@ pub fn check_existing_only<'a>(
         Tc::new(store, arena)
             .with_limits(limits)
             .with_adapter(adapter)
-            .check_existing(idx)
+            .check_existing(idx);
     })
 }
 
@@ -136,7 +136,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             .store
             .declars
             .first()
-            .map_or_else(|| LevelsPtr::new(&[]), |d| d.uparams());
+            .map_or_else(|| LevelsPtr::new(&[]), super::term::decl::Declar::uparams);
         Self {
             names: store.names,
             ctx,
@@ -179,10 +179,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if self.ctx.arena.allocated_bytes() > self.limits.arena_bytes {
             Budget::Arena.decline();
         }
-        self.infer_cache.iter_mut().for_each(|cache| cache.clear());
+        self.infer_cache
+            .iter_mut()
+            .for_each(std::collections::HashMap::clear);
         self.open_infer_cache
             .iter_mut()
-            .for_each(|cache| cache.clear());
+            .for_each(std::collections::HashMap::clear);
         self.support_cache.clear();
         self.argument_support.clear();
         self.rec_cache.clear();

@@ -1,4 +1,4 @@
-use super::*;
+use super::prelude::*;
 use crate::term::names::{NAT, STRING};
 
 impl Checker<'_> {
@@ -7,10 +7,10 @@ impl Checker<'_> {
             return self.semantic_sort(e);
         }
         let ty = self.infer(e)?;
-        self.sort_type(e, ty)
+        self.sort_type(e, &ty)
     }
-    pub(super) fn sort_type(&mut self, e: &Expr, ty: Expr) -> Result<Level> {
-        match self.whnf(&ty)? {
+    pub(super) fn sort_type(&mut self, e: &Expr, ty: &Expr) -> Result<Level> {
+        match self.whnf(ty)? {
             Expr::Sort(u) => Ok(u),
             other => Err(Error::Rejected(format!(
                 "expected a type, but {e} has type {other}"
@@ -22,10 +22,10 @@ impl Checker<'_> {
             return self.semantic_check(e, expected);
         }
         let actual = self.infer(e)?;
-        self.check_type(e, actual, expected)
+        self.check_type(e, &actual, expected)
     }
-    pub(super) fn check_type(&mut self, e: &Expr, actual: Expr, expected: &Expr) -> Result<()> {
-        if self.conv(&actual, expected)? {
+    pub(super) fn check_type(&mut self, e: &Expr, actual: &Expr, expected: &Expr) -> Result<()> {
+        if self.conv(actual, expected)? {
             Ok(())
         } else {
             Err(Error::Rejected(format!(
@@ -62,7 +62,7 @@ impl Checker<'_> {
     }
     fn sort_at(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Level> {
         let ty = self.infer_at(e, context)?;
-        self.sort_type(e, ty)
+        self.sort_type(e, &ty)
     }
     fn infer_core(&mut self, e: &Expr, context: &mut Vec<Name<Expr>>) -> Result<Expr> {
         self.tick()?;
@@ -130,7 +130,7 @@ impl Checker<'_> {
                     Expr::Pi(domain, body) => {
                         if self.checking {
                             let actual = self.infer_at(arg, context)?;
-                            self.check_type(arg, actual, &domain)?;
+                            self.check_type(arg, &actual, &domain)?;
                         }
                         if self.cache.has_loose(body.body()) {
                             let arg = self.cache.open_at(arg, context, 0, self.scope);
@@ -149,7 +149,7 @@ impl Checker<'_> {
                     self.sort_at(ty, context)?;
                     let actual = self.infer_at(value, context)?;
                     let expected = self.cache.open_at(ty, context, 0, self.scope);
-                    self.check_type(value, actual, &expected)?;
+                    self.check_type(value, &actual, &expected)?;
                 }
                 let ty = self.cache.open_at(ty, context, 0, self.scope);
                 let value = self.cache.open_at(value, context, 0, self.scope);

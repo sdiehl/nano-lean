@@ -1,4 +1,5 @@
-use super::*;
+use super::{NAT_SUCC, NAT_ZERO, Session, Summary, Thunk, Type, Value, View};
+use crate::kernel::prelude::*;
 use num_bigint::BigUint;
 
 impl Session<'_, '_> {

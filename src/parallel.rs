@@ -5,7 +5,7 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     path::Path,
     process::{self, Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     thread,
     time::{Duration, Instant},
 };
@@ -36,8 +36,8 @@ struct Workers(Vec<Worker>);
 impl Drop for Workers {
     fn drop(&mut self) {
         for worker in &mut self.0 {
-            let _ = worker.child.kill();
-            let _ = worker.child.wait();
+            worker.child.kill().ok();
+            worker.child.wait().ok();
         }
     }
 }
@@ -153,7 +153,10 @@ fn run_workers(
                 jobs - workers.0.len()
             );
             for worker in &workers.0 {
-                let snapshot = worker.progress.lock().unwrap();
+                let snapshot = worker
+                    .progress
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 eprintln!(
                     "[progress] {}",
                     status(worker.index, jobs, snapshot.as_ref())
@@ -188,7 +191,7 @@ fn run_workers(
         }
     }
     let reports: Option<Vec<_>> = reports.into_iter().collect();
-    combine(reports.ok_or("missing worker result")?)
+    combine(&reports.ok_or("missing worker result")?)
 }
 
 fn finish(worker: Worker) -> Result<(usize, ShardReport), String> {
@@ -266,7 +269,9 @@ fn spawn(
             };
             let is_trace = update.is_some();
             if let Some(update) = update {
-                *snapshot_writer.lock().unwrap() = Some(update);
+                *snapshot_writer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(update);
             }
             if !progress || trace_requested || !is_trace {
                 eprintln!("{line}");
@@ -349,7 +354,7 @@ fn memory_bytes(_: u32) -> io::Result<u64> {
     ))
 }
 
-fn combine(reports: Vec<ShardReport>) -> Result<(ExportReport, String), String> {
+fn combine(reports: &[ShardReport]) -> Result<(ExportReport, String), String> {
     let first = reports.first().ok_or("no worker results")?;
     let digest = &first.sha256;
     if digest.len() != 64 || !digest.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -410,8 +415,8 @@ mod tests {
 
     #[test]
     fn accepts_only_complete_matching_partitions() {
-        assert!(combine(reports()).is_ok());
-        assert!(combine(reports()[..1].to_vec()).is_err());
+        assert!(combine(&reports()).is_ok());
+        assert!(combine(&reports()[..1]).is_err());
         let corruptions: [fn(&mut ShardReport); 6] = [
             |r| r.shard = 0,
             |r| r.workers = 3,
@@ -423,7 +428,7 @@ mod tests {
         for corrupt in corruptions {
             let mut data = reports();
             corrupt(&mut data[1]);
-            assert!(combine(data).is_err());
+            assert!(combine(&data).is_err());
         }
     }
 }

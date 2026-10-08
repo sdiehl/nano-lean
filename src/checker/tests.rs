@@ -1,5 +1,6 @@
 use super::*;
 use crate::import::import_bytes;
+use crate::mutate::render;
 use crate::term::outcome;
 use std::io::Cursor;
 
@@ -83,11 +84,7 @@ fn forward_reference(self_reference: bool) -> Vec<u8> {
     ];
     lines.push(serde_json::json!({"def":{"name":3,"levelParams":[],"type":1,"value":if self_reference {3} else {4},"all":[3,4],"hints":{"regular":1},"safety":"safe"}}));
     lines.push(serde_json::json!({"def":{"name":4,"levelParams":[],"type":1,"value":2,"all":[3,4],"hints":{"regular":1},"safety":"safe"}}));
-    lines
-        .into_iter()
-        .map(|x| format!("{x}\n"))
-        .collect::<String>()
-        .into_bytes()
+    render(&lines).into_bytes()
 }
 
 #[test]
@@ -149,7 +146,7 @@ fn malformed_foundation_theorem_is_rejected_by_both_checkers() {
     let sort_id = lines.iter().find(|v| v.get("sort").is_some()).unwrap()["ie"].clone();
     let theorem = lines.iter_mut().find(|v| v.get("thm").is_some()).unwrap();
     theorem["thm"]["type"] = sort_id;
-    let input = lines.iter().map(|v| format!("{v}\n")).collect::<String>();
+    let input = render(&lines);
     assert!(check_all(input.as_bytes()).is_err());
     assert!(crate::export::check_export(Cursor::new(input)).is_err());
 }
@@ -324,17 +321,14 @@ fn forged_inductive_metadata_and_computation_rules_are_rejected() {
         match mutation {
             0 => {
                 block["types"][0]["isRec"] =
-                    serde_json::json!(!block["types"][0]["isRec"].as_bool().unwrap())
+                    serde_json::json!(!block["types"][0]["isRec"].as_bool().unwrap());
             }
             1 => block["types"][0]["numNested"] = serde_json::json!(10),
             2 => block["types"][0]["isReflexive"] = serde_json::json!(true),
             3 => block["ctors"][0]["numFields"] = serde_json::json!(100),
             _ => block["recs"][0]["rules"][0]["rhs"] = block["types"][0]["type"].clone(),
         }
-        let bytes = values
-            .into_iter()
-            .map(|v| format!("{v}\n"))
-            .collect::<String>();
+        let bytes = render(&values);
         assert!(
             check_all(bytes.as_bytes()).is_err(),
             "accepted mutation {mutation}"
@@ -353,10 +347,7 @@ fn quotient_kind_must_match_its_name() {
         .collect();
     let quotient = values.iter_mut().find_map(|v| v.get_mut("quot")).unwrap();
     quotient["kind"] = serde_json::json!("lift");
-    let bytes = values
-        .into_iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>();
+    let bytes = render(&values);
     assert!(
         check_all(bytes.as_bytes())
             .unwrap_err()
@@ -422,7 +413,7 @@ fn fallback_cannot_accept_an_invalid_body_or_restore_an_exhausted_budget() {
                 steps: 0,
                 arena_bytes: 1,
             })
-            .check_existing(0)
+            .check_existing(0);
     })
     .err()
     .unwrap();
@@ -442,10 +433,7 @@ fn arena_fallback_rechecks_the_target_body_and_reports_its_use() {
             let theorem = values.iter_mut().find_map(|v| v.get_mut("thm")).unwrap();
             theorem["value"] = wrong;
         }
-        let bytes = values
-            .into_iter()
-            .map(|v| format!("{v}\n"))
-            .collect::<String>();
+        let bytes = render(&values);
         let arena = Arena::new();
         let store = import_bytes(&arena, bytes.as_bytes()).unwrap();
         let index = store

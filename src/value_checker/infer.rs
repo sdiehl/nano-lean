@@ -1,4 +1,4 @@
-use super::value::*;
+use super::value::{Clo, Env, Head, K, Sub, V, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::term::expr::Expr;
@@ -117,9 +117,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             r = self.inst(c, a)?;
         }
         for i in 0..idx {
-            let (d, c) = match self.whnf(r)?.k {
-                K::Pi(d, c) => (d, c),
-                _ => reject!("invalid projection"),
+            let K::Pi(d, c) = self.whnf(r)?.k else {
+                reject!("invalid projection")
             };
             if self.uses_arg(c) {
                 ensure!(!is_prop || self.is_prop(d)?, "invalid projection");

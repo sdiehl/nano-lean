@@ -7,6 +7,7 @@ pub use table::{Ref, compact, defines, is_declaration, refs};
 use crate::checker::Limits;
 use crate::verdict::{self, Verdict, Verdicts};
 use serde_json::Value;
+use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expect {
@@ -35,7 +36,11 @@ impl Mutant {
     pub fn apply(&self, lines: &[Value]) -> Vec<Value> {
         let mut out = lines.to_vec();
         match &self.edit {
-            Edit::Set(i, ptr, v) => *out[*i].pointer_mut(ptr).unwrap() = v.clone(),
+            Edit::Set(i, ptr, v) => {
+                *out[*i]
+                    .pointer_mut(ptr)
+                    .expect("edit targets an existing path") = v.clone();
+            }
             Edit::Replace(i, v) => out[*i] = v.clone(),
             Edit::Remove(i) => {
                 out.remove(*i);
@@ -74,7 +79,11 @@ pub fn parse(source: &str) -> Result<Vec<Value>, serde_json::Error> {
 }
 
 pub fn render(lines: &[Value]) -> String {
-    lines.iter().map(|l| format!("{l}\n")).collect()
+    let mut out = String::new();
+    for l in lines {
+        let _ = writeln!(out, "{l}");
+    }
+    out
 }
 
 const GOLDEN_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;

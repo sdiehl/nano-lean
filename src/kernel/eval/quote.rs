@@ -1,4 +1,5 @@
-use super::*;
+use super::{Evaluator, OnceCell, Thunk, Value};
+use crate::kernel::prelude::*;
 
 impl<'b, 'a> Evaluator<'b, 'a> {
     pub(super) fn quote_value(&mut self, value: &Value) -> Expr {
@@ -45,7 +46,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                         Expr::Var(n) => {
                             if let Some((d, slot)) = n.coordinates().filter(|&(d, _)| d >= depth) {
                                 let mut rest = d - depth;
-                                let mut frame = term.context.clone();
+                                let mut frame = term.context.as_deref();
                                 loop {
                                     match frame {
                                         Some(f) if rest == 0 && slot == 0 => {
@@ -54,7 +55,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                                         }
                                         Some(f) => {
                                             rest = rest.saturating_sub(1);
-                                            frame = f.parent.clone();
+                                            frame = f.parent.as_deref();
                                         }
                                         None => {
                                             break Some(Expr::Var(Name::bound(depth + rest, slot)));

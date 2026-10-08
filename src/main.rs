@@ -54,22 +54,26 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(jobs) = cli.export_parallel {
         print_report(
-            parallel::run(cli.file.as_deref().unwrap(), jobs, cli.memory_mib)
-                .unwrap_or_else(|reason| Report::Rejected { reason }),
+            &parallel::run(
+                cli.file.as_deref().expect("clap requires FILE"),
+                jobs,
+                cli.memory_mib,
+            )
+            .unwrap_or_else(|reason| Report::Rejected { reason }),
         )
     } else if let Some(shard) = cli.export_shard {
         print_report(
-            number(&shard[1], "shard index")
+            &number(&shard[1], "shard index")
                 .and_then(|index| Ok((index, number(&shard[2], "worker count")?)))
                 .map_err(ExportError::Invalid)
                 .and_then(|(index, jobs)| check_export_file_shard(&shard[0], index, jobs))
                 .map_or_else(Report::from, Report::from),
         )
     } else if let Some(path) = cli.export {
-        print_report(check_export_file(&path).map_or_else(Report::from, Report::from))
+        print_report(&check_export_file(&path).map_or_else(Report::from, Report::from))
     } else if let Some(path) = cli.export_stream {
         print_report(
-            File::open(path)
+            &File::open(path)
                 .map_err(ExportError::from)
                 .and_then(|file| check_export(BufReader::new(file)))
                 .map_or_else(Report::from, Report::from),
@@ -117,7 +121,7 @@ fn finish(result: Result<(), Box<dyn Error>>) -> ExitCode {
     }
 }
 
-fn print_report(report: Report) -> ExitCode {
+fn print_report(report: &Report) -> ExitCode {
     println!("{report}");
     ExitCode::from(match report {
         Report::Checked { .. } | Report::ShardChecked(_) => 0,

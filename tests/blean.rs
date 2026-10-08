@@ -1,5 +1,7 @@
 //! blean fixtures are `olean-export convert` of the NDJSON fixture with the same name.
 
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{checker, import, term::arena::Arena};
 
 type Summary = ([usize; 4], Vec<(String, bool)>);

@@ -1,4 +1,5 @@
-use super::*;
+use super::{Session, Summary, Thunk, View};
+use crate::kernel::prelude::*;
 
 impl Session<'_, '_> {
     pub(super) fn summary(&mut self, name: &str, levels: &[Level]) -> Result<Summary> {

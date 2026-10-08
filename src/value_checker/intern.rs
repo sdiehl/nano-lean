@@ -1,5 +1,5 @@
 use super::tables::LOG;
-use super::value::*;
+use super::value::{Clo, Head, K, Lazy, Sub, V, Val, key};
 use super::{Vc, stat};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use rustc_hash::FxBuildHasher;
@@ -134,17 +134,17 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(&(_, v)) = self.t.neus[o].find(hash, same) {
             #[cfg(feature = "vstats")]
             if open {
-                self.stats.neu_open_hit += 1
+                self.stats.neu_open_hit += 1;
             } else {
-                self.stats.neu_closed_hit += 1
+                self.stats.neu_closed_hit += 1;
             }
             return v;
         }
         #[cfg(feature = "vstats")]
         if open {
-            self.stats.neu_open_miss += 1
+            self.stats.neu_open_miss += 1;
         } else {
-            self.stats.neu_closed_miss += 1
+            self.stats.neu_closed_miss += 1;
         }
         let all: &'t [V<'t>] = if sp.is_empty() {
             self.ctx.arena.alloc_slice_copy(rest)

@@ -1,5 +1,7 @@
 //! Every checker must match the `.verdict` file. Run with `BLESS=1` to regenerate.
 
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{checker::Limits, emit, parser, verdict};
 use std::{
     fs,

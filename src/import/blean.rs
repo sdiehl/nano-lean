@@ -272,8 +272,8 @@ pub(super) fn map(file: &File) -> io::Result<Option<Mmap>> {
     }
     // SAFETY: a concurrent writer can only corrupt records, which then decode as invalid.
     let map = unsafe { Mmap::map(file)? };
-    let _ = map.advise(Advice::Sequential);
-    let _ = map.advise(Advice::WillNeed);
+    map.advise(Advice::Sequential).ok();
+    map.advise(Advice::WillNeed).ok();
     Ok(Some(map))
 }
 

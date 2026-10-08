@@ -1,4 +1,5 @@
-use super::*;
+use super::inductive;
+use super::prelude::*;
 
 impl Checker<'_> {
     pub(super) fn whnf(&mut self, e: &Expr) -> Result<Expr> {
@@ -77,7 +78,7 @@ impl Checker<'_> {
         let ta = self.type_of(a)?;
         if {
             let tty = self.type_of(&ta)?;
-            self.sort_type(&ta, tty)?
+            self.sort_type(&ta, &tty)?
         }
         .equivalent(&Level::Nat(0))?
         {
@@ -155,7 +156,7 @@ impl Checker<'_> {
         let ta = self.type_of(&a)?;
         if {
             let tty = self.type_of(&ta)?;
-            self.sort_type(&ta, tty)?
+            self.sort_type(&ta, &tty)?
         }
         .equivalent(&Level::Nat(0))?
         {

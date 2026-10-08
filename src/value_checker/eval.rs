@@ -1,5 +1,5 @@
 use super::intern::Ptrs;
-use super::value::*;
+use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::term::decl::Declar;

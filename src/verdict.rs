@@ -154,8 +154,8 @@ pub fn check(source: &str, limits: Limits) -> Verdicts {
                 fast: fast(source, limits, Core::Term),
                 value: fast(source, limits, Core::Value),
             })
-            .unwrap()
+            .expect("spawn checker thread")
             .join()
-            .unwrap()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
 }

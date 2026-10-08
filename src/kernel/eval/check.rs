@@ -1,5 +1,9 @@
-use super::*;
-use crate::{syntax::Binder, term::names::*};
+use super::{Evaluator, Frame, Summary, Thunk, Value};
+use crate::kernel::prelude::*;
+use crate::{
+    syntax::Binder,
+    term::names::{NAT, NAT_SUCC, NAT_ZERO, STRING},
+};
 use rustc_hash::FxHashSet;
 mod conv;
 mod summary;
@@ -411,7 +415,7 @@ impl<'b, 'a> Session<'b, 'a> {
                 None => {
                     // The support bitmap omits very deep indices, so test free variables exactly.
                     let (name, opened) = bind(Name::<Expr>::new("_"), body.expr.clone()).unbind();
-                    opened.fv().contains(&name.to_any().unwrap())
+                    opened.fv().contains(&name.to_any().expect("free name"))
                 }
             };
             if prop

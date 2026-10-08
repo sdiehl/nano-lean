@@ -30,12 +30,18 @@ pub fn is_declaration(entry: &Value) -> bool {
     defines(entry).is_none() && entry.get("meta").is_none()
 }
 
+pub fn id_at(line: &Value, ptr: &str) -> u64 {
+    line.pointer(ptr)
+        .and_then(Value::as_u64)
+        .expect("refs point at ids")
+}
+
 pub fn refs(entry: &Value) -> Vec<(Ref, String)> {
-    use Ref::*;
+    use Ref::{Expr, Level, Name};
     let mut out = Vec::new();
     let mut at = |kind: Ref, ptr: String| match entry.pointer(&ptr) {
         Some(Value::Array(items)) => {
-            out.extend((0..items.len()).map(|i| (kind, format!("{ptr}/{i}"))))
+            out.extend((0..items.len()).map(|i| (kind, format!("{ptr}/{i}"))));
         }
         Some(Value::Number(_)) => out.push((kind, ptr)),
         _ => {}
@@ -105,7 +111,7 @@ pub fn compact(lines: &[Value], pin: Option<usize>) -> (Vec<Value>, Option<usize
         };
         if keep {
             for (kind, ptr) in refs(line) {
-                live.insert((kind, line.pointer(&ptr).unwrap().as_u64().unwrap()));
+                live.insert((kind, id_at(line, &ptr)));
             }
         }
     }
@@ -119,14 +125,15 @@ pub fn compact(lines: &[Value], pin: Option<usize>) -> (Vec<Value>, Option<usize
             if !pinned && (!live.contains(&(kind, id)) || map.contains_key(&(kind, id))) {
                 continue;
             }
-            let fresh = next[&kind];
-            *next.get_mut(&kind).unwrap() += 1;
+            let counter = next.entry(kind).or_default();
+            let fresh = *counter;
+            *counter += 1;
             map.entry((kind, id)).or_insert(fresh);
             line[kind.key()] = json!(fresh);
         }
         for (kind, ptr) in refs(&line) {
-            let slot = line.pointer_mut(&ptr).unwrap();
-            if let Some(&n) = map.get(&(kind, slot.as_u64().unwrap())) {
+            let slot = line.pointer_mut(&ptr).expect("refs point at ids");
+            if let Some(&n) = map.get(&(kind, slot.as_u64().expect("refs point at ids"))) {
                 *slot = json!(n);
             }
         }

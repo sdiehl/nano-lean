@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{
     Environment, Expr, Level,
     kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule},
@@ -69,7 +71,7 @@ fn switch() -> InductiveBlock {
 
 #[test]
 fn negative_recursive_occurrences_are_rejected() {
-    Environment::new().declare_inductive(switch()).unwrap();
+    Environment::new().declare_inductive(&switch()).unwrap();
     for ty in [
         "(Switch -> Switch) -> Switch",
         "((Switch -> Switch) -> Switch) -> Switch",
@@ -77,14 +79,14 @@ fn negative_recursive_occurrences_are_rejected() {
         let mut block = switch();
         block.constructors[0].ty = expr(ty);
         block.constructors[0].num_fields = 1;
-        let error = Environment::new().declare_inductive(block).unwrap_err();
+        let error = Environment::new().declare_inductive(&block).unwrap_err();
         assert_eq!(error.to_string(), "negative inductive occurrence");
     }
 }
 
 #[test]
 fn forged_recursor_rules_are_rejected() {
-    Environment::new().declare_inductive(switch()).unwrap();
+    Environment::new().declare_inductive(&switch()).unwrap();
     let mut block = switch();
     let Expr::Lam(_, body) =
         poly("fun (R : Type) (m : Switch -> U) (l : m left) (r : m right) => R m l r left")
@@ -96,18 +98,18 @@ fn forged_recursor_rules_are_rejected() {
         vec![Level::Param("u".into())],
     )))
     .clone();
-    let error = Environment::new().declare_inductive(block).unwrap_err();
+    let error = Environment::new().declare_inductive(&block).unwrap_err();
     assert_eq!(error.to_string(), "incorrect recursor computation rule");
 
     let mut block = switch();
     block.recursors[0].rules.swap(0, 1);
-    let error = Environment::new().declare_inductive(block).unwrap_err();
+    let error = Environment::new().declare_inductive(&block).unwrap_err();
     assert_eq!(error.to_string(), "incorrect recursor rule metadata");
 }
 
 #[test]
 fn incorrect_constructor_metadata_is_rejected() {
-    Environment::new().declare_inductive(switch()).unwrap();
+    Environment::new().declare_inductive(&switch()).unwrap();
     for field in ["owner", "index", "params", "fields", "universes"] {
         let mut block = switch();
         let constructor = &mut block.constructors[0];
@@ -119,7 +121,7 @@ fn incorrect_constructor_metadata_is_rejected() {
             "universes" => constructor.params.push("u".into()),
             _ => unreachable!(),
         }
-        let error = Environment::new().declare_inductive(block).unwrap_err();
+        let error = Environment::new().declare_inductive(&block).unwrap_err();
         assert_eq!(
             error.to_string(),
             if field == "fields" {
@@ -136,7 +138,7 @@ fn large_elimination_from_prop_is_rejected() {
     let mut block = switch();
     block.types[0].ty = expr("Prop");
     let error = Environment::new()
-        .declare_inductive(block.clone())
+        .declare_inductive(&block.clone())
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -150,7 +152,7 @@ fn large_elimination_from_prop_is_rejected() {
     for rule in &mut recursor.rules {
         rule.rhs = rule.rhs.substitute_levels(&levels).unwrap();
     }
-    Environment::new().declare_inductive(block).unwrap();
+    Environment::new().declare_inductive(&block).unwrap();
 }
 
 #[test]
@@ -165,7 +167,7 @@ fn rejected_inductive_blocks_roll_back() {
         } else {
             block.constructors[0].num_fields = 1;
         }
-        let error = env.declare_inductive(block).unwrap_err();
+        let error = env.declare_inductive(&block).unwrap_err();
         assert!(
             error.to_string().contains(if late_failure {
                 "type mismatch"
@@ -182,7 +184,7 @@ fn rejected_inductive_blocks_roll_back() {
                 .is_err()
         );
         env.check(&expr("a"), &expr("A")).unwrap();
-        env.declare_inductive(switch()).unwrap();
+        env.declare_inductive(&switch()).unwrap();
         env.check(&expr("left"), &expr("Switch")).unwrap();
         env.check(&expr("right"), &expr("Switch")).unwrap();
         let term = Expr::Const("Switch.rec".into(), vec![Level::Nat(1)])
@@ -215,7 +217,7 @@ fn pack(prop: bool, proof_field: bool) -> Environment {
             poly(source)
         }
     };
-    env.declare_inductive(InductiveBlock {
+    env.declare_inductive(&InductiveBlock {
         types: vec![InductiveType {
             name: "Pack".into(),
             params: vec![],
@@ -322,7 +324,7 @@ fn indexed(prop: bool) -> Environment {
     env.axiom("A", expr("Type")).unwrap();
     env.axiom("a", expr("A")).unwrap();
     env.axiom("b", expr("A")).unwrap();
-    env.declare_inductive(InductiveBlock {
+    env.declare_inductive(&InductiveBlock {
         types: vec![InductiveType {
             name: "Indexed".into(),
             params: vec![],
@@ -446,7 +448,7 @@ fn higher_order_recursive_field_reduction() {
     let mut env = Environment::new();
     env.axiom("A", expr("Type")).unwrap();
     env.axiom("a", expr("A")).unwrap();
-    env.declare_inductive(block).unwrap();
+    env.declare_inductive(&block).unwrap();
     let rec = Expr::Const("Tree.rec".into(), vec![Level::Nat(1)]);
     let prefix = rec
         .app(expr("fun (t : Tree) => A"))

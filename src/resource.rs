@@ -1,7 +1,6 @@
 use crate::kernel::Error;
-use crate::term::outcome::Decline;
+use crate::term::outcome::{Decline, raise};
 use std::fmt;
-use std::panic::panic_any;
 
 const STACK_RED_ZONE: usize = 256 << 10;
 const STACK_SEGMENT: usize = 16 << 20;
@@ -34,7 +33,7 @@ impl Budget {
     #[cold]
     #[inline(never)]
     pub(crate) fn decline(self) -> ! {
-        panic_any(Decline::Exhausted(self))
+        raise(Decline::Exhausted(self))
     }
 }
 

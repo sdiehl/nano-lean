@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::export::{ExportError, check_export, check_export_file};
 use std::io::Cursor;
 
@@ -541,7 +543,7 @@ fn source_groups_do_not_enable_forward_or_cyclic_references() {
     let declaration = records.iter().position(|r| r.get("def").is_some()).unwrap();
     let next = records
         .iter()
-        .filter_map(|r| r.get("ie").and_then(|v| v.as_u64()))
+        .filter_map(|r| r.get("ie").and_then(serde_json::Value::as_u64))
         .max()
         .unwrap()
         + 1;

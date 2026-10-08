@@ -1,9 +1,9 @@
-use super::table::{Ref, defines, is_declaration, refs};
+use super::table::{Ref, defines, id_at, is_declaration, refs};
 use super::{Edit, Expect, Mutant};
 use num_bigint::BigUint;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fmt;
+use std::fmt::{self, Write};
 use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +109,7 @@ fn walk(v: &Value, ptr: &mut String, f: &mut impl FnMut(&str, &str, &Value)) {
         Value::Array(a) => {
             for (i, child) in a.iter().enumerate() {
                 let len = ptr.len();
-                ptr.push_str(&format!("/{i}"));
+                let _ = write!(ptr, "/{i}");
                 walk(child, ptr, f);
                 ptr.truncate(len);
             }
@@ -123,7 +123,9 @@ fn same_type(lines: &[Value]) -> BTreeMap<u64, Vec<u64>> {
     let former = |mut ty: u64| loop {
         match exprs.get(&ty) {
             Some(e) if e.get("sort").is_some() => return true,
-            Some(e) if e.get("forallE").is_some() => ty = e["forallE"]["body"].as_u64().unwrap(),
+            Some(e) if e.get("forallE").is_some() => {
+                ty = e["forallE"]["body"].as_u64().expect("well-formed export");
+            }
             _ => return false,
         }
     };
@@ -212,17 +214,17 @@ fn bodies(lines: &[Value]) -> BTreeMap<u64, u64> {
             (_, Some(t)) => t,
             _ => continue,
         };
-        let name = d["name"].as_u64().unwrap();
+        let name = d["name"].as_u64().expect("well-formed export");
         let accelerated = matches!(root.get(&name).map(String::as_str), Some("Nat" | "String"));
         if d["levelParams"].as_array().is_some_and(Vec::is_empty) && !accelerated {
-            out.insert(name, d["value"].as_u64().unwrap());
+            out.insert(name, d["value"].as_u64().expect("well-formed export"));
         }
     }
     out
 }
 
 pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
-    use Expect::*;
+    use Expect::{Agree, Reject, Same};
     let mut out = Vec::new();
     let mut push = |expect, edit| out.push(Mutant { op, expect, edit });
     let max = |kind| {
@@ -251,7 +253,7 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
         let decl = is_declaration(line);
         match op {
             Operator::LooseBvar if line.get("bvar").is_some() => {
-                push(Reject, Edit::Set(i, "/bvar".into(), json!(60_000)))
+                push(Reject, Edit::Set(i, "/bvar".into(), json!(60_000)));
             }
             Operator::DanglingRef => {
                 for (kind, ptr) in refs(line) {
@@ -269,7 +271,7 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
             {
                 walk(line, &mut String::new(), &mut |ptr, key, v| {
                     if op == Operator::InductiveCount && COUNTS.contains(&key) {
-                        let n = v.as_u64().unwrap();
+                        let n = v.as_u64().expect("well-formed export");
                         push(Reject, Edit::Set(i, ptr.into(), json!(n + 1)));
                         if n > 0 {
                             push(Reject, Edit::Set(i, ptr.into(), json!(n - 1)));
@@ -277,7 +279,11 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                     } else if op == Operator::InductiveFlag && FLAGS.contains(&key) {
                         push(
                             Reject,
-                            Edit::Set(i, ptr.into(), json!(!v.as_bool().unwrap())),
+                            Edit::Set(
+                                i,
+                                ptr.into(),
+                                json!(!v.as_bool().expect("well-formed export")),
+                            ),
                         );
                     }
                 });
@@ -312,7 +318,7 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                     _ => u64::MAX,
                 };
                 for (kind, ptr) in refs(line) {
-                    let old = line.pointer(&ptr).unwrap().as_u64().unwrap();
+                    let old = id_at(line, &ptr);
                     if kind != Ref::Expr {
                         continue;
                     }
@@ -324,14 +330,15 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                 }
             }
             Operator::Unfold if line.get("const").is_some() => {
-                let id = line["ie"].as_u64().unwrap();
+                let id = line["ie"].as_u64().expect("well-formed export");
                 let body = line["const"]["name"].as_u64().and_then(|n| bodies.get(&n));
                 if let Some(body) = body.and_then(|b| exprs.get(b)) {
                     let mut copy = (*body).clone();
                     copy["ie"] = json!(id);
-                    if refs(&copy).iter().all(|(kind, ptr)| {
-                        *kind != Ref::Expr || copy.pointer(ptr).unwrap().as_u64().unwrap() < id
-                    }) {
+                    if refs(&copy)
+                        .iter()
+                        .all(|(kind, ptr)| *kind != Ref::Expr || id_at(&copy, ptr) < id)
+                    {
                         push(Same, Edit::Replace(i, copy));
                     }
                 }
@@ -354,7 +361,8 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
             }
             Operator::NatLiteral => {
                 if let Some(digits) = line.get("natVal").and_then(Value::as_str) {
-                    let n = BigUint::parse_bytes(digits.as_bytes(), 10).unwrap();
+                    let n =
+                        BigUint::parse_bytes(digits.as_bytes(), 10).expect("well-formed export");
                     push(
                         Agree,
                         Edit::Set(i, "/natVal".into(), json!((n + 1u32).to_string())),

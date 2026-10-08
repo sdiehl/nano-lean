@@ -43,6 +43,28 @@ clap = { version = "4.6.7", features = ["derive"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 
+[lints.rust]
+deprecated-safe = "forbid"
+future-incompatible = "deny"
+keyword-idents = "forbid"
+let-underscore = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+assigning_clones = "deny"
+cloned_instead_of_copied = "deny"
+enum_glob_use = "deny"
+format_collect = "deny"
+format_push_string = "deny"
+manual_let_else = "deny"
+needless_pass_by_value = "deny"
+panic = "deny"
+redundant_closure_for_method_calls = "deny"
+semicolon_if_nothing_returned = "deny"
+trivially_copy_pass_by_ref = "deny"
+unwrap_used = "deny"
+wildcard_imports = "deny"
+
 [profile.release]
 opt-level = 3
 overflow-checks = false

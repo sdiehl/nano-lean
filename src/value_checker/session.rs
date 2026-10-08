@@ -143,7 +143,11 @@ impl<'a> Session<'a> {
         }
         let result = outcome::run(|| vc.check(idx));
         #[cfg(feature = "vstats")]
-        TOTAL.lock().unwrap().get_or_insert_default().add(&vc.stats);
+        TOTAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_default()
+            .add(&vc.stats);
         if result.is_ok() {
             let ctx = replace(&mut vc.ctx, Ctx::new(store, arena));
             let t = vc.t.durable();

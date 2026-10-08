@@ -253,7 +253,9 @@ impl<'a> Importer<'a> {
         if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
             return invalid("invalid natural literal");
         }
-        let n = BigUint::parse_bytes(digits.as_bytes(), 10).unwrap();
+        let Some(n) = BigUint::parse_bytes(digits.as_bytes(), 10) else {
+            return invalid("invalid natural literal");
+        };
         let n = self.dag.intern_nat(self.arena, n);
         self.add_expr(i, mk::nat(n))
     }
@@ -302,7 +304,7 @@ impl<'a> Importer<'a> {
             (0..)
                 .zip(&self.exprs)
                 .filter(move |(i, _)| aliases.next_if_eq(i).is_none())
-                .filter_map(|(_, e)| e.map(|e| e.as_ref())),
+                .filter_map(|(_, e)| e.map(super::super::term::ptr::ExprPtr::as_ref)),
         );
         let names = Names::build(&self.dag, self.anon);
         Store {

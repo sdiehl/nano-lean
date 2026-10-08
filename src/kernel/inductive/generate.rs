@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Constructor, InductiveBlock, InductiveType, Local, RecursiveField, Recursor, RecursorRule,
+    apply, demand, is_zero, lambdas, occurs, pis, rec_name, spine, variable,
+};
+use crate::kernel::prelude::*;
 use std::slice;
 
 const ELIM_UNIVERSE: &str = "_rec.u";
@@ -219,7 +223,7 @@ impl Family<'_> {
         tc: &mut Checker<'_>,
         shapes: &[ConstructorShape],
         indices: &[Vec<Local>],
-        elim: Elimination,
+        elim: &Elimination,
         all: &[String],
     ) -> Result<Vec<Recursor>> {
         tc.uparams.extend(elim.params.iter().cloned());
@@ -382,7 +386,7 @@ impl Environment {
         }
         let shapes = family.constructor_shapes(&mut tc, &block.constructors, &result_level)?;
         let elim = family.elimination(&mut tc, &shapes.shapes, &result_level)?;
-        let recursors = family.recursors(&mut tc, &shapes.shapes, &indices, elim, &all)?;
+        let recursors = family.recursors(&mut tc, &shapes.shapes, &indices, &elim, &all)?;
         drop(tc);
         self.insert_all(&block.constructors, added)?;
         self.insert_all(&recursors, added)?;

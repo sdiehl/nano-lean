@@ -3,7 +3,7 @@ use super::env::{Decls, positive, strip_pis, unfold_order};
 use crate::resource::Budget;
 use crate::term::decl::Hint;
 use crate::term::expr::Expr;
-use crate::term::outcome::ProbeExhausted;
+use crate::term::outcome::{ProbeExhausted, raise};
 use crate::term::ptr::ExprPtr;
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -49,7 +49,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
         if let Some(remaining) = &mut self.probe_remaining {
             if *remaining == 0 {
-                panic::panic_any(ProbeExhausted);
+                raise(ProbeExhausted);
             }
             *remaining -= 1;
         }

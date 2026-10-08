@@ -1,5 +1,5 @@
 use super::intern::{HKey, Ptrs};
-use super::value::*;
+use super::value::{Env, Lazy, Sub, V};
 use crate::term::FxHashMap;
 use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
 use hashbrown::HashTable;
@@ -308,7 +308,7 @@ impl<K: Copy + Eq + Hash> LoggedSet<K> {
     }
 
     fn empty(&mut self, keep: usize) {
-        self.0.empty(keep)
+        self.0.empty(keep);
     }
 }
 

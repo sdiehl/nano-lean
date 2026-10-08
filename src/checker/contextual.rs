@@ -114,9 +114,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 env.push(local);
                 let result = self.infer_under(body, env, only);
                 env.pop();
-                if matches!(*e, Expr::Pi { .. }) {
+                if matches!(*e, Expr::Pi { .. })
+                    && let Some(sort) = sort
+                {
                     let level = self.ensure_sort(result);
-                    let level = self.ctx.imax(sort.unwrap(), level);
+                    let level = self.ctx.imax(sort, level);
                     self.ctx.sort(level)
                 } else {
                     let result = self.ctx.abstract_locals(result, &[local]);

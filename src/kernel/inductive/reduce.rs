@@ -1,4 +1,5 @@
-use super::*;
+use super::{Constructor, RecursorRule, apply, demand, is_zero, spine};
+use crate::kernel::prelude::*;
 
 impl Checker<'_> {
     pub(in crate::kernel) fn reduce_neutral_recursor(
@@ -198,7 +199,7 @@ impl Checker<'_> {
                 return Err(Error::Rejected("invalid projection telescope".into()));
             };
             let (n, opened) = body.unbind_ref();
-            let depends = opened.fv().contains(&n.to_any().unwrap());
+            let depends = opened.fv().contains(&n.to_any().expect("free name"));
             if prop && depends {
                 demand(
                     is_zero(&self.sort(&domain)?)?,

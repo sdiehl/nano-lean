@@ -5,7 +5,7 @@ use offsides::LayoutMode;
 use unbound::{Name, Shared};
 
 lalrpop_util::lalrpop_mod!(
-    #[allow(clippy::all)]
+    #[allow(clippy::all, clippy::pedantic, clippy::restriction)]
     grammar
 );
 
@@ -68,7 +68,7 @@ impl Term {
             }
             Self::Const(n, us) => Expr::Const(n, us),
             Self::Sort(u) => Expr::Sort(u),
-            Self::Nat(n) => Expr::nat(n.parse::<BigUint>().unwrap()),
+            Self::Nat(n) => Expr::nat(n.parse::<BigUint>().expect("lexer yields digits")),
             Self::Str(s) => Expr::Str(s),
             Self::Proj(n, i, e) => Expr::Proj(n, i, Shared::new(e.resolve(scope))),
             Self::App(f, a) => f.resolve(scope).app(a.resolve(scope)),
@@ -153,7 +153,7 @@ fn drop_pis(mut e: &Expr, n: usize) -> &Expr {
 
 fn inductive(
     (name, params): Signature,
-    binders: Vec<Binding>,
+    binders: &[Binding],
     ty: Term,
     ctors: Vec<(String, Term)>,
 ) -> InductiveBlock {
@@ -163,12 +163,12 @@ fn inductive(
         implicit: Some((name.clone(), levels)),
         ..Scope::default()
     };
-    let ty = Term::binders(binders.clone(), ty, Term::Pi).resolve(&mut scope);
+    let ty = Term::binders(binders.to_vec(), ty, Term::Pi).resolve(&mut scope);
     let constructors: Vec<_> = ctors
         .into_iter()
         .enumerate()
         .map(|(index, (n, t))| {
-            let ty = Term::binders(binders.clone(), t, Term::Pi).resolve(&mut scope);
+            let ty = Term::binders(binders.to_vec(), t, Term::Pi).resolve(&mut scope);
             Constructor {
                 name: n,
                 params: params.clone(),
@@ -235,7 +235,7 @@ fn declare(d: Declaration, env: &mut Environment) -> Result<String, Error> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
-            env.declare_inductive(block)?;
+            env.declare_inductive(&block)?;
             Ok(format!("inductive {names}"))
         }
         Declaration::Quotient => {
@@ -255,7 +255,7 @@ fn execute(
         Command::Define((n, ps), ty, v) => Declaration::Definition(n, ps, resolve(ty), resolve(v)),
         Command::Theorem((n, ps), ty, v) => Declaration::Theorem(n, ps, resolve(ty), resolve(v)),
         Command::Inductive(signature, binders, ty, ctors) => {
-            let block = inductive(signature, binders, ty, ctors);
+            let block = inductive(signature, &binders, ty, ctors);
             match env.complete_inductive(&block) {
                 Ok(block) => Declaration::Inductive(block),
                 Err(e) => {
@@ -316,7 +316,7 @@ pub fn declarations(source: &str) -> Result<Vec<Declaration>, Error> {
     let mut env = Environment::new();
     let mut submitted = Vec::new();
     for command in program(source)? {
-        let _ = execute(command, &mut env, &mut submitted);
+        execute(command, &mut env, &mut submitted).ok();
     }
     Ok(submitted)
 }

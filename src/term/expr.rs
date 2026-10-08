@@ -190,7 +190,11 @@ fn under(ty: ExprPtr<'_>, body: ExprPtr<'_>) -> Meta {
 }
 
 pub mod mk {
-    use super::*;
+    use super::{
+        APP_HASH, BigUintPtr, CONST_HASH, Expr, ExprPtr, HAS_LOCAL, LAM_HASH, LET_HASH, LOCAL_HASH,
+        LetData, LevelPtr, LevelsPtr, Meta, NAT_HASH, NLB_MASK, NamePtr, PI_HASH, PROJ_HASH,
+        SORT_HASH, STR_HASH, StringPtr, VAR_HASH, join, sup_join, sup_under, under,
+    };
     use crate::hash64;
 
     pub fn var<'a>(idx: u16) -> (Expr<'a>, Meta) {

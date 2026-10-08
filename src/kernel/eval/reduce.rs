@@ -1,6 +1,7 @@
-use super::*;
+use super::{Closure, Evaluator, Instance, Thunk, Value, inductive};
+use crate::kernel::prelude::*;
 use crate::kernel::{primitive::NatOp, quotient::Eliminator};
-use crate::term::names::*;
+use crate::term::names::{NAT_ZERO, QUOT_MK, QUOT_MK_ARITY};
 use std::mem::take;
 
 const VISITED_LIMIT: usize = 256;
@@ -39,7 +40,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
             let canonical = self.term(result.head.clone(), None);
             let _ = term.canonical.set(canonical.id);
         }
-        let _ = term.normal[usize::from(unfold)].set(result.clone());
+        term.normal[usize::from(unfold)].set(result.clone()).ok();
         Ok(result)
     }
     fn steps(&mut self, term: &Thunk, unfold: bool) -> Result<Value> {
@@ -71,7 +72,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                     continue;
                 }
                 Expr::Lam(domain, b) if !pending.is_empty() => {
-                    let mut arg = pending.pop().unwrap();
+                    let mut arg = pending.pop().expect("guarded nonempty");
                     let domain = self.term_at(domain.clone(), current.context.clone(), 0);
                     if self.reuse_proofs && self.proposition(&domain) {
                         let canonical = self
@@ -103,14 +104,14 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                 Expr::Var(n) => {
                     let mut resolved = None;
                     if let Some((mut depth, 0)) = n.coordinates() {
-                        let mut frame = current.context.clone();
+                        let mut frame = current.context.as_deref();
                         while let Some(f) = frame {
                             if depth == 0 {
                                 resolved = Some(f.value().clone());
                                 break;
                             }
                             depth -= 1;
-                            frame = f.parent.clone();
+                            frame = f.parent.as_deref();
                         }
                     } else if let Some(v) = self.tc.definitions.get(n) {
                         resolved = Some(self.term(v.clone(), None));

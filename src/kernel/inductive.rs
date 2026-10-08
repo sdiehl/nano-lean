@@ -1,4 +1,4 @@
-use super::*;
+use super::prelude::*;
 mod elim;
 mod generate;
 mod nested;
@@ -146,7 +146,7 @@ pub(super) fn spine(e: &Expr) -> (Expr, Vec<Expr>) {
 fn append_name(name: &str, suffix: &str) -> String {
     if let Ok(mut parts) = serde_json::from_str::<Vec<Value>>(name) {
         parts.push(Value::String(suffix.into()));
-        serde_json::to_string(&parts).unwrap()
+        serde_json::to_string(&parts).expect("serializing strings cannot fail")
     } else {
         format!("{name}.{suffix}")
     }
@@ -222,9 +222,9 @@ impl Checker<'_> {
 }
 
 impl Environment {
-    pub fn declare_inductive(&mut self, block: InductiveBlock) -> Result<()> {
+    pub fn declare_inductive(&mut self, block: &InductiveBlock) -> Result<()> {
         let mut added = Vec::new();
-        let result = self.build_inductive(&block, &mut added);
+        let result = self.build_inductive(block, &mut added);
         if result.is_err() {
             for name in added {
                 self.declarations.remove(&name);

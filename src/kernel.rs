@@ -1,4 +1,4 @@
-use crate::resource::{Budget, grow};
+use crate::resource::Budget;
 use crate::{Expr, Level};
 use rustc_hash::FxHashMap as HashMap;
 use std::{
@@ -14,6 +14,7 @@ mod eval;
 pub mod export_validation;
 mod inductive;
 mod infer;
+mod prelude;
 mod primitive;
 mod quotient;
 

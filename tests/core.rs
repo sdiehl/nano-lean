@@ -1,5 +1,7 @@
 //! Run with `BLESS=1` to regenerate the `.out` files.
 
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use nano_lean::{
     Environment,
     parser::{run, session},

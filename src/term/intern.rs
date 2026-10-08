@@ -4,7 +4,12 @@ use super::decl::Declar;
 use super::expr::{Expr, HAS_LOCAL, Meta, mk};
 use super::level::Level;
 use super::name::{NUM_HASH, Name, NameNode, NatRed, STR_HASH, StrNode};
-use super::names::*;
+use super::names::{
+    BOOL_FALSE, BOOL_TRUE, CHAR, CHAR_OF_NAT, EQ, LIST_CONS, LIST_NIL, NAT, NAT_ADD, NAT_BEQ,
+    NAT_BLE, NAT_DIV, NAT_GCD, NAT_LAND, NAT_LOG2, NAT_LOR, NAT_MOD, NAT_MUL, NAT_POW, NAT_SHL,
+    NAT_SHR, NAT_SUB, NAT_SUCC, NAT_XOR, NAT_ZERO, QUOT, QUOT_IND, QUOT_LIFT, QUOT_MK, STRING,
+    STRING_OF_LIST,
+};
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
 use hashbrown::HashTable;

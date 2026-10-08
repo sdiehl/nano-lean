@@ -288,17 +288,19 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
                                             f.status(),
                                             f.reason()
                                         );
-                                        let _ = io::stdout().flush();
+                                        io::stdout().flush().ok();
                                     });
                                 }
                             }
                         }
                     })
-                    .unwrap()
+                    .expect("spawn worker thread")
             })
             .collect();
         for worker in workers {
-            worker.join().unwrap();
+            worker
+                .join()
+                .unwrap_or_else(|p| std::panic::resume_unwind(p));
         }
         drop(stop);
     });

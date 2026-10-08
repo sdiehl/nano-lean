@@ -1,5 +1,8 @@
-use super::{Checker, Environment, Error, Result, primitive::symbol};
-use crate::term::names::*;
+use super::prelude::*;
+use super::primitive::symbol;
+use crate::term::names::{
+    EQ, EQ_REFL, QUOT, QUOT_FN, QUOT_IND, QUOT_IND_MAJOR, QUOT_LIFT, QUOT_LIFT_MAJOR, QUOT_MK,
+};
 use crate::{Expr, Level};
 use unbound::Name;
 
@@ -125,7 +128,11 @@ pub fn primitives() -> Vec<(&'static str, &'static str, Vec<String>, Expr)> {
     PRIMITIVES
         .iter()
         .map(|p| {
-            let params: Vec<String> = p.params.iter().map(|p| p.to_string()).collect();
+            let params: Vec<String> = p
+                .params
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             let ty = signature(p.kind, &params, false);
             (p.name, p.kind.label(), params, ty)
         })

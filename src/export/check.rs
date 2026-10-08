@@ -32,7 +32,10 @@ impl Tables {
     }
 
     fn name(&self, v: &Value) -> Result<String> {
-        Ok(serde_json::to_string(lookup(&self.names, v)?).unwrap())
+        Ok(
+            serde_json::to_string(lookup(&self.names, v)?)
+                .expect("serializing strings cannot fail"),
+        )
     }
 
     fn names(&self, v: &Value) -> Result<Vec<String>> {
@@ -147,7 +150,10 @@ impl Tables {
         } else {
             return Err(unsupported(format!(
                 "expression {}",
-                object.keys().find(|k| *k != EXPRESSION).unwrap()
+                object
+                    .keys()
+                    .find(|k| *k != EXPRESSION)
+                    .map_or("<empty>", String::as_str)
             )));
         };
         Ok(Shared::new(expr))
@@ -212,7 +218,7 @@ impl Loader<'_> {
         if object.len() != 1 {
             return Err(invalid("malformed declaration entry"));
         }
-        let (key, d) = object.iter().next().unwrap();
+        let (key, d) = object.iter().next().expect("length checked above");
         #[cfg(feature = "profile")]
         let _declaration = crate::profile::span("declarations");
         if self.tracing {
@@ -241,7 +247,10 @@ impl Loader<'_> {
             kind: key.to_owned(),
             name: self.tables.name(n).ok(),
         };
-        eprintln!("{}", serde_json::to_string(&trace).unwrap());
+        eprintln!(
+            "{}",
+            serde_json::to_string(&trace).expect("serializing a trace cannot fail")
+        );
     }
 
     fn quotient(&mut self, d: &Value) -> Result<()> {
@@ -317,7 +326,7 @@ impl Loader<'_> {
             })
             .collect::<Result<Vec<_>>>()?;
         let declarations = types.len() + constructors.len() + recursors.len();
-        self.env.declare_inductive(InductiveBlock {
+        self.env.declare_inductive(&InductiveBlock {
             types,
             constructors,
             recursors,
@@ -379,7 +388,8 @@ impl Loader<'_> {
                 matches!(kind, Kind::Def | Kind::Thm),
             )?;
         } else if kind == Kind::Thm {
-            self.env.declare_theorem(n, params, ty, value.unwrap())?;
+            self.env
+                .declare_theorem(n, params, ty, value.expect("theorems carry a value"))?;
         } else {
             self.env.declare(n, params, ty, value, kind == Kind::Def)?;
         }

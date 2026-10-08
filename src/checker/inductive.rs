@@ -162,7 +162,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     Expr::Const { name, .. } => declarations.push(name),
                     Expr::App { fun, arg, .. } => expressions.extend([fun, arg]),
                     Expr::Pi { ty, body, .. } | Expr::Lam { ty, body, .. } => {
-                        expressions.extend([ty, body])
+                        expressions.extend([ty, body]);
                     }
                     Expr::Let { data, .. } => expressions.extend([data.ty, data.val, data.body]),
                     Expr::Proj { name, e, .. } => {

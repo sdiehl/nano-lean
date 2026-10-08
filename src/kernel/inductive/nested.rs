@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Constructor, InductiveBlock, InductiveType, Local, append_name, apply, demand,
+    level_substitution, occurs, pis, rec_name, spine, variable,
+};
+use crate::kernel::prelude::*;
 use crate::resource::Budget;
 use crate::syntax::Binder;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -212,7 +216,7 @@ impl NestedExpansion {
         }
         let all = result.block.type_names();
         for t in &mut result.block.types {
-            t.all = all.clone();
+            t.all.clone_from(&all);
             t.num_nested = result.auxiliaries.len();
         }
         Ok(result)
@@ -484,14 +488,14 @@ impl NestedExpansion {
             .map(String::as_str)
             .collect();
         for t in &mut generated.types {
-            t.all = all.clone();
+            t.all.clone_from(&all);
         }
         for c in &mut generated.constructors {
             c.ty = self.restore_expr(&c.ty, &recs, &names)?;
         }
         for r in &mut generated.recursors {
             r.ty = self.restore_expr(&r.ty, &recs, &names)?;
-            r.all = all.clone();
+            r.all.clone_from(&all);
             if let Some(i) = recs.iter().position(|n| *n == r.name) {
                 r.name = auxiliary_rec_name(&generated.types[0].name, i);
             }
@@ -549,8 +553,8 @@ mod tests {
         }
     }
 
-    fn complete(env: &mut Environment, input: InductiveBlock) -> InductiveBlock {
-        let expansion = NestedExpansion::new(env, &input).unwrap();
+    fn complete(env: &mut Environment, input: &InductiveBlock) -> InductiveBlock {
+        let expansion = NestedExpansion::new(env, input).unwrap();
         let mut temporary = Vec::new();
         let generated = env
             .generate_inductive(&expansion.block, &mut temporary)
@@ -592,7 +596,7 @@ mod tests {
         let mut env = Environment::new();
         let list = complete(
             &mut env,
-            spec(
+            &spec(
                 "List",
                 "Type -> Type",
                 1,
@@ -602,15 +606,15 @@ mod tests {
                 ],
             ),
         );
-        env.declare_inductive(list).unwrap();
+        env.declare_inductive(&list).unwrap();
         let rose = complete(
             &mut env,
-            spec("Rose", "Type", 0, &[("node", "List Rose -> Rose", 1)]),
+            &spec("Rose", "Type", 0, &[("node", "List Rose -> Rose", 1)]),
         );
         let original_names: Vec<_> = env.declarations.keys().cloned().collect();
         let mut forged = rose.clone();
         forged.recursors[1].rules[1].rhs = Expr::Sort(Level::Nat(0));
-        assert!(env.declare_inductive(forged).is_err());
+        assert!(env.declare_inductive(&forged).is_err());
         assert_eq!(
             env.declarations.keys().cloned().collect::<Vec<_>>(),
             original_names
@@ -618,7 +622,7 @@ mod tests {
         assert_eq!(env.inductives.len(), 1);
         assert_eq!(env.constructors.len(), 2);
         assert_eq!(env.recursors.len(), 1);
-        env.declare_inductive(rose).unwrap();
+        env.declare_inductive(&rose).unwrap();
         assert_eq!(env.declarations.len(), 8);
         assert_eq!(env.inductives.len(), 2);
         assert_eq!(env.constructors.len(), 3);

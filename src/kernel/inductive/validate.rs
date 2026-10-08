@@ -1,4 +1,5 @@
-use super::*;
+use super::{InductiveBlock, Recursor, demand};
+use crate::kernel::prelude::*;
 
 impl Environment {
     pub(super) fn validate_inductive_export(

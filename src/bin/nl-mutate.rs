@@ -55,7 +55,10 @@ fn main() -> ExitCode {
         eprint!("baseline disagrees\n{baseline}");
         return ExitCode::FAILURE;
     }
-    let stem = o.path.file_stem().unwrap().to_string_lossy().into_owned();
+    let stem = o
+        .path
+        .file_stem()
+        .map_or_else(|| "export".into(), |s| s.to_string_lossy().into_owned());
     let mut rng = Rng::new(o.seed);
     let (mut tried, mut findings) = (0, 0);
     let mut tally: BTreeMap<(&str, String), usize> = BTreeMap::new();

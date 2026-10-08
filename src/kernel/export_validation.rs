@@ -31,7 +31,7 @@ impl Environment {
                 ty,
                 value,
             } => self.assume_export_declaration(name, params, ty, value, true),
-            ExportDependency::Inductive(block) => self.declare_inductive(block),
+            ExportDependency::Inductive(block) => self.declare_inductive(&block),
             ExportDependency::Quotient {
                 name,
                 params,
@@ -65,7 +65,12 @@ impl Environment {
     }
 
     fn set_order(&mut self, name: &str, order: u32) {
-        Rc::make_mut(self.declarations.get_mut(name).unwrap()).order = order as usize;
+        Rc::make_mut(
+            self.declarations
+                .get_mut(name)
+                .expect("declared before ordering"),
+        )
+        .order = order as usize;
     }
 }
 

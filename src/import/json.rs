@@ -30,7 +30,7 @@ impl<'a> Importer<'a> {
         if o.len() != 1 {
             return invalid("malformed declaration entry");
         }
-        let (kind, d) = o.iter().next().unwrap();
+        let (kind, d) = o.iter().next().expect("length checked above");
         self.declaration(kind, d)
     }
 
@@ -130,7 +130,9 @@ impl<'a> Importer<'a> {
         }
         unsupported(format!(
             "expression {}",
-            o.keys().find(|k| *k != "ie").unwrap()
+            o.keys()
+                .find(|k| *k != "ie")
+                .map_or("<empty>", String::as_str)
         ))
     }
 
@@ -388,8 +390,12 @@ fn hint(h: &Value) -> Result<Hint> {
     Ok(match h {
         Value::String(s) if s == "opaque" => Hint::Opaque,
         Value::String(s) if s == "abbrev" => Hint::Abbrev,
-        h => match h.get("regular").and_then(Value::as_u64) {
-            Some(n) => Hint::Regular(n as u32),
+        h => match h
+            .get("regular")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+        {
+            Some(n) => Hint::Regular(n),
             None => return invalid("invalid reducibility hint"),
         },
     })

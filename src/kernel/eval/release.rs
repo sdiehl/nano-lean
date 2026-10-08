@@ -1,4 +1,5 @@
-use super::*;
+use super::{Frame, Term, Thunk, Value, ValueData};
+use crate::kernel::prelude::*;
 
 // Iterative release so deep closure graphs do not overflow the stack on drop.
 enum Edge {

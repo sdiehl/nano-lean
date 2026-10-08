@@ -1,5 +1,9 @@
-use super::{Checker, Error, Result, inductive::spine};
-use crate::term::names::*;
+use super::inductive::spine;
+use super::prelude::*;
+use crate::term::names::{
+    BOOL_FALSE, BOOL_TRUE, CHAR, CHAR_OF_NAT, LIST_CONS, LIST_NIL, NAT_SUCC, NAT_ZERO,
+    STRING_OF_LIST,
+};
 use crate::{Expr, Level};
 use num_bigint::BigUint;
 use num_integer::Integer;
@@ -10,7 +14,8 @@ const MAX_RESULT_BITS: u64 = 1 << 26;
 
 pub(super) fn symbol(path: &str, encoded: bool) -> String {
     if encoded {
-        serde_json::to_string(&path.split('.').collect::<Vec<_>>()).unwrap()
+        serde_json::to_string(&path.split('.').collect::<Vec<_>>())
+            .expect("serializing strings cannot fail")
     } else {
         path.into()
     }

@@ -1,4 +1,5 @@
-use super::*;
+use super::inductive;
+use super::prelude::*;
 use rustc_hash::FxHashSet;
 use std::{
     cell::OnceCell,
@@ -192,13 +193,13 @@ impl<'b, 'a> Evaluator<'b, 'a> {
             && let Expr::Var(n) = &*expr
             && let Some((mut d, 0)) = n.coordinates()
         {
-            let mut frame = context.clone();
+            let mut frame = context.as_deref();
             while let Some(f) = frame {
                 if d == 0 {
                     return f.value().clone();
                 }
                 d -= 1;
-                frame = f.parent.clone();
+                frame = f.parent.as_deref();
             }
         }
         if !self.tc.cache.has_loose_id(id) {
@@ -214,17 +215,17 @@ impl<'b, 'a> Evaluator<'b, 'a> {
         } else if let Some(bits) = self.tc.cache.bound_support(id)
             && bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= 64
         {
-            let mut frame = context.clone();
+            let mut frame = context.as_deref();
             let mut depth = 0;
             for (i, word) in bits.iter().enumerate() {
                 let mut word = *word;
                 while word != 0 {
                     let d = i * 64 + word.trailing_zeros() as usize;
                     while depth < d {
-                        frame = frame.and_then(|f| f.parent.clone());
+                        frame = frame.and_then(|f| f.parent.as_deref());
                         depth += 1;
                     }
-                    dependencies.push(frame.as_ref().map_or(usize::MAX, |f| f.value().key()));
+                    dependencies.push(frame.map_or(usize::MAX, |f| f.value().key()));
                     word &= word - 1;
                 }
             }

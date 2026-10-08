@@ -67,7 +67,11 @@ fn fixture_outcomes_match_the_term_checker() {
                 "{file}: {name}: {}",
                 new.as_ref().err().map_or("", |f| f.reason())
             );
-            let kind = |r: &Result<bool, Failure>| r.as_ref().map_err(|f| f.status()).copied();
+            let kind = |r: &Result<bool, Failure>| {
+                r.as_ref()
+                    .map_err(super::super::term::outcome::Failure::status)
+                    .copied()
+            };
             assert_eq!(kind(&old), kind(&new), "{file}: {name}");
             let shared = session.check(i, Limits::default(), Some(&mut c), true);
             assert_eq!(kind(&old), kind(&shared), "{file}: {name} in a session");

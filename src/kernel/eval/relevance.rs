@@ -1,4 +1,4 @@
-use super::*;
+use crate::kernel::prelude::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::kernel) struct Summary {
