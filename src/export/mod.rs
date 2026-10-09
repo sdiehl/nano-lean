@@ -3,6 +3,7 @@ mod json;
 mod prepass;
 
 use crate::Error;
+use crate::schema::{META, Ref};
 use json::invalid;
 use prepass::count_uses;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use std::{
 pub const FORMAT_VERSION: &str = "3.1.0";
 pub const TRACE_VAR: &str = "NANO_LEAN_TRACE";
 const STACK_BYTES: usize = 64 * 1024 * 1024;
-const EXPRESSION: &str = "ie";
+const EXPRESSION: &str = Ref::Expr.key();
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -101,7 +102,7 @@ impl Kind {
 }
 
 fn current_format(item: &Value) -> bool {
-    item["meta"]["format"]["version"] == FORMAT_VERSION
+    item[META]["format"]["version"] == FORMAT_VERSION
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -13,8 +13,19 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::BufRead;
 use unbound::{Name, Shared, bind};
 
-const INDICES_CHANGED: &str = "expression indices changed between passes";
-const REFERENCES_CHANGED: &str = "expression references changed between passes";
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+enum Drift {
+    #[error("expression indices changed between passes")]
+    Indices,
+    #[error("expression references changed between passes")]
+    References,
+}
+
+impl From<Drift> for ExportError {
+    fn from(d: Drift) -> Self {
+        invalid(d.to_string())
+    }
+}
 
 struct Tables {
     names: HashMap<usize, Vec<Value>>,
@@ -207,7 +218,7 @@ impl Loader<'_> {
         }
         if let Some(id) = item.get(EXPRESSION) {
             if self.counts.is_some() && index(id)? != self.expressions {
-                return Err(invalid(INDICES_CHANGED));
+                return Err(Drift::Indices.into());
             }
             if object.len() != 2 {
                 return Err(invalid("malformed expression entry"));
@@ -408,19 +419,15 @@ impl Loader<'_> {
             return Ok(());
         };
         for id in references(item)? {
-            let n = counts
-                .get_mut(id)
-                .ok_or_else(|| invalid(REFERENCES_CHANGED))?;
-            *n = n
-                .checked_sub(1)
-                .ok_or_else(|| invalid(REFERENCES_CHANGED))?;
+            let n = counts.get_mut(id).ok_or(Drift::References)?;
+            *n = n.checked_sub(1).ok_or(Drift::References)?;
             if *n == 0 {
                 self.tables.expressions.remove(&id);
             }
         }
         if let Some(id) = item.get(EXPRESSION) {
             let id = index(id)?;
-            let n = counts.get(id).ok_or_else(|| invalid(INDICES_CHANGED))?;
+            let n = counts.get(id).ok_or(Drift::Indices)?;
             if *n == 0 {
                 self.tables.expressions.remove(&id);
             }
@@ -432,7 +439,7 @@ impl Loader<'_> {
         if let Some(counts) = self.counts
             && (counts.len() != self.expressions || counts.iter().any(|&n| n != 0))
         {
-            return Err(invalid(REFERENCES_CHANGED));
+            return Err(Drift::References.into());
         }
         Ok(ExportReport {
             declarations: self.declarations,

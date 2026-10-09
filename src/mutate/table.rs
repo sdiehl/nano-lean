@@ -1,24 +1,7 @@
+use crate::schema::META;
+pub use crate::schema::Ref;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Ref {
-    Name,
-    Level,
-    Expr,
-}
-
-impl Ref {
-    const ALL: [Self; 3] = [Self::Name, Self::Level, Self::Expr];
-
-    fn key(self) -> &'static str {
-        match self {
-            Self::Name => "in",
-            Self::Level => "il",
-            Self::Expr => "ie",
-        }
-    }
-}
 
 pub fn defines(entry: &Value) -> Option<(Ref, u64)> {
     Ref::ALL
@@ -27,7 +10,7 @@ pub fn defines(entry: &Value) -> Option<(Ref, u64)> {
 }
 
 pub fn is_declaration(entry: &Value) -> bool {
-    defines(entry).is_none() && entry.get("meta").is_none()
+    defines(entry).is_none() && entry.get(META).is_none()
 }
 
 pub fn id_at(line: &Value, ptr: &str) -> u64 {
@@ -94,7 +77,7 @@ pub fn refs(entry: &Value) -> Vec<(Ref, String)> {
                         decl(format!("/inductive/{section}/{i}"), item);
                     }
                 }
-            } else if kind != "meta" {
+            } else if kind != META {
                 decl(format!("/{kind}"), body);
             }
         }

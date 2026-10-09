@@ -1,12 +1,8 @@
 use super::json::{array, index, invalid, unsupported};
 use super::{EXPRESSION, ExportError, Kind, Result, current_format};
+use crate::schema::{ExprKind, META, Ref};
 use serde_json::{Map, Value};
 use std::io::BufRead;
-
-const EXPRESSION_KINDS: [&str; 11] = [
-    "bvar", "sort", "const", "app", "lam", "forallE", "letE", "mdata", "proj", "natVal", "strVal",
-];
-const TABLE_KEYS: [&str; 3] = ["meta", "in", "il"];
 
 pub(super) fn references(item: &Value) -> Result<Vec<usize>> {
     let mut refs = Vec::new();
@@ -60,9 +56,12 @@ pub(super) fn references(item: &Value) -> Result<Vec<usize>> {
 fn known(item: &Value, object: &Map<String, Value>, expressions: usize) -> Result<bool> {
     Ok(if item.get(EXPRESSION).is_some() {
         index(&item[EXPRESSION])? == expressions
-            && EXPRESSION_KINDS.iter().any(|k| object.contains_key(*k))
+            && ExprKind::ALL.iter().any(|k| object.contains_key(k.key()))
     } else {
-        TABLE_KEYS.iter().any(|k| object.contains_key(*k))
+        object.contains_key(META)
+            || [Ref::Name, Ref::Level]
+                .iter()
+                .any(|k| object.contains_key(k.key()))
             || Kind::ALL.iter().any(|k| object.contains_key(k.key()))
     })
 }

@@ -10,6 +10,7 @@ pub mod parser;
 #[cfg(feature = "profile")]
 mod profile;
 mod resource;
+pub mod schema;
 pub mod syntax;
 pub mod term;
 pub mod value_checker;
