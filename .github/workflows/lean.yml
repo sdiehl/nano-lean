@@ -49,13 +49,13 @@ jobs:
             modules: ComparatorChallenges.ErdosReciprocal
     env:
       CARGO_BUILD_JOBS: 2
-      EXPORTER_VERSION: 0.1.0
+      EXPORTER_VERSION: 0.2.0
       LEAN_VERSION: ${{ matrix.lean }}
       MODULES: ${{ matrix.modules }}
       PROJECT: .ci/${{ matrix.project }}/${{ matrix.root }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo build --release --locked --bin nl-fast
       - uses: actions/checkout@v4
         with:

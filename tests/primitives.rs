@@ -1,6 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nano_lean::{Environment, Expr, Level, parser::parse_expr};
+use nano_lean::{
+    Environment,
+    kernel::{Expr, Level},
+    parser::parse_expr,
+};
 use num_bigint::BigUint;
 use unbound::{Alpha, Name, Shared};
 
@@ -12,6 +16,7 @@ fn naturals() -> Environment {
     env.axiom("Nat", expr("Type")).unwrap();
     env.axiom("Nat.zero", expr("Nat")).unwrap();
     env.axiom("Nat.succ", expr("Nat -> Nat")).unwrap();
+    env.axiom("Nat.log2", expr("Nat -> Nat")).unwrap();
     env.axiom("Bool", expr("Type")).unwrap();
     env.axiom("Bool.true", expr("Bool")).unwrap();
     env.axiom("Bool.false", expr("Bool")).unwrap();
@@ -75,6 +80,13 @@ fn primitive_natural_operations_and_zero_divisors() {
             "{op} {a} {b}"
         );
     }
+    for (a, expected) in [(0u32, 0u32), (1, 0), (1023, 9), (1024, 10)] {
+        let term = Expr::constant("Nat.log2").app(Expr::nat(a));
+        assert!(
+            env.normalize(&term).unwrap().aeq(&Expr::nat(expected)),
+            "log2 {a}"
+        );
+    }
     for (op, a, b, expected) in [
         ("beq", 4, 4, true),
         ("beq", 4, 5, false),
@@ -94,7 +106,7 @@ fn primitive_natural_operations_and_zero_divisors() {
 }
 
 #[test]
-fn large_naturals_stay_exact_and_resource_limits_are_explicit() {
+fn large_naturals_stay_exact_and_oversized_results_decline() {
     let env = naturals();
     let big = BigUint::parse_bytes(b"340282366920938463463374607431768211457", 10).unwrap();
     let term = Expr::constant("Nat.mul")
@@ -110,18 +122,11 @@ fn large_naturals_stay_exact_and_resource_limits_are_explicit() {
         .unwrap()
         .aeq(&Expr::nat(0u32))
     );
-    let huge_shift = Expr::constant("Nat.shiftLeft")
-        .app(Expr::nat(1u32))
-        .app(Expr::nat(big.clone()));
-    assert!(matches!(
-        env.normalize(&huge_shift),
-        Err(nano_lean::Error::Unsupported(_))
-    ));
-    for a in [0u32, 1] {
-        let term = Expr::constant("Nat.pow")
-            .app(Expr::nat(a))
+    for op in ["shiftLeft", "pow"] {
+        let term = Expr::constant(format!("Nat.{op}"))
+            .app(Expr::nat(1u32))
             .app(Expr::nat(big.clone()));
-        assert!(env.normalize(&term).unwrap().aeq(&Expr::nat(a)));
+        assert!(env.normalize(&term).unwrap().aeq(&term), "{op}");
     }
 }
 

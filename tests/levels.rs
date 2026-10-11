@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nano_lean::{Environment, Expr, Level};
+use nano_lean::{
+    Environment,
+    kernel::{Expr, Level},
+};
 use std::collections::BTreeMap;
 use unbound::Name;
 

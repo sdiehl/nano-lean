@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use nano_lean::{
-    Environment, Expr, Level,
+    Environment,
     kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule},
+    kernel::{Expr, Level},
     parser::parse_expr,
 };
 use unbound::{Alpha, Shared};

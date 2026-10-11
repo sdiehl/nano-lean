@@ -1,6 +1,6 @@
 use crate::parser::{Term, Command, Binding, LocalDef, Signature, offset};
 use crate::lexer::Token;
-use crate::{Error, Level};
+use crate::{Error, kernel::Level};
 use lalrpop_util::ParseError;
 
 grammar;

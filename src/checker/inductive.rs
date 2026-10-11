@@ -3,6 +3,7 @@ use crate::kernel;
 use crate::kernel::export_validation::{
     ExportDependency, ExportSession, validate_export_dependencies,
 };
+use crate::kernel::{Expr as KernelExpr, Level as KernelLevel};
 use crate::term::decl::Declar;
 use crate::term::expr::Expr;
 use crate::term::intern::{Block, Store};
@@ -10,7 +11,6 @@ use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
-use crate::{Expr as KernelExpr, Level as KernelLevel};
 use crate::{ensure, reject, unsupported};
 use std::cell::Cell;
 use std::collections::BTreeSet;

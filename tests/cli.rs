@@ -174,3 +174,23 @@ fn deep_conversion_exhausts_budget_without_overflow() {
         "{stdout}"
     );
 }
+
+#[test]
+fn fast_checks_every_declaration_and_selected_blocks() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mutual.ndjson");
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_nl-fast"))
+            .args(args)
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stderr).unwrap()
+    };
+    assert!(run(&[]).contains(": 7 attempted, 0 failures"));
+    let rec = run(&["--declaration", "Tree.rec"]);
+    assert!(
+        rec.contains(": 1 attempted, 0 failures") && rec.contains("ind 1"),
+        "{rec}"
+    );
+}

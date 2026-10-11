@@ -1,5 +1,6 @@
 use crate::kernel::{Constructor, InductiveBlock, InductiveType};
-use crate::{Environment, Error, Expr, Level, lexer::lex};
+use crate::kernel::{Expr, Level};
+use crate::{Environment, Error, lexer::lex};
 use num_bigint::BigUint;
 use offsides::LayoutMode;
 use unbound::{Name, Shared};

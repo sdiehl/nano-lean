@@ -174,7 +174,10 @@ fn main() {
             }
         })
         .take(o.limit)
-        .map(|(i, d)| store.blocks.get(&d.name()).map_or(i as u32, |b| b.start))
+        .map(|(i, d)| match store.blocks.get(&d.name()) {
+            Some(b) if filtered => b.start,
+            _ => i as u32,
+        })
         .collect();
     let mut indices = indices;
     indices.dedup();

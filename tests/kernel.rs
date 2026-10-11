@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nano_lean::{Environment, Expr, parser::parse_expr};
+use nano_lean::{Environment, kernel::Expr, parser::parse_expr};
 use unbound::{Alpha, Name, Subst};
 
 fn expr(s: &str) -> Expr {

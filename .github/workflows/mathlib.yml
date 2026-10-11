@@ -23,7 +23,7 @@ jobs:
           - lean: "4.34.1"
             githash: 5045d0056413266e57c625dcd7c365b10e377c52
             format: "3.1.0"
-            exporter: "0.1.0"
+            exporter: "0.2.0"
             mathlib: d13f23b723b8a846827a245b89c10fc7d3f11612
             declarations: 718577
             coverage: a8e898c54b761ad374648e5b24ca25f040125409f8575a42458a37cb117e5a06
@@ -39,7 +39,7 @@ jobs:
       COVERAGE: ${{ matrix.coverage }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - name: Build release checker
         run: cargo build --release --locked --bin nl-fast
       - name: Install instruction counter tooling
@@ -55,7 +55,8 @@ jobs:
           path: |
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
-          key: mathlib-export-v3-${{ runner.os }}-lean-${{ matrix.lean }}-${{ matrix.mathlib }}-olean-export-${{ matrix.exporter }}
+            .ci/mathlib.blean
+          key: mathlib-export-v4-${{ runner.os }}-lean-${{ matrix.lean }}-${{ matrix.mathlib }}-olean-export-${{ matrix.exporter }}
       - name: Prepare runner disk
         run: |
           mkdir -p .ci/mathlib-report
@@ -120,10 +121,14 @@ jobs:
           path: |
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
+            .ci/mathlib.blean
           key: ${{ steps.export.outputs.cache-primary-key }}
       - name: Check all Mathlib declarations
         timeout-minutes: 47
         run: bash .github/scripts/mathlib-ci.sh check
+      - name: Check Mathlib blean on every core
+        timeout-minutes: 20
+        run: bash .github/scripts/mathlib-ci.sh check-blean
       - name: Report result
         if: always()
         run: |

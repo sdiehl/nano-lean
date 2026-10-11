@@ -19,6 +19,7 @@ expected_count=${DECLARATIONS:?}
 expected_coverage=${COVERAGE:?}
 mathlib_rev=${MATHLIB_REV:-}
 input="$root/.ci/$corpus.ndjson"
+blean="$root/.ci/$corpus.blean"
 report="$root/.ci/$corpus-report"
 mkdir -p "$report"
 pins=()
@@ -97,7 +98,9 @@ case ${1:-} in
         "$exporter" "$module" -j 2 -o "$input.tmp"
     fi
     mv "$input.tmp" "$input"
-    (cd "$root" && sha256sum ".ci/$corpus.ndjson" > "$input.sha256")
+    "$exporter" convert "$input" -o "$blean.tmp"
+    mv "$blean.tmp" "$blean"
+    (cd "$root" && sha256sum ".ci/$corpus.ndjson" ".ci/$corpus.blean" > "$input.sha256")
     rm -rf .ci/mathlib4 .ci/exporter .ci/elan .ci/export-smoke.ndjson
     ;;
   verify)
@@ -345,5 +348,21 @@ if error:
     raise SystemExit(1)
 PYRESULT
     ;;
-  *) echo "Usage: $0 prepare|verify|check [mathlib|init-prelude|init|std]" >&2; exit 2 ;;
+  check-blean)
+    # The same export through the memory-mapped binary loader, on every core.
+    sha256sum --check "$input.sha256"
+    status=0
+    bounded nano-mathlib-blean 11G 1200 /usr/bin/time -v -o "$report/blean-time.txt" \
+      "$root/target/release/nl-fast" "$blean" -j "$(nproc)" \
+      > "$report/blean-failures.log" 2> "$report/blean.log" || status=$?
+    cat "$report/blean-failures.log"
+    tail -n 2 "$report/blean.log"
+    summary=$(grep -E '^experimental checks ' "$report/blean.log" || true)
+    if (( status != 0 )) || [[ -s $report/blean-failures.log ]] \
+      || [[ ! $summary =~ :\ $expected_count\ attempted,\ 0\ failures,\ 0\ fallbacks$ ]]; then
+      echo "Blean check failed: exit $status, $summary" >&2
+      exit 1
+    fi
+    ;;
+  *) echo "Usage: $0 prepare|verify|check|check-blean [mathlib|init-prelude|init|std]" >&2; exit 2 ;;
 esac

@@ -1,9 +1,9 @@
 use super::prelude::*;
 use super::primitive::symbol;
+use super::{Expr, Level};
 use crate::term::names::{
     EQ, EQ_REFL, QUOT, QUOT_FN, QUOT_IND, QUOT_IND_MAJOR, QUOT_LIFT, QUOT_LIFT_MAJOR, QUOT_MK,
 };
-use crate::{Expr, Level};
 use unbound::Name;
 
 #[derive(Clone, Copy)]

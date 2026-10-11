@@ -1,7 +1,7 @@
 //! Soundness: results are conditional on ordinary dependencies the coordinator checks separately.
 
+use super::Expr;
 use super::{Environment, Error, InductiveBlock, Result};
-use crate::Expr;
 use std::{cell::Cell, collections::BTreeSet, rc::Rc};
 
 const MAX_KNOWN_DEPENDENCIES: usize = 8192;
@@ -167,7 +167,7 @@ impl ExportSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Level;
+    use crate::kernel::Level;
 
     fn axiom(name: &str) -> ExportDependency {
         ExportDependency::Ordinary {

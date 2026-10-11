@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use nano_lean::{
-    Environment, Expr,
+    Environment,
+    kernel::Expr,
     parser::{parse_expr, run},
 };
 use unbound::{Alpha, Name};

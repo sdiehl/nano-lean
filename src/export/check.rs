@@ -4,9 +4,10 @@ use super::{
     CheckPlan, EXPRESSION, ExportError, ExportReport, Kind, Result, TRACE_VAR, Trace,
     current_format,
 };
+use crate::Environment;
 use crate::kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
+use crate::kernel::{Expr, Level};
 use crate::schema::{ExprKind, META, Ref};
-use crate::{Environment, Expr, Level};
 use num_bigint::BigUint;
 use serde_json::{Map, Value};
 use sha2::Digest;

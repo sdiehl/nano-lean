@@ -1,5 +1,5 @@
 use crate::resource::Budget;
-use crate::{Expr, Level};
+pub use crate::{level::Level, syntax::Expr};
 use rustc_hash::FxHashMap as HashMap;
 use std::{
     cell::{Cell, RefCell},

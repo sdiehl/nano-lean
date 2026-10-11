@@ -32,7 +32,7 @@ jobs:
           - lean: "4.34.1"
             githash: 5045d0056413266e57c625dcd7c365b10e377c52
             format: "3.1.0"
-            exporter: "0.1.0"
+            exporter: "0.2.0"
           # Expected declaration names, pinned per Lean version and corpus.
           - lean: "4.34.1"
             corpus: init-prelude
@@ -58,7 +58,7 @@ jobs:
       COVERAGE: ${{ matrix.coverage }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - name: Build release checker
         run: cargo build --release --locked --bin nl-fast
       - uses: actions/cache/restore@v4
@@ -67,7 +67,8 @@ jobs:
           path: |
             .ci/${{ matrix.corpus }}.ndjson
             .ci/${{ matrix.corpus }}.ndjson.sha256
-          key: corpus-export-v1-${{ runner.os }}-${{ matrix.corpus }}-lean-${{ matrix.lean }}-olean-export-${{ matrix.exporter }}
+            .ci/${{ matrix.corpus }}.blean
+          key: corpus-export-v2-${{ runner.os }}-${{ matrix.corpus }}-lean-${{ matrix.lean }}-olean-export-${{ matrix.exporter }}
       - name: Generate pinned export
         if: steps.export.outputs.cache-hit != 'true'
         timeout-minutes: 15
@@ -93,10 +94,14 @@ jobs:
           path: |
             .ci/${{ matrix.corpus }}.ndjson
             .ci/${{ matrix.corpus }}.ndjson.sha256
+            .ci/${{ matrix.corpus }}.blean
           key: ${{ steps.export.outputs.cache-primary-key }}
       - name: Check every declaration
         timeout-minutes: 15
         run: bash .github/scripts/mathlib-ci.sh check "$CORPUS"
+      - name: Check blean on every core
+        timeout-minutes: 15
+        run: bash .github/scripts/mathlib-ci.sh check-blean "$CORPUS"
       - name: Report result
         if: always()
         run: |

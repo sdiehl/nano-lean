@@ -361,23 +361,23 @@ fn universe_equivalence_agrees_with_existing_kernel() {
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
     let local = Arena::new();
     let mut tc = Tc::new(&store, &local);
-    let mut base = vec![(tc.ctx.zero(), crate::Level::Nat(0))];
+    let mut base = vec![(tc.ctx.zero(), crate::kernel::Level::Nat(0))];
     for n in ["u", "v"] {
         let name = tc.ctx.str1(n);
-        base.push((tc.ctx.param(name), crate::Level::Param(n.into())));
+        base.push((tc.ctx.param(name), crate::kernel::Level::Param(n.into())));
     }
     let one = tc.ctx.succ(tc.ctx.zero());
-    base.push((one, crate::Level::Nat(1)));
+    base.push((one, crate::kernel::Level::Nat(1)));
     let mut levels = base.clone();
     for (a, old_a) in &base {
         for (b, old_b) in &base {
             levels.push((
                 tc.ctx.max(*a, *b),
-                crate::Level::max(old_a.clone(), old_b.clone()),
+                crate::kernel::Level::max(old_a.clone(), old_b.clone()),
             ));
             levels.push((
                 tc.ctx.imax(*a, *b),
-                crate::Level::imax(old_a.clone(), old_b.clone()),
+                crate::kernel::Level::imax(old_a.clone(), old_b.clone()),
             ));
         }
     }

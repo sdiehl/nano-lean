@@ -1,5 +1,5 @@
 use crate::lexer::Token;
-use crate::{Error, Level};
+use crate::{Error, level::Level};
 use logos::Logos;
 use num_bigint::BigUint;
 use std::{

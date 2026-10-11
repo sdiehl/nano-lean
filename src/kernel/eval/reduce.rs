@@ -185,7 +185,7 @@ impl<'b, 'a> Evaluator<'b, 'a> {
                     };
                     let d = &instance.declaration;
                     let subst = &instance.substitution;
-                    let arity = NatOp::parse(name).map(NatOp::arity);
+                    let arity = NatOp::parse(name).map(|(_, arity)| arity);
                     if levels.is_empty() && arity == Some(pending.len()) {
                         let mut args = Vec::new();
                         for arg in pending.iter().rev() {
