@@ -70,18 +70,17 @@ impl Checker<'_> {
         let value = self.substitute_levels(value, &subst)?;
         Ok(Some((d.order, args.into_iter().fold(value, Expr::app))))
     }
+    fn is_prop(&mut self, ty: &Expr) -> Result<bool> {
+        let tty = self.type_of(ty)?;
+        self.sort_type(ty, &tty)?.equivalent(&Level::Nat(0))
+    }
     fn conv_core(&mut self, a: &Expr, b: &Expr) -> Result<bool> {
         self.tick()?;
         if let (Expr::Sort(a), Expr::Sort(b)) = (a, b) {
             return a.equivalent(b);
         }
         let ta = self.type_of(a)?;
-        if {
-            let tty = self.type_of(&ta)?;
-            self.sort_type(&ta, &tty)?
-        }
-        .equivalent(&Level::Nat(0))?
-        {
+        if self.is_prop(&ta)? {
             let tb = self.type_of(b)?;
             return self.conv(&ta, &tb);
         }
@@ -154,16 +153,7 @@ impl Checker<'_> {
             _ => {}
         }
         let ta = self.type_of(&a)?;
-        if {
-            let tty = self.type_of(&ta)?;
-            self.sort_type(&ta, &tty)?
-        }
-        .equivalent(&Level::Nat(0))?
-        {
-            let tb = self.type_of(&b)?;
-            return self.conv(&ta, &tb);
-        }
-        if self.unit_like(&ta)? {
+        if self.is_prop(&ta)? || self.unit_like(&ta)? {
             let tb = self.type_of(&b)?;
             return self.conv(&ta, &tb);
         }

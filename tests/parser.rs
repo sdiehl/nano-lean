@@ -89,8 +89,26 @@ fn binder_scopes_exclude_domains_and_let_values() {
 #[test]
 fn printed_terms_roundtrip_even_with_keyword_binder_hints() {
     for spelling in [
-        "Sort", "Prop", "Type", "forall", "fun", "let", "in", "axiom", "def", "infer", "check",
-        "eval", "equal",
+        "Sort",
+        "Prop",
+        "Type",
+        "forall",
+        "fun",
+        "let",
+        "in",
+        "axiom",
+        "def",
+        "theorem",
+        "inductive",
+        "init_quot",
+        "proj",
+        "succ",
+        "max",
+        "imax",
+        "infer",
+        "check",
+        "eval",
+        "equal",
     ] {
         let n = Name::new(spelling);
         let original = Expr::lam(

@@ -24,8 +24,14 @@ fn zero(l: LevelPtr<'_>) -> bool {
     }
 }
 
-fn same_clo(a: Clo<'_>, b: Clo<'_>) -> bool {
-    a.body == b.body && a.typed == b.typed && a.sub == b.sub && a.env.key() == b.env.key()
+#[inline]
+fn same_code(a: Clo<'_>, b: Clo<'_>) -> bool {
+    a.body == b.body && a.typed == b.typed && a.sub == b.sub
+}
+
+#[inline]
+fn identical_clo(a: Clo<'_>, b: Clo<'_>) -> bool {
+    same_code(a, b) && a.env.key() == b.env.key()
 }
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
@@ -101,10 +107,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn same_clo(&self, c: Clo<'t>, k: Clo<'t>, fuel: &mut u32) -> bool {
-        c.body == k.body
-            && c.typed == k.typed
-            && c.sub == k.sub
-            && self.same_env(c.env, k.env, fuel)
+        same_code(c, k) && self.same_env(c.env, k.env, fuel)
     }
 
     fn same_env(&self, mut a: Env<'t>, mut b: Env<'t>, fuel: &mut u32) -> bool {
@@ -182,7 +185,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             let (td, tc, sd, sc) = match (t.k, s.k) {
                 (K::Pi(td, tc), K::Pi(sd, sc)) => (td, tc, sd, sc),
                 (K::Lam(td, tc), K::Lam(sd, sc)) => {
-                    if ptr::eq(td, sd) && same_clo(tc, sc) {
+                    if ptr::eq(td, sd) && identical_clo(tc, sc) {
                         return Ok(true);
                     }
                     let td = self.force(td)?;
@@ -194,7 +197,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             if !ptr::eq(td, sd) && !self.def_eq(td, sd)? {
                 return Ok(false);
             }
-            if same_clo(tc, sc) {
+            if identical_clo(tc, sc) {
                 return Ok(true);
             }
             let x = if self.uses_arg(tc) || self.uses_arg(sc) {

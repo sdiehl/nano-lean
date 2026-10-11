@@ -16,17 +16,17 @@ pub(super) fn index(v: &Value) -> Result<usize> {
         .ok_or_else(|| invalid("expected nonnegative index"))
 }
 
-pub(super) fn array(v: &Value) -> Result<&[Value]> {
+pub(crate) fn array(v: &Value) -> Result<&[Value]> {
     v.as_array()
         .map(Vec::as_slice)
         .ok_or_else(|| invalid("expected array"))
 }
 
-pub(super) fn string(v: &Value) -> Result<&str> {
+pub(crate) fn string(v: &Value) -> Result<&str> {
     v.as_str().ok_or_else(|| invalid("expected string"))
 }
 
-pub(super) fn boolean(v: &Value) -> Result<bool> {
+pub(crate) fn boolean(v: &Value) -> Result<bool> {
     v.as_bool().ok_or_else(|| invalid("expected boolean"))
 }
 

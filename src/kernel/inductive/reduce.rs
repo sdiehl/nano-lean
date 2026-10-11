@@ -161,15 +161,15 @@ impl Checker<'_> {
         )
     }
 
-    pub(in crate::kernel) fn infer_projection(
+    /// Validates a projection out of `head` applied to `nargs` arguments and returns the
+    /// constructor's parameter count and level-instantiated type.
+    pub(in crate::kernel) fn projection_ctor(
         &mut self,
         name: &str,
         index: usize,
-        e: &Shared<Expr>,
-    ) -> Result<Expr> {
-        let ty = self.type_of(e)?;
-        let ty = self.whnf(&ty)?;
-        let (head, args) = spine(&ty);
+        head: &Expr,
+        nargs: usize,
+    ) -> Result<(usize, Expr)> {
         let Expr::Const(n, levels) = head else {
             return Err(Error::Rejected("projection from non-inductive type".into()));
         };
@@ -180,14 +180,26 @@ impl Checker<'_> {
             .get(name)
             .ok_or_else(|| Error::Rejected("projection from non-inductive type".into()))?;
         demand(
-            info.constructors.len() == 1 && args.len() == info.num_params + info.num_indices,
+            info.constructors.len() == 1 && nargs == info.num_params + info.num_indices,
             "projection requires a single-constructor inductive",
         )?;
         let ctor = self.env.constructors[&info.constructors[0]].clone();
         demand(index < ctor.num_fields, "projection field out of range")?;
-        let subst = self.level_arguments(&ctor.params, &levels)?;
-        let mut field_ty = self.substitute_levels(&ctor.ty, &subst)?;
-        for arg in args.into_iter().take(ctor.num_params) {
+        let subst = self.level_arguments(&ctor.params, levels)?;
+        Ok((ctor.num_params, self.substitute_levels(&ctor.ty, &subst)?))
+    }
+
+    pub(in crate::kernel) fn infer_projection(
+        &mut self,
+        name: &str,
+        index: usize,
+        e: &Shared<Expr>,
+    ) -> Result<Expr> {
+        let ty = self.type_of(e)?;
+        let ty = self.whnf(&ty)?;
+        let (head, args) = spine(&ty);
+        let (num_params, mut field_ty) = self.projection_ctor(name, index, &head, args.len())?;
+        for arg in args.into_iter().take(num_params) {
             let Expr::Pi(_, body) = self.whnf(&field_ty)? else {
                 return Err(Error::Rejected("invalid constructor telescope".into()));
             };

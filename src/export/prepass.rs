@@ -11,19 +11,22 @@ pub(super) fn references(item: &Value) -> Result<Vec<usize>> {
         Ok(())
     };
     if item.get(EXPRESSION).is_some() {
-        if let Some(a) = item.get("app") {
+        if let Some(a) = item.get(ExprKind::App.key()) {
             add(&a["fn"])?;
             add(&a["arg"])?;
-        } else if let Some(b) = item.get("lam").or_else(|| item.get("forallE")) {
+        } else if let Some(b) = item
+            .get(ExprKind::Lam.key())
+            .or_else(|| item.get(ExprKind::ForallE.key()))
+        {
             add(&b["type"])?;
             add(&b["body"])?;
-        } else if let Some(b) = item.get("letE") {
+        } else if let Some(b) = item.get(ExprKind::LetE.key()) {
             add(&b["type"])?;
             add(&b["value"])?;
             add(&b["body"])?;
-        } else if let Some(m) = item.get("mdata") {
+        } else if let Some(m) = item.get(ExprKind::MData.key()) {
             add(&m["expr"])?;
-        } else if let Some(p) = item.get("proj") {
+        } else if let Some(p) = item.get(ExprKind::Proj.key()) {
             add(&p["struct"])?;
         }
         return Ok(refs);

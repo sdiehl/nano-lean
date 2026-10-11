@@ -4,6 +4,7 @@ use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 
 const BIG_EXP: u64 = 1 << 24;
+const MAX_RESULT_BITS: u64 = 1 << 26;
 
 pub(crate) enum NatValue {
     Nat(BigUint),
@@ -61,7 +62,13 @@ pub(crate) fn binary(op: NatRed, x: BigUint, y: BigUint) -> Option<NatValue> {
             Some(k) => x >> k,
             None => BigUint::zero(),
         },
-        NatRed::Pow => x.pow(u32::try_from(y.to_u64().filter(|&k| k <= BIG_EXP)?).ok()?),
+        NatRed::Pow => {
+            let k = y.to_u64().filter(|&k| k <= BIG_EXP)?;
+            if x.bits().saturating_mul(k) > MAX_RESULT_BITS {
+                return None;
+            }
+            x.pow(k as u32)
+        }
         NatRed::Succ | NatRed::Log2 => return None,
     };
     Some(NatValue::Nat(r))

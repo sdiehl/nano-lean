@@ -1,4 +1,6 @@
+use crate::lexer::Token;
 use crate::{Error, Level};
+use logos::Logos;
 use num_bigint::BigUint;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -125,10 +127,10 @@ impl Expr {
     }
 }
 
-const RESERVED: &[&str] = &[
-    "Sort", "Prop", "Type", "forall", "fun", "let", "in", "axiom", "def", "infer", "check", "eval",
-    "equal",
-];
+fn reserved(s: &str) -> bool {
+    let mut tokens = Token::lexer(s);
+    matches!(tokens.next(), Some(Ok(t)) if !matches!(t, Token::Ident(_)) && tokens.span() == (0..s.len()))
+}
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -169,7 +171,7 @@ impl fmt::Display for Expr {
                 Expr::Pi(ty, b) | Expr::Lam(ty, b) | Expr::Let(ty, _, b) => {
                     let (n, body) = b.unbind_ref();
                     let hint = match n.string() {
-                        Some(s) if RESERVED.contains(&s) => Name::<Expr>::new(format!("{s}_")),
+                        Some(s) if reserved(s) => Name::<Expr>::new(format!("{s}_")),
                         _ => n.clone(),
                     };
                     let display = scope.pick(&hint, &body.fv());

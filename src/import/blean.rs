@@ -160,7 +160,7 @@ fn take_id(next: &mut u32) -> u32 {
 }
 
 pub fn import<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
-    read(arena, bytes).map(Importer::finish)
+    read(arena, bytes)?.finish()
 }
 
 pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
@@ -270,7 +270,7 @@ pub(super) fn map(file: &File) -> io::Result<Option<Mmap>> {
         (&*file).rewind()?;
         return Ok(None);
     }
-    // SAFETY: a concurrent writer can only corrupt records, which then decode as invalid.
+    // SAFETY: the export must not be modified or truncated while mapped (truncation raises SIGBUS).
     let map = unsafe { Mmap::map(file)? };
     map.advise(Advice::Sequential).ok();
     map.advise(Advice::WillNeed).ok();
@@ -297,7 +297,7 @@ mod tests {
                 Record::Meta(_) | Record::Decl(_) => {
                     line(&r, &mut buf).and_then(|v| im.general(&v, n == 0))
                 }
-                Record::End(_) => return Ok(im.finish()),
+                Record::End(_) => return im.finish(),
                 Record::NameStr { pre, str } => im.do_str(i, pre, &str),
                 Record::NameNum { pre, i: k } => im.do_num(i, pre, k),
                 Record::Succ(l) => im.do_succ(i, l),

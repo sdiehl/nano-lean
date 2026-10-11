@@ -1,5 +1,5 @@
 mod check;
-mod json;
+pub(crate) mod json;
 mod prepass;
 
 use crate::Error;

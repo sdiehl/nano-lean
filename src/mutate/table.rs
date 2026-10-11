@@ -1,5 +1,5 @@
-use crate::schema::META;
 pub use crate::schema::Ref;
+use crate::schema::{ExprKind, META};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +46,11 @@ pub fn refs(entry: &Value) -> Vec<(Ref, String)> {
             at(Level, "/const/us".into());
             at(Expr, "/app/fn".into());
             at(Expr, "/app/arg".into());
-            for b in ["lam", "forallE", "letE"] {
+            for b in [
+                ExprKind::Lam.key(),
+                ExprKind::ForallE.key(),
+                ExprKind::LetE.key(),
+            ] {
                 at(Name, format!("/{b}/name"));
                 for k in ["type", "value", "body"] {
                     at(Expr, format!("/{b}/{k}"));

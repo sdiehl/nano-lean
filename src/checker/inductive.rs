@@ -10,7 +10,7 @@ use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
-use crate::{Expr as OldExpr, Level as OldLevel};
+use crate::{Expr as KernelExpr, Level as KernelLevel};
 use crate::{ensure, reject, unsupported};
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[cfg(feature = "vstats")]
 use std::time::Instant;
-use unbound::prelude::{Name as OldName, Shared, bind};
+use unbound::prelude::{Name as KernelName, Shared, bind};
 
 const CONVERT_CACHE_LIMIT: usize = 65536;
 const STACK_RED_ZONE: usize = 128 << 10;
@@ -261,8 +261,8 @@ fn roots<'a>(d: Declar<'a>, out: &mut Vec<ExprPtr<'a>>, target: bool) {
 #[derive(Default)]
 struct Convert<'a> {
     names: FxHashMap<NamePtr<'a>, String>,
-    levels: FxHashMap<LevelPtr<'a>, OldLevel>,
-    expressions: FxHashMap<ExprPtr<'a>, Shared<OldExpr>>,
+    levels: FxHashMap<LevelPtr<'a>, KernelLevel>,
+    expressions: FxHashMap<ExprPtr<'a>, Shared<KernelExpr>>,
 }
 
 impl<'a> Convert<'a> {
@@ -320,16 +320,16 @@ impl<'a> Convert<'a> {
             .clone()
     }
 
-    fn level(&mut self, l: LevelPtr<'a>) -> OldLevel {
+    fn level(&mut self, l: LevelPtr<'a>) -> KernelLevel {
         if let Some(v) = self.levels.get(&l) {
             return v.clone();
         }
         let v = match *l {
-            Level::Zero => OldLevel::Nat(0),
-            Level::Param(n, _) => OldLevel::Param(self.name(n)),
+            Level::Zero => KernelLevel::Nat(0),
+            Level::Param(n, _) => KernelLevel::Param(self.name(n)),
             Level::Succ(l, _) => self.level(l).succ().unwrap_or_else(|e| reject!("{e}")),
-            Level::Max(a, b, _) => OldLevel::max(self.level(a), self.level(b)),
-            Level::IMax(a, b, _) => OldLevel::imax(self.level(a), self.level(b)),
+            Level::Max(a, b, _) => KernelLevel::max(self.level(a), self.level(b)),
+            Level::IMax(a, b, _) => KernelLevel::imax(self.level(a), self.level(b)),
         };
         self.levels.insert(l, v.clone());
         v
@@ -345,35 +345,35 @@ impl<'a> Convert<'a> {
             .collect()
     }
 
-    fn expr(&mut self, e: ExprPtr<'a>) -> Shared<OldExpr> {
+    fn expr(&mut self, e: ExprPtr<'a>) -> Shared<KernelExpr> {
         if let Some(v) = self.expressions.get(&e) {
             return v.clone();
         }
         stacker::maybe_grow(STACK_RED_ZONE, STACK_GROWTH, || {
             let out = match *e {
-                Expr::Var { idx, .. } => OldExpr::Var(OldName::bound(usize::from(idx), 0)),
-                Expr::Sort { level, .. } => OldExpr::Sort(self.level(level)),
-                Expr::Const { name, levels, .. } => OldExpr::Const(
+                Expr::Var { idx, .. } => KernelExpr::Var(KernelName::bound(usize::from(idx), 0)),
+                Expr::Sort { level, .. } => KernelExpr::Sort(self.level(level)),
+                Expr::Const { name, levels, .. } => KernelExpr::Const(
                     self.name(name),
                     levels.iter().map(|l| self.level(*l)).collect(),
                 ),
-                Expr::App { fun, arg, .. } => OldExpr::App(self.expr(fun), self.expr(arg)),
+                Expr::App { fun, arg, .. } => KernelExpr::App(self.expr(fun), self.expr(arg)),
                 Expr::Lam { ty, body, .. } => {
-                    OldExpr::Lam(self.expr(ty), bind(OldName::new("x"), self.expr(body)))
+                    KernelExpr::Lam(self.expr(ty), bind(KernelName::new("x"), self.expr(body)))
                 }
                 Expr::Pi { ty, body, .. } => {
-                    OldExpr::Pi(self.expr(ty), bind(OldName::new("x"), self.expr(body)))
+                    KernelExpr::Pi(self.expr(ty), bind(KernelName::new("x"), self.expr(body)))
                 }
-                Expr::Let { data, .. } => OldExpr::Let(
+                Expr::Let { data, .. } => KernelExpr::Let(
                     self.expr(data.ty),
                     self.expr(data.val),
-                    bind(OldName::new("x"), self.expr(data.body)),
+                    bind(KernelName::new("x"), self.expr(data.body)),
                 ),
                 Expr::Proj { name, idx, e, .. } => {
-                    OldExpr::Proj(self.name(name), usize::from(idx), self.expr(e))
+                    KernelExpr::Proj(self.name(name), usize::from(idx), self.expr(e))
                 }
-                Expr::NatLit { n, .. } => OldExpr::nat(n.as_ref().clone()),
-                Expr::StrLit { s, .. } => OldExpr::Str(s.s.into()),
+                Expr::NatLit { n, .. } => KernelExpr::nat(n.as_ref().clone()),
+                Expr::StrLit { s, .. } => KernelExpr::Str(s.s.into()),
                 Expr::Local { .. } => reject!("local in imported inductive declaration"),
             };
             let out = Shared::new(out);

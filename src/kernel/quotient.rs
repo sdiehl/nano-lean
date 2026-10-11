@@ -124,6 +124,12 @@ fn signature(kind: Kind, params: &[String], encoded: bool) -> Expr {
     telescope(&locals, result)
 }
 
+pub(super) fn reserved(name: &str) -> bool {
+    PRIMITIVES
+        .iter()
+        .any(|p| name == p.name || name == symbol(p.name, true))
+}
+
 pub fn primitives() -> Vec<(&'static str, &'static str, Vec<String>, Expr)> {
     PRIMITIVES
         .iter()
@@ -182,7 +188,7 @@ impl Environment {
                 "incorrect quotient primitive signature".into(),
             ));
         }
-        self.declare(name.clone(), params, ty, None, false)?;
+        self.declare_unreserved(name.clone(), params, ty, None, false)?;
         self.quotients.insert(name);
         Ok(())
     }

@@ -4,7 +4,7 @@ use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};
 use crate::reject;
 use crate::term::decl::{Declar, Hint, Recursor};
-use crate::term::names::{QUOT_FN, QUOT_IND_MAJOR, QUOT_LIFT_MAJOR, QUOT_MK_ARITY};
+use crate::term::names::{QUOT_FN, QUOT_MK_ARITY};
 use crate::term::ptr::{LevelsPtr, NamePtr};
 use num_bigint::BigUint;
 use num_traits::Zero;
@@ -145,12 +145,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         ls: LevelsPtr<'t>,
         args: &'t [V<'t>],
     ) -> R<Option<V<'t>>> {
-        let n0 = Some(n);
-        if n0 == self.names.quot_lift {
-            return self.reduce_quot(args, QUOT_LIFT_MAJOR);
-        }
-        if n0 == self.names.quot_ind {
-            return self.reduce_quot(args, QUOT_IND_MAJOR);
+        if let Some(mk_pos) = self.quot_major(n) {
+            return self.reduce_quot(args, mk_pos);
         }
         match self.declar(n) {
             Some(Declar::Rec(r)) => self.reduce_ind_rec(r, ls, args),

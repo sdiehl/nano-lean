@@ -1,7 +1,9 @@
 use super::importer::Importer;
 use super::{Result, invalid, unsupported};
 use crate::export::FORMAT_VERSION;
+use crate::export::json::{array, boolean, string};
 use crate::hash64;
+use crate::schema::{ExprKind, META, Ref};
 use crate::term::FxHashSet;
 use crate::term::decl::{Constructor, Declar, Hint, Inductive, Info, RecRule, Recursor};
 use crate::term::intern::Block;
@@ -18,13 +20,13 @@ impl<'a> Importer<'a> {
         if first {
             return metadata(v, o);
         }
-        if let Some(id) = v.get("in") {
+        if let Some(id) = v.get(Ref::Name.key()) {
             return self.name_entry(idx(id)?, v, o);
         }
-        if let Some(id) = v.get("il") {
+        if let Some(id) = v.get(Ref::Level.key()) {
             return self.level_entry(idx(id)?, v, o);
         }
-        if let Some(id) = v.get("ie") {
+        if let Some(id) = v.get(Ref::Expr.key()) {
             return self.expr_entry(idx(id)?, v, o);
         }
         if o.len() != 1 {
@@ -75,35 +77,38 @@ impl<'a> Importer<'a> {
         if o.len() != 2 {
             return invalid("malformed expression entry");
         }
-        if let Some(x) = v.get("bvar") {
+        if let Some(x) = v.get(ExprKind::BVar.key()) {
             let Some(x) = x.as_u64() else {
                 return invalid("expected nonnegative index");
             };
             return self.do_bvar(i, x);
         }
-        if let Some(x) = v.get("natVal") {
+        if let Some(x) = v.get(ExprKind::NatVal.key()) {
             return self.do_nat(i, string(x)?);
         }
-        if let Some(x) = v.get("strVal") {
+        if let Some(x) = v.get(ExprKind::StrVal.key()) {
             return self.do_strlit(i, string(x)?);
         }
-        if let Some(l) = v.get("sort") {
+        if let Some(l) = v.get(ExprKind::Sort.key()) {
             return self.do_sort(i, idx(l)?);
         }
-        if let Some(c) = v.get("const") {
+        if let Some(c) = v.get(ExprKind::Const.key()) {
             let us = idxs(&c["us"])?;
             return self.do_const(i, idx(&c["name"])?, &us);
         }
-        if let Some(a) = v.get("app") {
+        if let Some(a) = v.get(ExprKind::App.key()) {
             return self.do_app(i, idx(&a["fn"])?, idx(&a["arg"])?);
         }
-        if let Some(p) = v.get("proj") {
+        if let Some(p) = v.get(ExprKind::Proj.key()) {
             let Some(k) = p["idx"].as_u64() else {
                 return invalid("expected nonnegative index");
             };
             return self.do_proj(i, idx(&p["typeName"])?, k, idx(&p["struct"])?);
         }
-        for (key, lam) in [("lam", true), ("forallE", false)] {
+        for (key, lam) in [
+            (ExprKind::Lam.key(), true),
+            (ExprKind::ForallE.key(), false),
+        ] {
             if let Some(b) = v.get(key) {
                 return self.do_binder(
                     i,
@@ -114,7 +119,7 @@ impl<'a> Importer<'a> {
                 );
             }
         }
-        if let Some(b) = v.get("letE") {
+        if let Some(b) = v.get(ExprKind::LetE.key()) {
             let nondep = b["nondep"].as_bool().unwrap_or(false);
             return self.do_let(
                 i,
@@ -125,13 +130,13 @@ impl<'a> Importer<'a> {
                 nondep,
             );
         }
-        if let Some(m) = v.get("mdata") {
+        if let Some(m) = v.get(ExprKind::MData.key()) {
             return self.alias(i, idx(&m["expr"])?);
         }
         unsupported(format!(
             "expression {}",
             o.keys()
-                .find(|k| *k != "ie")
+                .find(|k| *k != Ref::Expr.key())
                 .map_or("<empty>", String::as_str)
         ))
     }
@@ -140,34 +145,30 @@ impl<'a> Importer<'a> {
         match kind {
             "def" => {
                 let hint = hint(&d["hints"])?;
-                let all = idxs_or_empty(d, "all")?;
+                self.check_group(d)?;
                 self.do_def(
                     idx(&d["name"])?,
                     &idxs(&d["levelParams"])?,
                     idx(&d["type"])?,
                     idx(&d["value"])?,
-                    &all,
                     hint,
                     string(&d["safety"])?,
                 )
             }
             "thm" => {
-                let all = idxs_or_empty(d, "all")?;
+                self.check_group(d)?;
                 self.do_thm(
                     idx(&d["name"])?,
                     &idxs(&d["levelParams"])?,
                     idx(&d["type"])?,
                     idx(&d["value"])?,
-                    &all,
                 )
             }
             "axiom" | "opaque" => {
                 if boolean(&d["isUnsafe"])? {
                     return invalid("unsafe declaration is not permitted in a safe proof export");
                 }
-                if d.get("all").is_some() {
-                    self.check_group(idx(&d["name"])?, &idxs(&d["all"])?)?;
-                }
+                self.check_group(d)?;
                 let info = self.info_of(d)?;
                 if kind == "axiom" {
                     self.add_declar(Declar::Axiom(info))
@@ -239,11 +240,14 @@ impl<'a> Importer<'a> {
         Ok(())
     }
 
-    fn check_group(&self, own: u32, all: &[u32]) -> Result<()> {
-        let own = self.name(own)?;
-        let all = all
+    fn check_group(&self, d: &Value) -> Result<()> {
+        let Some(all) = d.get("all") else {
+            return Ok(());
+        };
+        let own = self.name(idx(&d["name"])?)?;
+        let all = array(all)?
             .iter()
-            .map(|&n| self.name(n))
+            .map(|n| self.name(idx(n)?))
             .collect::<Result<Vec<_>>>()?;
         let distinct = all.iter().collect::<FxHashSet<_>>().len() == all.len();
         if !all.contains(&own) || !distinct {
@@ -259,7 +263,6 @@ impl<'a> Importer<'a> {
         uparams: &[u32],
         ty: u32,
         val: u32,
-        all: &[u32],
         hint: Hint,
         safety: &str,
     ) -> Result<()> {
@@ -272,14 +275,12 @@ impl<'a> Importer<'a> {
             }
             _ => return invalid("invalid definition safety"),
         }
-        self.check_group(name, all)?;
         let info = self.info(name, uparams, ty)?;
         let val = self.expr(val)?;
         self.add_declar(Declar::Def(info, val, hint))
     }
 
-    fn do_thm(&mut self, name: u32, uparams: &[u32], ty: u32, val: u32, all: &[u32]) -> Result<()> {
-        self.check_group(name, all)?;
+    fn do_thm(&mut self, name: u32, uparams: &[u32], ty: u32, val: u32) -> Result<()> {
         let info = self.info(name, uparams, ty)?;
         let val = self.expr(val)?;
         self.add_declar(Declar::Thm(info, val))
@@ -377,10 +378,10 @@ impl<'a> Importer<'a> {
 }
 
 fn metadata(v: &Value, o: &Map<String, Value>) -> Result<()> {
-    if o.len() != 1 || v.get("meta").is_none() {
+    if o.len() != 1 || v.get(META).is_none() {
         return invalid("missing export metadata");
     }
-    if v["meta"]["format"]["version"] != FORMAT_VERSION {
+    if v[META]["format"]["version"] != FORMAT_VERSION {
         return unsupported("export format version");
     }
     Ok(())
@@ -424,32 +425,4 @@ fn small(v: &Value) -> Result<u16> {
 
 fn idxs(v: &Value) -> Result<Vec<u32>> {
     array(v)?.iter().map(idx).collect()
-}
-
-fn idxs_or_empty(d: &Value, k: &str) -> Result<Vec<u32>> {
-    match d.get(k) {
-        Some(v) => idxs(v),
-        None => Ok(Vec::new()),
-    }
-}
-
-fn array(v: &Value) -> Result<&[Value]> {
-    match v.as_array() {
-        Some(a) => Ok(a),
-        None => invalid("expected array"),
-    }
-}
-
-fn string(v: &Value) -> Result<&str> {
-    match v.as_str() {
-        Some(s) => Ok(s),
-        None => invalid("expected string"),
-    }
-}
-
-fn boolean(v: &Value) -> Result<bool> {
-    match v.as_bool() {
-        Some(b) => Ok(b),
-        None => invalid("expected boolean"),
-    }
 }

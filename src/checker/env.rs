@@ -73,15 +73,15 @@ pub(crate) trait Decls<'t> {
 
     #[inline]
     fn quot_major(&self, n: NamePtr<'t>) -> Option<usize> {
-        let n = Some(n);
         let names = self.names();
-        if n == names.quot_lift {
-            Some(QUOT_LIFT_MAJOR)
-        } else if n == names.quot_ind {
-            Some(QUOT_IND_MAJOR)
+        let major = if Some(n) == names.quot_lift {
+            QUOT_LIFT_MAJOR
+        } else if Some(n) == names.quot_ind {
+            QUOT_IND_MAJOR
         } else {
-            None
-        }
+            return None;
+        };
+        matches!(self.declar(n)?, Declar::Quot(_)).then_some(major)
     }
 }
 

@@ -373,32 +373,12 @@ impl<'b, 'a> Session<'b, 'a> {
         let View::Value(v) = self.view(&ty, true)? else {
             return Err(Error::Rejected("projection from non-inductive type".into()));
         };
-        let Expr::Const(n, levels) = &v.head else {
-            return Err(Error::Rejected("projection from non-inductive type".into()));
-        };
-        if n != name {
-            return Err(Error::Rejected("projection type name mismatch".into()));
-        }
-        let info = self
+        let (num_params, expr) = self
             .ev
             .tc
-            .env
-            .inductives
-            .get(name)
-            .ok_or_else(|| Error::Rejected("projection from non-inductive type".into()))?;
-        if info.constructors.len() != 1 || v.args.len() != info.num_params + info.num_indices {
-            return Err(Error::Rejected(
-                "projection requires a single-constructor inductive".into(),
-            ));
-        }
-        let ctor = self.ev.tc.env.constructors[&info.constructors[0]].clone();
-        if index >= ctor.num_fields {
-            return Err(Error::Rejected("projection field out of range".into()));
-        }
-        let subst = self.ev.tc.level_arguments(&ctor.params, levels)?;
-        let expr = self.ev.tc.substitute_levels(&ctor.ty, &subst)?;
+            .projection_ctor(name, index, &v.head, v.args.len())?;
         let mut field = Type::Term(self.ev.term(expr, None));
-        for arg in v.args.iter().take(ctor.num_params) {
+        for arg in v.args.iter().take(num_params) {
             let View::Pi(_, body) = self.view(&field, true)? else {
                 return Err(Error::Rejected("invalid constructor telescope".into()));
             };

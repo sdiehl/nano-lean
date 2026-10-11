@@ -28,7 +28,7 @@ pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>>
         let im = blean::read(arena, &map)?;
         // The records are consumed, so unmap before the fill peaks.
         drop(map);
-        return Ok(im.finish());
+        return im.finish();
     }
     import_reader(arena, file, len)
 }

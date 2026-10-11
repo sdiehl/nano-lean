@@ -1,5 +1,6 @@
 use super::table::{Ref, defines, id_at, is_declaration, refs};
 use super::{Edit, Expect, Mutant};
+use crate::schema::ExprKind;
 use num_bigint::BigUint;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -23,10 +24,11 @@ pub enum Operator {
     NatLiteral,
     Hints,
     ThmToDef,
+    QuotAxiom,
 }
 
 impl Operator {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::LooseBvar,
         Self::DanglingRef,
         Self::DuplicateDecl,
@@ -42,6 +44,7 @@ impl Operator {
         Self::NatLiteral,
         Self::Hints,
         Self::ThmToDef,
+        Self::QuotAxiom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -61,6 +64,7 @@ impl Operator {
             Self::NatLiteral => "nat-literal",
             Self::Hints => "hints",
             Self::ThmToDef => "thm-to-def",
+            Self::QuotAxiom => "quot-axiom",
         }
     }
 }
@@ -122,9 +126,11 @@ fn same_type(lines: &[Value]) -> BTreeMap<u64, Vec<u64>> {
     let exprs = expressions(lines);
     let former = |mut ty: u64| loop {
         match exprs.get(&ty) {
-            Some(e) if e.get("sort").is_some() => return true,
-            Some(e) if e.get("forallE").is_some() => {
-                ty = e["forallE"]["body"].as_u64().expect("well-formed export");
+            Some(e) if e.get(ExprKind::Sort.key()).is_some() => return true,
+            Some(e) if e.get(ExprKind::ForallE.key()).is_some() => {
+                ty = e[ExprKind::ForallE.key()]["body"]
+                    .as_u64()
+                    .expect("well-formed export");
             }
             _ => return false,
         }
@@ -155,13 +161,13 @@ fn same_type(lines: &[Value]) -> BTreeMap<u64, Vec<u64>> {
         let Some((Ref::Expr, id)) = defines(line) else {
             continue;
         };
-        let class = if let Some(c) = line.get("const") {
+        let class = if let Some(c) = line.get(ExprKind::Const.key()) {
             c["name"]
                 .as_u64()
                 .and_then(|n| declared.get(&n))
                 .map(|ty| format!("{ty}{}", c["us"]))
         } else {
-            ["natVal", "strVal"]
+            [ExprKind::NatVal.key(), ExprKind::StrVal.key()]
                 .into_iter()
                 .find(|k| line.get(k).is_some())
                 .map(str::to_owned)
@@ -252,7 +258,7 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
     for (i, line) in lines.iter().enumerate() {
         let decl = is_declaration(line);
         match op {
-            Operator::LooseBvar if line.get("bvar").is_some() => {
+            Operator::LooseBvar if line.get(ExprKind::BVar.key()).is_some() => {
                 push(Reject, Edit::Set(i, "/bvar".into(), json!(60_000)));
             }
             Operator::DanglingRef => {
@@ -329,12 +335,14 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                     }
                 }
             }
-            Operator::Unfold if line.get("const").is_some() => {
-                let id = line["ie"].as_u64().expect("well-formed export");
-                let body = line["const"]["name"].as_u64().and_then(|n| bodies.get(&n));
+            Operator::Unfold if line.get(ExprKind::Const.key()).is_some() => {
+                let id = line[Ref::Expr.key()].as_u64().expect("well-formed export");
+                let body = line[ExprKind::Const.key()]["name"]
+                    .as_u64()
+                    .and_then(|n| bodies.get(&n));
                 if let Some(body) = body.and_then(|b| exprs.get(b)) {
                     let mut copy = (*body).clone();
-                    copy["ie"] = json!(id);
+                    copy[Ref::Expr.key()] = json!(id);
                     if refs(&copy)
                         .iter()
                         .all(|(kind, ptr)| *kind != Ref::Expr || id_at(&copy, ptr) < id)
@@ -348,19 +356,25 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                     if let Some(args) = line.get(from) {
                         push(
                             Agree,
-                            Edit::Replace(i, json!({ "il": line["il"], to: args.clone() })),
+                            Edit::Replace(
+                                i,
+                                json!({ Ref::Level.key(): line[Ref::Level.key()], to: args.clone() }),
+                            ),
                         );
                     }
                 }
                 if line.get("param").is_some() {
                     push(
                         Agree,
-                        Edit::Replace(i, json!({ "il": line["il"], "succ": 0 })),
+                        Edit::Replace(
+                            i,
+                            json!({ Ref::Level.key(): line[Ref::Level.key()], "succ": 0 }),
+                        ),
                     );
                 }
             }
             Operator::NatLiteral => {
-                if let Some(digits) = line.get("natVal").and_then(Value::as_str) {
+                if let Some(digits) = line.get(ExprKind::NatVal.key()).and_then(Value::as_str) {
                     let n =
                         BigUint::parse_bytes(digits.as_bytes(), 10).expect("well-formed export");
                     push(
@@ -382,6 +396,16 @@ pub fn mutants(lines: &[Value], op: Operator) -> Vec<Mutant> {
                 def["hints"] = json!("opaque");
                 def["safety"] = json!("safe");
                 push(Same, Edit::Replace(i, json!({ "def": def })));
+            }
+            Operator::QuotAxiom if line.get("quot").is_some() => {
+                let q = &line["quot"];
+                let axiom = json!({
+                    "name": q["name"],
+                    "levelParams": q["levelParams"],
+                    "type": q["type"],
+                    "isUnsafe": false,
+                });
+                push(Reject, Edit::Replace(i, json!({ "axiom": axiom })));
             }
             _ => {}
         }

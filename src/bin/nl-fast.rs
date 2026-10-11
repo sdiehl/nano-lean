@@ -277,7 +277,7 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
                             }
                             progress.inc(1);
                             if let Err(f) = r {
-                                exit.fetch_max(f.exit_code() as usize, Relaxed);
+                                exit.fetch_or(1 << f.exit_code(), Relaxed);
                                 let k = fails.fetch_add(1, Relaxed);
                                 progress.set_message(tally());
                                 if k < FAILURES_SHOWN {
@@ -324,5 +324,9 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
         #[cfg(feature = "vstats")]
         value_checker::report();
     }
-    exit.load(Relaxed)
+    match exit.load(Relaxed) {
+        0 => 0,
+        b if b & 1 << 1 != 0 => 1,
+        _ => 2,
+    }
 }

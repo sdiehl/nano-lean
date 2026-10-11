@@ -20,9 +20,9 @@ pub(super) struct Importer<'a> {
     pub(super) dag: Dag<'a>,
     pub(super) anon: NamePtr<'a>,
     zero: LevelPtr<'a>,
-    names: Vec<Option<NamePtr<'a>>>,
-    levels: Vec<Option<LevelPtr<'a>>>,
-    exprs: Vec<Option<ExprPtr<'a>>>,
+    names: Table<NamePtr<'a>>,
+    levels: Table<LevelPtr<'a>>,
+    exprs: Table<ExprPtr<'a>>,
     pub(super) declars: Vec<Declar<'a>>,
     pub(super) blocks: FxHashMap<NamePtr<'a>, Block>,
     pub(super) stats: Stats,
@@ -30,23 +30,72 @@ pub(super) struct Importer<'a> {
     aliases: Vec<u32>,
 }
 
-fn slot<T: Copy>(v: &[Option<T>], i: u32) -> Result<T> {
-    match v.get(i as usize) {
-        Some(Some(x)) => Ok(*x),
-        _ => invalid("unknown or forward reference"),
-    }
+const MAX_GAP: usize = 1 << 16;
+
+/// Ids far past the dense end go to `sparse`, so a forged id cannot force a huge allocation.
+struct Table<T> {
+    dense: Vec<Option<T>>,
+    sparse: FxHashMap<u32, T>,
 }
 
-fn put<T>(v: &mut Vec<Option<T>>, i: u32, x: T) -> Result<()> {
-    let i = i as usize;
-    if v.len() <= i {
-        v.resize_with(i + 1, || None);
+impl<T: Copy> Table<T> {
+    fn new(dense: Vec<Option<T>>) -> Self {
+        Self {
+            dense,
+            sparse: FxHashMap::default(),
+        }
     }
-    if v[i].is_some() {
-        return invalid("duplicate index");
+
+    #[inline]
+    fn get(&self, i: u32) -> Result<T> {
+        match self.dense.get(i as usize) {
+            Some(Some(x)) => Ok(*x),
+            _ => self.get_sparse(i),
+        }
     }
-    v[i] = Some(x);
-    Ok(())
+
+    #[cold]
+    #[inline(never)]
+    fn get_sparse(&self, i: u32) -> Result<T> {
+        match self.sparse.get(&i) {
+            Some(x) => Ok(*x),
+            None => invalid("unknown or forward reference"),
+        }
+    }
+
+    #[inline]
+    fn put(&mut self, i: u32, x: T) -> Result<()> {
+        let k = i as usize;
+        if !self.sparse.is_empty() || k >= self.dense.len() + MAX_GAP {
+            return self.put_sparse(i, x);
+        }
+        if self.dense.len() <= k {
+            self.dense.resize_with(k + 1, || None);
+        }
+        if self.dense[k].is_some() {
+            return invalid("duplicate index");
+        }
+        self.dense[k] = Some(x);
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn put_sparse(&mut self, i: u32, x: T) -> Result<()> {
+        let k = i as usize;
+        if self.sparse.contains_key(&i) || self.dense.get(k).is_some_and(Option::is_some) {
+            return invalid("duplicate index");
+        }
+        if k >= self.dense.len() + MAX_GAP {
+            self.sparse.insert(i, x);
+        } else {
+            if self.dense.len() <= k {
+                self.dense.resize_with(k + 1, || None);
+            }
+            self.dense[k] = Some(x);
+        }
+        Ok(())
+    }
 }
 
 impl<'a> Importer<'a> {
@@ -60,9 +109,9 @@ impl<'a> Importer<'a> {
             dag,
             anon,
             zero,
-            names: vec![Some(anon)],
-            levels: vec![Some(zero)],
-            exprs: Vec::with_capacity(lines),
+            names: Table::new(vec![Some(anon)]),
+            levels: Table::new(vec![Some(zero)]),
+            exprs: Table::new(Vec::with_capacity(lines)),
             declars: Vec::new(),
             blocks: FxHashMap::default(),
             stats: Stats {
@@ -92,25 +141,25 @@ impl<'a> Importer<'a> {
         if n == 0 {
             return invalid("empty export");
         }
-        Ok(self.finish())
+        self.finish()
     }
 
     pub(super) fn name(&self, i: u32) -> Result<NamePtr<'a>> {
-        slot(&self.names, i)
+        self.names.get(i)
     }
 
     fn level(&self, i: u32) -> Result<LevelPtr<'a>> {
-        slot(&self.levels, i)
+        self.levels.get(i)
     }
 
     pub(super) fn expr(&self, i: u32) -> Result<ExprPtr<'a>> {
-        slot(&self.exprs, i)
+        self.exprs.get(i)
     }
 
     fn add_name(&mut self, i: u32, n: Name<'a>) -> Result<()> {
         let p = self.dag.intern_name(self.arena, n);
         self.stats.names += 1;
-        put(&mut self.names, i, p)
+        self.names.put(i, p)
     }
 
     pub(super) fn do_str(&mut self, i: u32, pre: u32, s: &str) -> Result<()> {
@@ -127,7 +176,7 @@ impl<'a> Importer<'a> {
     fn add_level(&mut self, i: u32, l: Level<'a>) -> Result<()> {
         let p = self.dag.intern_level(self.arena, l);
         self.stats.levels += 1;
-        put(&mut self.levels, i, p)
+        self.levels.put(i, p)
     }
 
     pub(super) fn do_succ(&mut self, i: u32, l: u32) -> Result<()> {
@@ -159,13 +208,13 @@ impl<'a> Importer<'a> {
         let e = self.expr(e)?;
         self.stats.expressions += 1;
         self.aliases.push(i);
-        put(&mut self.exprs, i, e)
+        self.exprs.put(i, e)
     }
 
     fn add_expr(&mut self, i: u32, node: (Expr<'a>, Meta)) -> Result<()> {
         let p = self.intern(node);
         self.stats.expressions += 1;
-        put(&mut self.exprs, i, p)
+        self.exprs.put(i, p)
     }
 
     pub(super) fn do_bvar(&mut self, i: u32, v: u64) -> Result<()> {
@@ -296,18 +345,38 @@ impl<'a> Importer<'a> {
         self.general(&v, first)
     }
 
-    pub(super) fn finish(mut self) -> Store<'a> {
-        self.names = Vec::new();
-        self.levels = Vec::new();
-        let mut aliases = self.aliases.iter().copied().peekable();
+    pub(super) fn finish(mut self) -> Result<Store<'a>> {
+        self.names = Table::new(Vec::new());
+        self.levels = Table::new(Vec::new());
+        self.aliases.sort_unstable();
+        let all = &self.aliases;
+        let mut aliases = all.iter().copied().peekable();
+        let sparse = self
+            .exprs
+            .sparse
+            .iter()
+            .filter(|(i, _)| all.binary_search(i).is_err())
+            .map(|(_, &e)| e);
         self.dag.exprs.fill(
             (0..)
-                .zip(&self.exprs)
+                .zip(&self.exprs.dense)
                 .filter(move |(i, _)| aliases.next_if_eq(i).is_none())
-                .filter_map(|(_, e)| e.map(super::super::term::ptr::ExprPtr::as_ref)),
+                .filter_map(|(_, e)| *e)
+                .chain(sparse)
+                .map(ExprPtr::as_ref),
         );
         let names = Names::build(&self.dag, self.anon);
-        Store {
+        for n in [names.quot, names.quot_mk, names.quot_lift, names.quot_ind]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(i) = n.decl_idx()
+                && !matches!(self.declars[i as usize], Declar::Quot(_))
+            {
+                return invalid(format!("reserved quotient name {n}"));
+            }
+        }
+        Ok(Store {
             dag: self.dag,
             anon: self.anon,
             zero: self.zero,
@@ -315,6 +384,24 @@ impl<'a> Importer<'a> {
             blocks: self.blocks,
             names,
             stats: self.stats,
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::import::import_bytes;
+    use crate::term::arena::Arena;
+
+    const META: &str = r#"{"meta":{"format":{"version":"3.1.0"}}}"#;
+
+    #[test]
+    fn far_ids_stay_sparse_and_unique() {
+        let far = r#"{"in":4000000000,"str":{"pre":0,"str":"x"}}"#;
+        let reuse = r#"{"in":1,"str":{"pre":4000000000,"str":"y"}}"#;
+        let ok = format!("{META}\n{far}\n{reuse}\n");
+        assert!(import_bytes(&Arena::new(), ok.as_bytes()).is_ok());
+        let dup = format!("{META}\n{far}\n{far}\n");
+        assert!(import_bytes(&Arena::new(), dup.as_bytes()).is_err());
     }
 }

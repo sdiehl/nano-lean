@@ -82,6 +82,19 @@ impl Environment {
         value: Option<Expr>,
         transparent: bool,
     ) -> Result<()> {
+        if quotient::reserved(&name) {
+            return Err(Error::Rejected(format!("reserved quotient name: {name}")));
+        }
+        self.declare_unreserved(name, params, ty, value, transparent)
+    }
+    fn declare_unreserved(
+        &mut self,
+        name: String,
+        params: Vec<String>,
+        ty: Expr,
+        value: Option<Expr>,
+        transparent: bool,
+    ) -> Result<()> {
         if self.declarations.contains_key(&name) {
             return Err(Error::Rejected(format!("duplicate declaration: {name}")));
         }

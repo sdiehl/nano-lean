@@ -5,6 +5,7 @@ use super::{
     current_format,
 };
 use crate::kernel::{Constructor, InductiveBlock, InductiveType, Recursor, RecursorRule};
+use crate::schema::{ExprKind, META, Ref};
 use crate::{Environment, Expr, Level};
 use num_bigint::BigUint;
 use serde_json::{Map, Value};
@@ -111,9 +112,9 @@ impl Tables {
 
     fn expression(&self, item: &Value, object: &Map<String, Value>) -> Result<Shared<Expr>> {
         let e = |v| self.expr(v);
-        let expr = if let Some(v) = item.get("bvar") {
+        let expr = if let Some(v) = item.get(ExprKind::BVar.key()) {
             Expr::Var(Name::bound(index(v)?, 0))
-        } else if let Some(v) = item.get("natVal") {
+        } else if let Some(v) = item.get(ExprKind::NatVal.key()) {
             let digits = string(v)?;
             if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
                 return Err(invalid("invalid natural literal"));
@@ -122,11 +123,11 @@ impl Tables {
                 BigUint::parse_bytes(digits.as_bytes(), 10)
                     .ok_or_else(|| invalid("invalid natural literal"))?,
             )
-        } else if let Some(v) = item.get("strVal") {
+        } else if let Some(v) = item.get(ExprKind::StrVal.key()) {
             Expr::Str(string(v)?.to_owned())
-        } else if let Some(u) = item.get("sort") {
+        } else if let Some(u) = item.get(ExprKind::Sort.key()) {
             Expr::Sort(self.level(u)?)
-        } else if let Some(c) = item.get("const") {
+        } else if let Some(c) = item.get(ExprKind::Const.key()) {
             Expr::Const(
                 self.name(&c["name"])?,
                 array(&c["us"])?
@@ -134,29 +135,32 @@ impl Tables {
                     .map(|u| self.level(u))
                     .collect::<Result<_>>()?,
             )
-        } else if let Some(a) = item.get("app") {
+        } else if let Some(a) = item.get(ExprKind::App.key()) {
             Expr::App(e(&a["fn"])?, e(&a["arg"])?)
-        } else if let Some(p) = item.get("proj") {
+        } else if let Some(p) = item.get(ExprKind::Proj.key()) {
             Expr::Proj(
                 self.name(&p["typeName"])?,
                 index(&p["idx"])?,
                 e(&p["struct"])?,
             )
-        } else if let Some(b) = item.get("lam").or_else(|| item.get("forallE")) {
+        } else if let Some(b) = item
+            .get(ExprKind::Lam.key())
+            .or_else(|| item.get(ExprKind::ForallE.key()))
+        {
             let ty = e(&b["type"])?;
             let body = bind(Name::new(self.name(&b["name"])?), e(&b["body"])?);
-            if item.get("lam").is_some() {
+            if item.get(ExprKind::Lam.key()).is_some() {
                 Expr::Lam(ty, body)
             } else {
                 Expr::Pi(ty, body)
             }
-        } else if let Some(b) = item.get("letE") {
+        } else if let Some(b) = item.get(ExprKind::LetE.key()) {
             Expr::Let(
                 e(&b["type"])?,
                 e(&b["value"])?,
                 bind(Name::new(self.name(&b["name"])?), e(&b["body"])?),
             )
-        } else if let Some(m) = item.get("mdata") {
+        } else if let Some(m) = item.get(ExprKind::MData.key()) {
             return e(&m["expr"]);
         } else {
             return Err(unsupported(format!(
@@ -173,7 +177,7 @@ impl Tables {
 
 fn header(item: &Value) -> Result<()> {
     let object = item.as_object().ok_or_else(|| invalid("expected object"))?;
-    if object.len() != 1 || item.get("meta").is_none() {
+    if object.len() != 1 || item.get(META).is_none() {
         return Err(invalid("missing export metadata"));
     }
     if !current_format(item) {
@@ -204,13 +208,13 @@ struct Loader<'p> {
 impl Loader<'_> {
     fn entry(&mut self, item: &Value, line: usize) -> Result<()> {
         let object = item.as_object().ok_or_else(|| invalid("expected object"))?;
-        if let Some(id) = item.get("in") {
+        if let Some(id) = item.get(Ref::Name.key()) {
             if object.len() != 2 {
                 return Err(invalid("malformed name entry"));
             }
             return self.tables.add_name(id, item);
         }
-        if let Some(id) = item.get("il") {
+        if let Some(id) = item.get(Ref::Level.key()) {
             if object.len() != 2 {
                 return Err(invalid("malformed level entry"));
             }

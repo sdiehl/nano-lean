@@ -256,6 +256,7 @@ impl Environment {
     fn insert_generated(&mut self, decl: &impl Signature, added: &mut Vec<String>) -> Result<()> {
         let (name, params, ty) = decl.signature();
         demand(!self.declarations.contains_key(name), DUPLICATE_NAME)?;
+        demand(!super::quotient::reserved(name), "reserved quotient name")?;
         self.declarations.insert(
             name.into(),
             Rc::new(Declaration {

@@ -1,6 +1,7 @@
 use crate::export::FORMAT_VERSION;
 use crate::kernel::{InductiveBlock, quotient_primitives};
 use crate::parser::Declaration;
+use crate::schema::{ExprKind, META, Ref};
 use crate::{Error, Expr, Level};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -32,8 +33,8 @@ impl Writer {
         let pre = self.name(pre);
         let id = self.names.len() as u64 + 1;
         self.out.push(match last.parse::<u64>() {
-            Ok(i) => json!({"in": id, "num": {"pre": pre, "i": i}}),
-            Err(_) => json!({"in": id, "str": {"pre": pre, "str": last}}),
+            Ok(i) => json!({Ref::Name.key(): id, "num": {"pre": pre, "i": i}}),
+            Err(_) => json!({Ref::Name.key(): id, "str": {"pre": pre, "str": last}}),
         });
         self.names.insert(name.into(), id);
         id
@@ -60,7 +61,7 @@ impl Writer {
             Level::Param(p) => json!({"param": self.name(p)}),
         };
         let id = self.levels.len() as u64 + 1;
-        node["il"] = json!(id);
+        node[Ref::Level.key()] = json!(id);
         self.out.push(node);
         self.levels.insert(u.clone(), id);
         id
@@ -79,20 +80,22 @@ impl Writer {
     fn expr(&mut self, e: &Expr) -> Result<u64, Error> {
         let mut node = match e {
             Expr::Var(n) => match n.coordinates() {
-                Some((index, _)) => json!({"bvar": index}),
+                Some((index, _)) => json!({ExprKind::BVar.key(): index}),
                 None => return Err(Error::Rejected(format!("open term: free variable {n}"))),
             },
-            Expr::Sort(u) => json!({"sort": self.level(u)}),
+            Expr::Sort(u) => json!({ExprKind::Sort.key(): self.level(u)}),
             Expr::Const(n, us) => {
                 let us: Vec<_> = us.iter().map(|u| self.level(u)).collect();
-                json!({"const": {"name": self.name(n), "us": us}})
+                json!({ExprKind::Const.key(): {"name": self.name(n), "us": us}})
             }
-            Expr::App(f, a) => json!({"app": {"fn": self.shared(f)?, "arg": self.shared(a)?}}),
+            Expr::App(f, a) => {
+                json!({ExprKind::App.key(): {"fn": self.shared(f)?, "arg": self.shared(a)?}})
+            }
             Expr::Pi(t, b) | Expr::Lam(t, b) => {
                 let tag = if matches!(e, Expr::Pi(..)) {
-                    "forallE"
+                    ExprKind::ForallE.key()
                 } else {
-                    "lam"
+                    ExprKind::Lam.key()
                 };
                 json!({tag: {
                     "binderInfo": "default",
@@ -101,27 +104,27 @@ impl Writer {
                     "type": self.shared(t)?,
                 }})
             }
-            Expr::Let(t, v, b) => json!({"letE": {
+            Expr::Let(t, v, b) => json!({ExprKind::LetE.key(): {
                 "body": self.shared(b.body())?,
                 "name": self.binder(b.pattern()),
                 "nondep": false,
                 "type": self.shared(t)?,
                 "value": self.shared(v)?,
             }}),
-            Expr::Proj(n, i, s) => json!({"proj": {
+            Expr::Proj(n, i, s) => json!({ExprKind::Proj.key(): {
                 "idx": i,
                 "struct": self.shared(s)?,
                 "typeName": self.name(n),
             }}),
-            Expr::Nat(n) => json!({"natVal": n.0.to_string()}),
-            Expr::Str(s) => json!({"strVal": s}),
+            Expr::Nat(n) => json!({ExprKind::NatVal.key(): n.0.to_string()}),
+            Expr::Str(s) => json!({ExprKind::StrVal.key(): s}),
         };
         let key = node.to_string();
         if let Some(&id) = self.exprs.get(&key) {
             return Ok(id);
         }
         let id = self.exprs.len() as u64;
-        node["ie"] = json!(id);
+        node[Ref::Expr.key()] = json!(id);
         self.out.push(node);
         self.exprs.insert(key, id);
         Ok(id)
@@ -272,7 +275,7 @@ impl Writer {
 
 pub fn ndjson(declarations: &[Declaration]) -> Result<String, Error> {
     let mut w = Writer::default();
-    w.out.push(json!({"meta": {
+    w.out.push(json!({META: {
         "exporter": {"name": EXPORTER, "version": env!("CARGO_PKG_VERSION")},
         "format": {"version": FORMAT_VERSION},
     }}));
