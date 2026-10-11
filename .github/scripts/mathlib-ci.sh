@@ -65,7 +65,7 @@ case ${1:-} in
   export)
     export ELAN_HOME="$root/.ci/elan"
     curl --fail --location --retry 3 \
-      https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+      https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh \
       -o .ci/elan-init.sh
     bash .ci/elan-init.sh -y --default-toolchain none
     export PATH="$ELAN_HOME/bin:$PATH"

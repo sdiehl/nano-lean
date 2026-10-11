@@ -72,10 +72,10 @@ Atom: Term = {
 };
 
 Level: Level = {
-    "succ" <u:LevelAtom> => offset(u, 1),
+    "succ" <u:LevelAtom> =>? offset(u, 1).map_err(|error| ParseError::User { error }),
     "max" <a:LevelAtom> <b:LevelAtom> => Level::Max(Box::new(a), Box::new(b)),
     "imax" <a:LevelAtom> <b:LevelAtom> => Level::IMax(Box::new(a), Box::new(b)),
-    <u:LevelAtom> "+" <n:Small> => offset(u, n as u32),
+    <u:LevelAtom> "+" <n:Small> =>? offset(u, n as u32).map_err(|error| ParseError::User { error }),
     LevelAtom,
 };
 LevelAtom: Level = {

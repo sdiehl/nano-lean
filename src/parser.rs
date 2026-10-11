@@ -27,11 +27,14 @@ pub(crate) type Binding = (String, Term);
 pub(crate) type LocalDef = (String, Term, Term);
 pub(crate) type Signature = (String, Vec<String>);
 
-pub(crate) fn offset(u: Level, n: u32) -> Level {
-    (0..n).fold(u, |u, _| match u {
-        Level::Nat(k) => Level::Nat(k.saturating_add(1)),
-        u => Level::Succ(Box::new(u)),
-    })
+const MAX_OFFSET: u32 = 1 << 16;
+
+pub(crate) fn offset(u: Level, n: u32) -> Result<Level, Error> {
+    match u {
+        Level::Nat(k) => Ok(Level::Nat(k.saturating_add(n))),
+        _ if n > MAX_OFFSET => Err(Error::Rejected(format!("universe offset too large: {n}"))),
+        u => Ok((0..n).fold(u, |u, _| Level::Succ(Box::new(u)))),
+    }
 }
 
 #[derive(Default)]

@@ -38,7 +38,7 @@ impl Error {
         match self {
             Self::Rejected(s) => Self::Rejected(format!("{context}: {s}")),
             Self::Unsupported(s) => Self::Unsupported(format!("{context}: {s}")),
-            e => Self::Unsupported(format!("{context}: {e}")),
+            e => e,
         }
     }
 }

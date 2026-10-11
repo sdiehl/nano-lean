@@ -1,3 +1,6 @@
+#[cfg(panic = "abort")]
+compile_error!("rejection and decline unwind through catch_unwind, so panic must unwind");
+
 pub mod checker;
 pub mod emit;
 pub mod export;

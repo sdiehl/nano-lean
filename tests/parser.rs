@@ -57,6 +57,7 @@ fn malformed_layout_and_lexical_errors_are_rejected() {
         "\"unterminated",
         "(fun x x)",
         "(let (x Type) Type)",
+        "(Sort (u + 4000000000))",
     ] {
         assert!(parse_expr(source).is_err(), "accepted {source}");
     }

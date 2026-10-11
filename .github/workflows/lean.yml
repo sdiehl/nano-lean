@@ -64,6 +64,11 @@ jobs:
           path: .ci/${{ matrix.project }}
       - name: Check the project pins the matrix toolchain
         run: test "$(cat "$PROJECT/lean-toolchain")" = "leanprover/lean4:v$LEAN_VERSION"
+      - uses: leanprover/lean-action@v1.6.1
+        with:
+          lake-package-directory: ${{ env.PROJECT }}
+          auto-config: false
+          use-github-cache: false
       - name: Export and check
         run: |
           sudo systemd-run --unit=nano-project-check --wait --pipe --collect \
@@ -75,14 +80,9 @@ jobs:
             --property=OOMPolicy=kill --property=RuntimeMaxSec=5400 \
             bash -euxo pipefail <<'RUN'
           root=$PWD
-          curl --fail --location --retry 3 \
-            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o .ci/elan-init.sh
-          bash .ci/elan-init.sh -y --default-toolchain "leanprover/lean4:v$LEAN_VERSION"
-          export PATH="$HOME/.elan/bin:$PATH"
           cargo install olean-export --version "=$EXPORTER_VERSION" --locked -j 2 \
             --root "$root/.ci/exporter"
           cd "$PROJECT"
-          lake exe cache get
           lake build $MODULES
           lake env "$root/.ci/exporter/bin/olean-export" $MODULES -j 2 -o "$root/.ci/project.ndjson"
           "$root/target/release/nl-fast" "$root/.ci/project.ndjson" --trace

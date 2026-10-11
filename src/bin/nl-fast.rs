@@ -174,8 +174,10 @@ fn main() {
             }
         })
         .take(o.limit)
-        .map(|(i, _)| i as u32)
+        .map(|(i, d)| store.blocks.get(&d.name()).map_or(i as u32, |b| b.start))
         .collect();
+    let mut indices = indices;
+    indices.dedup();
     if filtered && indices.is_empty() {
         eprintln!("requested declaration not found");
         process::exit(2);
