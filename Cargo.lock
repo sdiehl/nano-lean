@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "nano-lean"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bumpalo",
  "clap",
