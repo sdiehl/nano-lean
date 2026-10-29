@@ -2,15 +2,21 @@
 
 ## Unreleased
 
-- Keep a `Nat` let value behind a local in both fast cores, so closed literal folding in the body never evaluates it, as in Lean's kernel.
-- Add `nl-fast --prelude FILE`, which rejects an export unless its primitives and the closure of their types and definition bodies match a trusted export, as Lean's comparator does.
-- Add `nl-fast --axioms NAMES`, which rejects an export that declares an axiom outside the list.
-- Read `nl-fast` settings from `nano-lean.toml` or `--config FILE`, with flags taking precedence.
-- Add `nl-fast --cache FILE`, which skips declarations a previous run accepted and rechecks only edited declarations and their dependents, with `--cache-audit` to recheck everything and `--no-cache` to ignore a configured cache.
-- Keep the Mathlib and standard library check caches in the Actions cache, keyed on the checker source, with a weekly cold Mathlib run.
-- Document the trust model and configuration in the README.
-- Add a weekly mutation campaign over every fixture and an export of nested inductive shapes.
-- Add adversarial fixtures for a forged `Nat.add`, unit-like eta across types, closures that differ only in universe substitution, auxiliary nested names that collide with declared constants, and constructors their inductive does not list.
+- Keep `Nat` let values behind a local in both fast cores, as in Lean's kernel.
+- Add `nl-fast --prelude FILE` to reject primitives that differ from a trusted export.
+- Add `nl-fast --axioms NAMES` to reject axioms outside the list.
+- Read `nl-fast` settings from `nano-lean.toml` or `--config FILE`.
+- Add `nl-fast --cache FILE` to skip previously accepted declarations.
+- Add `--cache-audit` and `--no-cache`.
+- Save the cache when `nl-fast` is interrupted.
+- Add `nl-fast --olean MODULES` to check `.olean` files directly.
+- Add `nl-fast --quiet` for a one-line summary.
+- Add `nl-watch` to rebuild and recheck a Lake project on every save.
+- Keep Mathlib and standard library caches in the Actions cache, with a weekly cold run.
+- Move the trust model to `docs/TRUST.md`.
+- Add a weekly mutation campaign and an export of nested inductive shapes.
+- Skip the forged `Nat.add` fixture in mutation sweeps.
+- Add adversarial fixtures for forged primitives, eta, universe closures and nested names.
 
 ## 0.2.0 (2026-10-25)
 

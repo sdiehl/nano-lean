@@ -12,7 +12,7 @@ use crate::term::intern::Store;
 use importer::Importer;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, ExportError>;
 
@@ -77,6 +77,19 @@ pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
     let mut n = 0;
     im.lines(bytes, &mut n)?;
     im.finish_lines(n)
+}
+
+/// Loads `roots` and their imports from `.olean` files on `search`, as a blean export would.
+pub fn olean<'a>(arena: &'a Arena, search: &[PathBuf], roots: &[&str]) -> Result<Store<'a>> {
+    use olean_export::{Env, Exporter, blean::Blean};
+    let olean = |e: olean_export::Error| ExportError::Invalid(format!("olean: {e}"));
+    let env = Env::load(search, roots).map_err(olean)?;
+    let mut ex = Exporter::with_sink(&env, Blean::new(Vec::new()));
+    ex.meta().map_err(olean)?;
+    ex.all().map_err(olean)?;
+    let bytes = ex.finish().map_err(olean)?;
+    drop(env);
+    blean::import(arena, &bytes)
 }
 
 /// Rejects `target` unless every declaration the checkers reduce by name matches `reference`.

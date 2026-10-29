@@ -32,6 +32,8 @@ jobs:
         run: |
           cargo build --release --locked --bin nl-mutate
           for f in tests/fixtures/*.ndjson; do
+            # Its forged Nat.add makes literal folding disagree with unfolding, by design.
+            [[ $f == */forged-nat-add.ndjson ]] && continue
             echo "== $f"
             ./target/release/nl-mutate --seed 1 --per-op 200 --out mutants "$f"
           done

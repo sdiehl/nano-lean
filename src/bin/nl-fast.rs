@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use std::{fs, process, thread};
@@ -38,7 +38,11 @@ const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
 #[command(name = "nl-fast")]
 struct Cli {
     /// Export to check, or `-` for stdin
+    #[arg(conflicts_with = "olean")]
     path: Option<String>,
+    /// Check these modules and their imports from `.olean` files on `LEAN_PATH`
+    #[arg(long, value_name = "MODULES", value_delimiter = ',')]
+    olean: Option<Vec<String>>,
     /// Settings file, `nano-lean.toml` in the working directory by default
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -63,6 +67,9 @@ struct Cli {
     import_only: bool,
     #[arg(long)]
     trace: bool,
+    /// Print only failures and a summary line
+    #[arg(short, long)]
+    quiet: bool,
     /// Retry with a reset arena when a declaration exhausts it
     #[arg(long)]
     fallback: bool,
@@ -132,6 +139,8 @@ fn config(path: Option<&Path>) -> Config {
 
 struct Options {
     path: Option<String>,
+    olean: Option<Vec<String>>,
+    quiet: bool,
     threads: usize,
     selected: Option<String>,
     only: Option<HashSet<String>>,
@@ -164,6 +173,8 @@ fn options() -> Options {
     let c = config(cli.config.as_deref());
     Options {
         path: cli.path.filter(|p| p != "-"),
+        olean: cli.olean,
+        quiet: cli.quiet,
         threads: cli.threads.or(c.threads).unwrap_or(1).into(),
         selected: cli.declaration,
         only: cli.only.as_deref().map(names),
@@ -214,11 +225,39 @@ fn load<'a>(arena: &'a Arena, path: Option<&Path>) -> Store<'a> {
     imported.unwrap_or_else(|e| exit_on(&e))
 }
 
+/// Set once a signal arrives while checking, so workers stop and the cache is saved.
+static STOP: AtomicBool = AtomicBool::new(false);
+static CHECKING: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn interrupt(_: libc::c_int) {
+    if !CHECKING.load(Relaxed) || STOP.swap(true, Relaxed) {
+        // SAFETY: _exit is async-signal-safe.
+        unsafe { libc::_exit(130) }
+    }
+}
+
+fn on_interrupt() {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: the handler only touches atomics and calls _exit.
+        unsafe { libc::signal(sig, interrupt as *const () as libc::sighandler_t) };
+    }
+}
+
 fn main() {
     let o = options();
+    if o.cache.is_some() {
+        on_interrupt();
+    }
     let t = Instant::now();
     let arena = Arena::new();
-    let store = load(&arena, o.path.as_deref().map(Path::new));
+    let store = match &o.olean {
+        Some(roots) => {
+            let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+            import::olean(&arena, &olean_export::search_path(), &roots)
+                .unwrap_or_else(|e| exit_on(&e))
+        }
+        None => load(&arena, o.path.as_deref().map(Path::new)),
+    };
     // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
     // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
     unsafe {
@@ -226,15 +265,17 @@ fn main() {
         mi_option_set(MI_OPTION_PURGE_DELAY, -1);
     }
     let s = store.stats;
-    eprintln!(
-        "import {:.2?} arena {} MiB, {} decls {} exprs {} names {} levels",
-        t.elapsed(),
-        arena.allocated_bytes() >> 20,
-        s.declarations,
-        s.expressions,
-        s.names,
-        s.levels
-    );
+    if !o.quiet {
+        eprintln!(
+            "import {:.2?} arena {} MiB, {} decls {} exprs {} names {} levels",
+            t.elapsed(),
+            arena.allocated_bytes() >> 20,
+            s.declarations,
+            s.expressions,
+            s.names,
+            s.levels
+        );
+    }
     if let Some(p) = &o.prelude {
         let arena = Arena::new();
         let reference = load(&arena, Some(p));
@@ -279,11 +320,17 @@ fn main() {
             cache.as_ref().and_then(Option::as_ref),
         );
         if let (Some(p), Some(Some(c))) = (&o.cache, &cache) {
-            let keep = filtered || o.limit != usize::MAX;
+            let keep = filtered || o.limit != usize::MAX || STOP.load(Relaxed);
             match c.save(p, keep) {
-                Ok(k) => eprintln!("cache {} hits, {k} recorded", c.hits.load(Relaxed)),
+                Ok(k) if !o.quiet => {
+                    eprintln!("cache {} hits, {k} recorded", c.hits.load(Relaxed));
+                }
+                Ok(_) => {}
                 Err(e) => eprintln!("{}: {e}", p.display()),
             }
+        }
+        if STOP.load(Relaxed) {
+            process::exit(130);
         }
         code
     };
@@ -303,7 +350,9 @@ fn open_cache<'a>(o: &Options, store: &'a Store<'a>, path: &Path) -> Option<Cach
         eprintln!("{}: {e}", path.display());
         process::exit(2)
     });
-    eprintln!("cache keys {:.2?}", t.elapsed());
+    if !o.quiet {
+        eprintln!("cache keys {:.2?}", t.elapsed());
+    }
     if c.is_none() {
         eprintln!("cache disabled: a primitive references an undeclared name");
     }
@@ -322,7 +371,7 @@ fn check<'a>(
     let fallbacks = AtomicUsize::new(0);
     let n = indices.len() as u32;
     let exit = AtomicUsize::new(0);
-    let progress = if o.trace {
+    let progress = if o.trace || o.quiet {
         ProgressBar::hidden()
     } else {
         ProgressBar::new(u64::from(n))
@@ -339,11 +388,12 @@ fn check<'a>(
     };
     progress.set_message(tally());
     progress.enable_steady_tick(TICK);
+    CHECKING.store(true, Relaxed);
     let (stop, stopped) = mpsc::channel::<()>();
     thread::scope(|sc| {
         // Stop the reporter even if joining a worker unwinds.
         let stop = stop;
-        if !o.trace && !io::stderr().is_terminal() {
+        if !o.trace && !o.quiet && !io::stderr().is_terminal() {
             let (progress, tally) = (&progress, &tally);
             sc.spawn(move || {
                 while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(REPORT_INTERVAL) {
@@ -368,6 +418,9 @@ fn check<'a>(
                         let mut adapter = Adapter::new(store);
                         let mut accepted = Vec::new();
                         loop {
+                            if STOP.load(Relaxed) {
+                                break;
+                            }
                             let job = next.fetch_add(1, Relaxed);
                             if job >= n {
                                 break;
@@ -456,14 +509,30 @@ fn check<'a>(
         drop(stop);
     });
     progress.finish_and_clear();
-    eprintln!(
-        "experimental checks {:.2?}: {} attempted, {} failures, {} fallbacks",
-        t.elapsed(),
-        n,
-        fails.load(Relaxed),
-        fallbacks.load(Relaxed)
-    );
-    if o.core == Core::Value {
+    let hits = cache.map_or(0, |c| c.hits.load(Relaxed));
+    if o.quiet {
+        let done = progress.position();
+        let fails = fails.load(Relaxed);
+        let cut = if done < u64::from(n) {
+            format!(", interrupted after {done} of {n}")
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "{} {n} declarations, {hits} cached, {fails} failed in {:.2?}{cut}",
+            if fails == 0 { "ok" } else { "FAIL" },
+            t.elapsed(),
+        );
+    } else {
+        eprintln!(
+            "experimental checks {:.2?}: {} attempted, {} failures, {} fallbacks",
+            t.elapsed(),
+            n,
+            fails.load(Relaxed),
+            fallbacks.load(Relaxed)
+        );
+    }
+    if o.core == Core::Value && !o.quiet {
         let b = &value_checker::BRIDGED;
         eprintln!(
             "bridged quot {} ind {} ctor {} rec {}",

@@ -45,6 +45,8 @@ jobs:
         run: |
           status=0
           for f in tests/fixtures/*.ndjson .ci/shapes/nested-shapes.ndjson; do
+            # Its forged Nat.add makes literal folding disagree with unfolding, by design.
+            [[ $f == */forged-nat-add.ndjson ]] && continue
             for k in 0 1 2; do
               seed=$(( GITHUB_RUN_NUMBER * 3 + k + 100 ))
               echo "== $f seed $seed"

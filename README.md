@@ -11,6 +11,7 @@ Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 
 - `nl-fast`: fast interned-term checker for Lean NDJSON and blean exports.
 - `nl-ref`: reference kernel for core-syntax files and exports.
 - `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict.
+- `nl-watch`: rebuilds a Lake project on every save and rechecks it with `nl-fast` and the cache.
 
 ```sh
 # Install nl-fast and nl-ref
@@ -25,6 +26,9 @@ nl-fast --prelude init.blean FILE.blean
 
 # Skip declarations a previous run accepted
 nl-fast --cache FILE.accepted FILE.blean
+
+# Rebuild and recheck a Lake project on every save, from its root
+nl-watch MODULE [-j THREADS]
 
 # Check a core-syntax file
 nl-ref examples/core.ltc
@@ -124,18 +128,7 @@ Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/b
 
 ## Trust model
 
-Like Lean's kernel, every checker reduces `Nat` and `String` primitives such as `Nat.add` by name and trusts their bodies. The importer rejects a primitive name declared with the wrong type, but an export can redefine `Nat.add` with the right type and a different body, then prove `False` by literal folding ([`tests/fixtures/ForgedNatAdd.lean`](tests/fixtures/ForgedNatAdd.lean)). Lean rules this out with [comparator](https://github.com/leanprover/comparator), and `--prelude` does the same: it compares every primitive, and the closure of their types and definition bodies, with a trusted export and rejects any difference. Build the trusted export from the same toolchain as the export under check.
-
-```sh
-lake env olean-export Init -f blean -o init.blean
-nl-fast --prelude init.blean FILE.blean
-```
-
-`--axioms` rejects an export that declares any axiom outside the list.
-
-```sh
-nl-fast --prelude init.blean --axioms propext,Classical.choice,Quot.sound FILE.blean
-```
+See [docs/TRUST.md](docs/TRUST.md) for what the checkers trust and how `--prelude`, `--axioms` and the cache bound it.
 
 ## Configuration
 
@@ -164,7 +157,7 @@ nl-fast --cache mathlib.accepted mathlib.blean
 nl-fast --cache mathlib.accepted --cache-audit mathlib.blean  # recheck everything
 ```
 
-In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` turns it off for one run. The cache file is trusted input like the export, so keep it where only the checker writes.
+In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` turns it off for one run. The cache file is trusted input, see [docs/TRUST.md](docs/TRUST.md).
 
 ## License
 
