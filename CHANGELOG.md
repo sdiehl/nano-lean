@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep a `Nat` let value behind a local in both fast cores, so closed literal folding in the body never evaluates it, as in Lean's kernel.
+
 ## 0.2.0 (2026-10-25)
 
 - Add a Nix flake dev shell.

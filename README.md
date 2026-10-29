@@ -18,6 +18,7 @@ cargo install --git https://github.com/sdiehl/nano-lean
 
 # Check a Lean export (NDJSON or blean)
 nl-fast FILE.ndjson [-j THREADS]
+nl-fast FILE.blean [-j THREADS]
 
 # Check a core-syntax file
 nl-ref examples/core.ltc
