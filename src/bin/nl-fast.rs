@@ -1,6 +1,7 @@
 use clap::{Parser, value_parser};
 use indicatif::{ProgressBar, ProgressStyle};
 use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
+use nano_lean::cache::Cache;
 use nano_lean::checker::{Adapter, Limits};
 use nano_lean::export::ExportError;
 use nano_lean::import::{self, blean};
@@ -74,6 +75,15 @@ struct Cli {
     /// Reject the export if it declares an axiom outside this list
     #[arg(long, value_name = "NAMES", value_delimiter = ',')]
     axioms: Option<Vec<String>>,
+    /// Skip definitions and theorems FILE records as accepted, and record new ones
+    #[arg(long, value_name = "FILE")]
+    cache: Option<PathBuf>,
+    /// Ignore the cache set in the config file
+    #[arg(long, conflicts_with = "cache")]
+    no_cache: bool,
+    /// Check every declaration anyway, and fail if the cache records a rejected one as accepted
+    #[arg(long)]
+    cache_audit: bool,
 }
 
 /// The same settings as the flags, which override them.
@@ -87,6 +97,8 @@ struct Config {
     term_core: Option<bool>,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
+    cache: Option<PathBuf>,
+    cache_audit: Option<bool>,
 }
 
 fn config(path: Option<&Path>) -> Config {
@@ -114,6 +126,7 @@ fn config(path: Option<&Path>) -> Config {
     }
     let dir = path.parent().unwrap_or(Path::new(""));
     c.prelude = c.prelude.map(|p| dir.join(p));
+    c.cache = c.cache.map(|p| dir.join(p));
     c
 }
 
@@ -128,6 +141,8 @@ struct Options {
     native_only: bool,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
+    cache: Option<PathBuf>,
+    cache_audit: bool,
     core: Core,
     limits: Limits,
 }
@@ -158,6 +173,8 @@ fn options() -> Options {
         native_only: !(cli.fallback || c.fallback == Some(true)),
         prelude: cli.prelude.or(c.prelude),
         axioms: cli.axioms.or(c.axioms),
+        cache: cli.cache.or(c.cache).filter(|_| !cli.no_cache),
+        cache_audit: cli.cache_audit || c.cache_audit == Some(true),
         core: if cli.term_core || c.term_core == Some(true) {
             Core::Term
         } else {
@@ -253,13 +270,52 @@ fn main() {
         eprintln!("requested declaration not found");
         process::exit(2);
     }
-    let code = check(&o, &store, &indices);
+    let code = {
+        let cache = o.cache.as_deref().map(|p| open_cache(&o, &store, p));
+        let code = check(
+            &o,
+            &store,
+            &indices,
+            cache.as_ref().and_then(Option::as_ref),
+        );
+        if let (Some(p), Some(Some(c))) = (&o.cache, &cache) {
+            let keep = filtered || o.limit != usize::MAX;
+            match c.save(p, keep) {
+                Ok(k) => eprintln!("cache {} hits, {k} recorded", c.hits.load(Relaxed)),
+                Err(e) => eprintln!("{}: {e}", p.display()),
+            }
+        }
+        code
+    };
     if code != 0 {
         process::exit(code as i32);
     }
 }
 
-fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
+fn open_cache<'a>(o: &Options, store: &'a Store<'a>, path: &Path) -> Option<Cache<'a>> {
+    let t = Instant::now();
+    let core = if o.core == Core::Term {
+        "term"
+    } else {
+        "value"
+    };
+    let c = Cache::open(store, path, core, o.cache_audit).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", path.display());
+        process::exit(2)
+    });
+    eprintln!("cache keys {:.2?}", t.elapsed());
+    if c.is_none() {
+        eprintln!("cache disabled: a primitive references an undeclared name");
+    }
+    c
+}
+
+fn check<'a>(
+    o: &Options,
+    store: &'a Store<'a>,
+    indices: &[u32],
+    cache: Option<&Cache<'a>>,
+) -> usize {
     let t = Instant::now();
     let next = AtomicU32::new(0);
     let fails = AtomicUsize::new(0);
@@ -310,12 +366,23 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
                     .spawn_scoped(sc, || {
                         let mut session = Session::new(store);
                         let mut adapter = Adapter::new(store);
+                        let mut accepted = Vec::new();
                         loop {
                             let job = next.fetch_add(1, Relaxed);
                             if job >= n {
                                 break;
                             }
                             let idx = indices[job as usize];
+                            let (key, hit) = cache.map_or((None, false), |c| c.lookup(idx));
+                            if hit && cache.is_some_and(|c| !c.audit) {
+                                if o.trace {
+                                    eprintln!("start {idx} {}", store.declars[idx as usize].name());
+                                    eprintln!("end {idx} cached");
+                                }
+                                accepted.extend(key);
+                                progress.inc(1);
+                                continue;
+                            }
                             let started = Instant::now();
                             if o.trace {
                                 eprintln!("start {idx} {}", store.declars[idx as usize].name());
@@ -328,6 +395,15 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
                                 &mut adapter,
                                 o.native_only,
                             );
+                            if r.is_ok() {
+                                accepted.extend(key);
+                            } else if hit && r.as_ref().is_err_and(|f| f.exit_code() == 1) {
+                                exit.fetch_or(1 << 1, Relaxed);
+                                println!(
+                                    "cache audit: {} is recorded as accepted",
+                                    store.declars[idx as usize].name()
+                                );
+                            }
                             if matches!(r, Ok(true)) {
                                 fallbacks.fetch_add(1, Relaxed);
                                 progress.set_message(tally());
@@ -364,6 +440,9 @@ fn check<'a>(o: &Options, store: &'a Store<'a>, indices: &[u32]) -> usize {
                                     });
                                 }
                             }
+                        }
+                        if let Some(c) = cache {
+                            c.record(&accepted);
                         }
                     })
                     .expect("spawn worker thread")

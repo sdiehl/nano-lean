@@ -3,6 +3,9 @@ name: Mathlib
 on:
   push:
   workflow_dispatch:
+  # Scheduled runs skip the accepted-declaration cache.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -116,9 +119,22 @@ jobs:
             .ci/mathlib.ndjson.sha256
             .ci/mathlib.blean
           key: ${{ steps.export.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@v4
+        if: github.event_name != 'schedule'
+        id: accepted
+        with:
+          path: .ci/mathlib.accepted
+          key: nl-cache-v1-${{ runner.os }}-mathlib-${{ matrix.mathlib }}-${{ hashFiles('src/**', 'Cargo.toml', 'Cargo.lock', 'build.rs', '.cargo/**') }}
       - name: Check all Mathlib declarations
         timeout-minutes: 47
         run: bash .github/scripts/mathlib-ci.sh check
+        env:
+          NL_CACHE: ${{ github.event_name != 'schedule' && format('{0}/.ci/mathlib.accepted', github.workspace) || '' }}
+      - uses: actions/cache/save@v4
+        if: success() && github.event_name != 'schedule' && steps.accepted.outputs.cache-hit != 'true'
+        with:
+          path: .ci/mathlib.accepted
+          key: ${{ steps.accepted.outputs.cache-primary-key }}
       - name: Check Mathlib blean on every core
         timeout-minutes: 20
         run: bash .github/scripts/mathlib-ci.sh check-blean

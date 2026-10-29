@@ -96,9 +96,22 @@ jobs:
             .ci/${{ matrix.corpus }}.ndjson.sha256
             .ci/${{ matrix.corpus }}.blean
           key: ${{ steps.export.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@v4
+        if: github.event_name != 'schedule'
+        id: accepted
+        with:
+          path: .ci/${{ matrix.corpus }}.accepted
+          key: nl-cache-v1-${{ runner.os }}-${{ matrix.corpus }}-lean-${{ matrix.lean }}-${{ hashFiles('src/**', 'Cargo.toml', 'Cargo.lock', 'build.rs', '.cargo/**') }}
       - name: Check every declaration
         timeout-minutes: 15
         run: bash .github/scripts/mathlib-ci.sh check "$CORPUS"
+        env:
+          NL_CACHE: ${{ github.event_name != 'schedule' && format('{0}/.ci/{1}.accepted', github.workspace, matrix.corpus) || '' }}
+      - uses: actions/cache/save@v4
+        if: success() && github.event_name != 'schedule' && steps.accepted.outputs.cache-hit != 'true'
+        with:
+          path: .ci/${{ matrix.corpus }}.accepted
+          key: ${{ steps.accepted.outputs.cache-primary-key }}
       - name: Check blean on every core
         timeout-minutes: 15
         run: bash .github/scripts/mathlib-ci.sh check-blean "$CORPUS"

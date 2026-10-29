@@ -23,6 +23,9 @@ nl-fast FILE.blean [-j THREADS]
 # Reject an export whose primitives differ from a trusted export of Init
 nl-fast --prelude init.blean FILE.blean
 
+# Skip declarations a previous run accepted
+nl-fast --cache FILE.accepted FILE.blean
+
 # Check a core-syntax file
 nl-ref examples/core.ltc
 
@@ -136,7 +139,7 @@ nl-fast --prelude init.blean --axioms propext,Classical.choice,Quot.sound FILE.b
 
 ## Configuration
 
-`nl-fast` reads `nano-lean.toml` from the working directory if one exists, or the file given with `--config`. Every key is optional and a flag on the command line overrides it. A relative `prelude` path resolves against the file's directory.
+`nl-fast` reads `nano-lean.toml` from the working directory if one exists, or the file given with `--config`. Every key is optional and a flag on the command line overrides it. A relative `prelude` or `cache` path resolves against the file's directory.
 
 ```toml
 threads = 10
@@ -146,9 +149,22 @@ fallback = false
 term_core = false
 prelude = "init.blean"
 axioms = ["propext", "Classical.choice", "Quot.sound"]
+cache = "mathlib.accepted"
+cache_audit = false
 ```
 
-Without the file the defaults are one thread, no prelude check and no axiom restriction.
+Without the file the defaults are one thread, no prelude check, no axiom restriction and no cache.
+
+## Cache
+
+`--cache FILE` skips declarations a previous run accepted and records the new ones. Editing a declaration rechecks it and everything that depends on it, and a new checker version starts the file over.
+
+```sh
+nl-fast --cache mathlib.accepted mathlib.blean
+nl-fast --cache mathlib.accepted --cache-audit mathlib.blean  # recheck everything
+```
+
+In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` turns it off for one run. The cache file is trusted input like the export, so keep it where only the checker writes.
 
 ## License
 

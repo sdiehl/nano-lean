@@ -6,6 +6,9 @@
 - Add `nl-fast --prelude FILE`, which rejects an export unless its primitives and the closure of their types and definition bodies match a trusted export, as Lean's comparator does.
 - Add `nl-fast --axioms NAMES`, which rejects an export that declares an axiom outside the list.
 - Read `nl-fast` settings from `nano-lean.toml` or `--config FILE`, with flags taking precedence.
+- Add `nl-fast --cache FILE`, which skips declarations a previous run accepted and rechecks only edited declarations and their dependents, with `--cache-audit` to recheck everything and `--no-cache` to ignore a configured cache.
+- Keep the Mathlib and standard library check caches in the Actions cache, keyed on the checker source, with a weekly cold Mathlib run.
+- Document the trust model and configuration in the README.
 - Add a weekly mutation campaign over every fixture and an export of nested inductive shapes.
 - Add adversarial fixtures for a forged `Nat.add`, unit-like eta across types, closures that differ only in universe substitution, auxiliary nested names that collide with declared constants, and constructors their inductive does not list.
 

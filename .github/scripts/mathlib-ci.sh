@@ -115,9 +115,11 @@ progress() {
 
 check() {
   verify_input
-  local started=$SECONDS status=0 check_pid progress_pid
+  local started=$SECONDS status=0 check_pid progress_pid cache=()
+  # Set by workflows that restore a cache file keyed on the checker source.
+  if [[ -n ${NL_CACHE:-} ]]; then cache=(--cache "$NL_CACHE"); fi
   bounded nano-mathlib-check 11G 2700 /usr/bin/time -v -o "$report/time.txt" \
-    "$checker" "$input" -j 1 --trace >"$report/failures.log" 2>"$report/trace.log" &
+    "$checker" "$input" -j 1 --trace "${cache[@]}" >"$report/failures.log" 2>"$report/trace.log" &
   check_pid=$!
   progress &
   progress_pid=$!

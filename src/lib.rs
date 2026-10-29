@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod checker;
 pub mod emit;
 pub mod export;
