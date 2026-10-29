@@ -11,7 +11,7 @@ Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 
 - `nl-fast`: fast interned-term checker for Lean NDJSON and blean exports.
 - `nl-ref`: reference kernel for core-syntax files and exports.
 - `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict.
-- `nl-watch`: rebuilds a Lake project on every save and rechecks it with `nl-fast` and the cache.
+- `nl-watch`: rebuilds a Lake project on every save and rechecks it in place, reloading only changed modules.
 
 ```sh
 # Install nl-fast and nl-ref

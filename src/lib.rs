@@ -2,6 +2,7 @@ pub mod cache;
 pub mod checker;
 pub mod emit;
 pub mod export;
+pub mod fast;
 pub mod import;
 pub mod kernel;
 pub mod level;

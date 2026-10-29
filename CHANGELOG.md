@@ -13,6 +13,7 @@
 - Import `.olean` records straight into the checker, with no blean buffer.
 - Add `nl-fast --quiet` for a one-line summary.
 - Add `nl-watch` to rebuild and recheck a Lake project on every save.
+- Keep the environment loaded in `nl-watch` and reload only changed modules.
 - Keep Mathlib and standard library caches in the Actions cache, with a weekly cold run.
 - Add a weekly mutation campaign and an export of nested inductive shapes.
 - Add adversarial fixtures for forged primitives, eta, universe closures and nested names.

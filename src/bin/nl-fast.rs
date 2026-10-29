@@ -1,36 +1,19 @@
 use clap::{Parser, value_parser};
-use indicatif::{ProgressBar, ProgressStyle};
 use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
-use nano_lean::cache::Cache;
-use nano_lean::checker::{Adapter, Limits};
 use nano_lean::export::ExportError;
+use nano_lean::fast::{Checks, Config, MAX_THREADS};
 use nano_lean::import::{self, blean};
 use nano_lean::term::{arena::Arena, intern::Store};
-use nano_lean::value_checker::{self, Session};
-use nano_lean::verdict::Core;
-use serde::Deserialize;
 use std::collections::HashSet;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
-use std::{fs, process, thread};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::time::Instant;
+use std::{fs, process};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
-const DEFAULT_STEPS: u64 = 200_000_000;
-const DEFAULT_ARENA_MIB: u32 = 2048;
-const CONFIG: &str = "nano-lean.toml";
-const MIB: usize = 1 << 20;
-const MAX_THREADS: i64 = 64;
-const WORKER_STACK_BYTES: usize = 256 << 20;
-const FAILURES_SHOWN: usize = 30;
-const TICK: Duration = Duration::from_millis(250);
-const REPORT_INTERVAL: Duration = Duration::from_secs(10);
-const SESSION_BYTES: usize = 64 << 20;
 const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
 
 /// Check a Lean export (ndjson or blean) with the fast checker.
@@ -93,67 +76,18 @@ struct Cli {
     cache_audit: bool,
 }
 
-/// The same settings as the flags, which override them.
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    threads: Option<u16>,
-    steps: Option<u64>,
-    arena_mib: Option<u32>,
-    fallback: Option<bool>,
-    term_core: Option<bool>,
-    prelude: Option<PathBuf>,
-    axioms: Option<Vec<String>>,
-    cache: Option<PathBuf>,
-    cache_audit: Option<bool>,
-}
-
-fn config(path: Option<&Path>) -> Config {
-    let (path, explicit) = match path {
-        Some(p) => (p, true),
-        None => (Path::new(CONFIG), false),
-    };
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if explicit || e.kind() != io::ErrorKind::NotFound => {
-            eprintln!("{}: {e}", path.display());
-            process::exit(2)
-        }
-        Err(_) => return Config::default(),
-    };
-    let mut c: Config = toml::from_str(&text).unwrap_or_else(|e| {
-        eprintln!("{}: {e}", path.display());
-        process::exit(2)
-    });
-    if c.threads
-        .is_some_and(|j| !(1..=MAX_THREADS).contains(&i64::from(j)))
-    {
-        eprintln!("{}: threads must be in 1..={MAX_THREADS}", path.display());
-        process::exit(2)
-    }
-    let dir = path.parent().unwrap_or(Path::new(""));
-    c.prelude = c.prelude.map(|p| dir.join(p));
-    c.cache = c.cache.map(|p| dir.join(p));
-    c
-}
-
 struct Options {
     path: Option<String>,
     olean: Option<Vec<String>>,
     quiet: bool,
-    threads: usize,
     selected: Option<String>,
     only: Option<HashSet<String>>,
     limit: usize,
     import_only: bool,
-    trace: bool,
-    native_only: bool,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
     cache: Option<PathBuf>,
-    cache_audit: bool,
-    core: Core,
-    limits: Limits,
+    checks: Checks,
 }
 
 fn names(file: &str) -> HashSet<String> {
@@ -170,31 +104,33 @@ fn names(file: &str) -> HashSet<String> {
 
 fn options() -> Options {
     let cli = Cli::parse();
-    let c = config(cli.config.as_deref());
+    let mut c = Config::load(cli.config.as_deref()).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(2)
+    });
+    c.steps = cli.steps.or(c.steps);
+    c.arena_mib = cli.arena_mib.or(c.arena_mib);
+    c.term_core = Some(cli.term_core || c.term_core == Some(true));
     Options {
         path: cli.path.filter(|p| p != "-"),
         olean: cli.olean,
         quiet: cli.quiet,
-        threads: cli.threads.or(c.threads).unwrap_or(1).into(),
         selected: cli.declaration,
         only: cli.only.as_deref().map(names),
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
-        trace: cli.trace,
-        native_only: !(cli.fallback || c.fallback == Some(true)),
+        checks: Checks {
+            threads: cli.threads.or(c.threads).unwrap_or(1).into(),
+            trace: cli.trace,
+            quiet: cli.quiet,
+            native_only: !(cli.fallback || c.fallback == Some(true)),
+            cache_audit: cli.cache_audit || c.cache_audit == Some(true),
+            core: c.core(),
+            limits: c.limits(),
+        },
         prelude: cli.prelude.or(c.prelude),
         axioms: cli.axioms.or(c.axioms),
         cache: cli.cache.or(c.cache).filter(|_| !cli.no_cache),
-        cache_audit: cli.cache_audit || c.cache_audit == Some(true),
-        core: if cli.term_core || c.term_core == Some(true) {
-            Core::Term
-        } else {
-            Core::Value
-        },
-        limits: Limits {
-            steps: cli.steps.or(c.steps).unwrap_or(DEFAULT_STEPS),
-            arena_bytes: cli.arena_mib.or(c.arena_mib).unwrap_or(DEFAULT_ARENA_MIB) as usize * MIB,
-        },
     }
 }
 
@@ -312,12 +248,18 @@ fn main() {
         process::exit(2);
     }
     let code = {
-        let cache = o.cache.as_deref().map(|p| open_cache(&o, &store, p));
-        let code = check(
-            &o,
+        let cache = o.cache.as_deref().map(|p| {
+            o.checks.open_cache(&store, p).unwrap_or_else(|e| {
+                eprintln!("{}: {e}", p.display());
+                process::exit(2)
+            })
+        });
+        CHECKING.store(true, Relaxed);
+        let code = o.checks.run(
             &store,
             &indices,
             cache.as_ref().and_then(Option::as_ref),
+            &STOP,
         );
         if let (Some(p), Some(Some(c))) = (&o.cache, &cache) {
             let keep = filtered || o.limit != usize::MAX || STOP.load(Relaxed);
@@ -336,217 +278,5 @@ fn main() {
     };
     if code != 0 {
         process::exit(code as i32);
-    }
-}
-
-fn open_cache<'a>(o: &Options, store: &'a Store<'a>, path: &Path) -> Option<Cache<'a>> {
-    let t = Instant::now();
-    let core = if o.core == Core::Term {
-        "term"
-    } else {
-        "value"
-    };
-    let c = Cache::open(store, path, core, o.cache_audit).unwrap_or_else(|e| {
-        eprintln!("{}: {e}", path.display());
-        process::exit(2)
-    });
-    if !o.quiet {
-        eprintln!("cache keys {:.2?}", t.elapsed());
-    }
-    if c.is_none() {
-        eprintln!("cache disabled: a primitive references an undeclared name");
-    }
-    c
-}
-
-fn check<'a>(
-    o: &Options,
-    store: &'a Store<'a>,
-    indices: &[u32],
-    cache: Option<&Cache<'a>>,
-) -> usize {
-    let t = Instant::now();
-    let next = AtomicU32::new(0);
-    let fails = AtomicUsize::new(0);
-    let fallbacks = AtomicUsize::new(0);
-    let n = indices.len() as u32;
-    let exit = AtomicUsize::new(0);
-    let progress = if o.trace || o.quiet {
-        ProgressBar::hidden()
-    } else {
-        ProgressBar::new(u64::from(n))
-    };
-    progress.set_style(
-        ProgressStyle::with_template(PROGRESS_TEMPLATE).expect("valid progress template"),
-    );
-    let tally = || {
-        format!(
-            "{} fail, {} fallback",
-            fails.load(Relaxed),
-            fallbacks.load(Relaxed)
-        )
-    };
-    progress.set_message(tally());
-    progress.enable_steady_tick(TICK);
-    CHECKING.store(true, Relaxed);
-    let (stop, stopped) = mpsc::channel::<()>();
-    thread::scope(|sc| {
-        // Stop the reporter even if joining a worker unwinds.
-        let stop = stop;
-        if !o.trace && !o.quiet && !io::stderr().is_terminal() {
-            let (progress, tally) = (&progress, &tally);
-            sc.spawn(move || {
-                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(REPORT_INTERVAL) {
-                    let eta = progress.eta().as_secs();
-                    eprintln!(
-                        "[progress] {}/{n} checked; {:.0}/s; estimated remaining {}m {}s; {}",
-                        progress.position(),
-                        progress.per_sec(),
-                        eta / 60,
-                        eta % 60,
-                        tally()
-                    );
-                }
-            });
-        }
-        let workers: Vec<_> = (0..o.threads)
-            .map(|_| {
-                thread::Builder::new()
-                    .stack_size(WORKER_STACK_BYTES)
-                    .spawn_scoped(sc, || {
-                        let mut session = Session::new(store);
-                        let mut adapter = Adapter::new(store);
-                        let mut accepted = Vec::new();
-                        loop {
-                            if STOP.load(Relaxed) {
-                                break;
-                            }
-                            let job = next.fetch_add(1, Relaxed);
-                            if job >= n {
-                                break;
-                            }
-                            let idx = indices[job as usize];
-                            let (key, hit) = cache.map_or((None, false), |c| c.lookup(idx));
-                            if hit && cache.is_some_and(|c| !c.audit) {
-                                if o.trace {
-                                    eprintln!("start {idx} {}", store.declars[idx as usize].name());
-                                    eprintln!("end {idx} cached");
-                                }
-                                accepted.extend(key);
-                                progress.inc(1);
-                                continue;
-                            }
-                            let started = Instant::now();
-                            if o.trace {
-                                eprintln!("start {idx} {}", store.declars[idx as usize].name());
-                            }
-                            let r = o.core.check(
-                                store,
-                                &mut session,
-                                idx,
-                                o.limits,
-                                &mut adapter,
-                                o.native_only,
-                            );
-                            if r.is_ok() {
-                                accepted.extend(key);
-                            } else if hit && r.as_ref().is_err_and(|f| f.exit_code() == 1) {
-                                exit.fetch_or(1 << 1, Relaxed);
-                                println!(
-                                    "cache audit: {} is recorded as accepted",
-                                    store.declars[idx as usize].name()
-                                );
-                            }
-                            if matches!(r, Ok(true)) {
-                                fallbacks.fetch_add(1, Relaxed);
-                                progress.set_message(tally());
-                            }
-                            if o.trace {
-                                eprintln!(
-                                    "end {idx} elapsed {:?} arena {} bytes",
-                                    started.elapsed(),
-                                    session.arena().allocated_bytes()
-                                );
-                            }
-                            if o.core == Core::Term
-                                || r.is_err()
-                                || session.arena().allocated_bytes() > SESSION_BYTES
-                            {
-                                #[cfg(feature = "vstats")]
-                                value_checker::RESETS.fetch_add(1, Relaxed);
-                                session.reset();
-                            }
-                            progress.inc(1);
-                            if let Err(f) = r {
-                                exit.fetch_or(1 << f.exit_code(), Relaxed);
-                                let k = fails.fetch_add(1, Relaxed);
-                                progress.set_message(tally());
-                                if k < FAILURES_SHOWN {
-                                    progress.suspend(|| {
-                                        println!(
-                                            "{} {}: {}",
-                                            store.declars[idx as usize].name().as_ref(),
-                                            f.status(),
-                                            f.reason()
-                                        );
-                                        io::stdout().flush().ok();
-                                    });
-                                }
-                            }
-                        }
-                        if let Some(c) = cache {
-                            c.record(&accepted);
-                        }
-                    })
-                    .expect("spawn worker thread")
-            })
-            .collect();
-        for worker in workers {
-            worker
-                .join()
-                .unwrap_or_else(|p| std::panic::resume_unwind(p));
-        }
-        drop(stop);
-    });
-    progress.finish_and_clear();
-    let hits = cache.map_or(0, |c| c.hits.load(Relaxed));
-    if o.quiet {
-        let done = progress.position();
-        let fails = fails.load(Relaxed);
-        let cut = if done < u64::from(n) {
-            format!(", interrupted after {done} of {n}")
-        } else {
-            String::new()
-        };
-        eprintln!(
-            "{} {n} declarations, {hits} cached, {fails} failed in {:.2?}{cut}",
-            if fails == 0 { "ok" } else { "FAIL" },
-            t.elapsed(),
-        );
-    } else {
-        eprintln!(
-            "experimental checks {:.2?}: {} attempted, {} failures, {} fallbacks",
-            t.elapsed(),
-            n,
-            fails.load(Relaxed),
-            fallbacks.load(Relaxed)
-        );
-    }
-    if o.core == Core::Value && !o.quiet {
-        let b = &value_checker::BRIDGED;
-        eprintln!(
-            "bridged quot {} ind {} ctor {} rec {}",
-            b[0].load(Relaxed),
-            b[1].load(Relaxed),
-            b[2].load(Relaxed),
-            b[3].load(Relaxed)
-        );
-        #[cfg(feature = "vstats")]
-        value_checker::report();
-    }
-    match exit.load(Relaxed) {
-        0 => 0,
-        b if b & 1 << 1 != 0 => 1,
-        _ => 2,
     }
 }

@@ -81,15 +81,19 @@ pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
 
 /// Loads `roots` and their imports from `.olean` files on `search`, as a blean export would.
 pub fn olean<'a>(arena: &'a Arena, search: &[PathBuf], roots: &[&str]) -> Result<Store<'a>> {
-    use olean_export::{Env, Exporter};
-    let env = Env::load(search, roots).map_err(|e| ExportError::Invalid(format!("olean: {e}")))?;
+    let env = olean_export::Env::load(search, roots)
+        .map_err(|e| ExportError::Invalid(format!("olean: {e}")))?;
+    from_env(arena, &env)
+}
+
+/// Exports every constant of `env` straight into a store.
+pub fn from_env<'a>(arena: &'a Arena, env: &olean_export::Env) -> Result<Store<'a>> {
     let mut sink = blean::Records::new(arena, env.names.len() + env.levels.len() + env.exprs.len());
-    let mut ex = Exporter::with_sink(&env, &mut sink);
+    let mut ex = olean_export::Exporter::with_sink(env, &mut sink);
     let out = ex.meta().and_then(|()| ex.all()).and_then(|()| ex.finish());
     if let Err(e) = out {
         sink.fail(ExportError::Invalid(format!("olean: {e}")));
     }
-    drop(env);
     sink.finish()
 }
 
