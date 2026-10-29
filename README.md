@@ -8,7 +8,7 @@ A minimalist (but complete) Lean type checker in Rust built on [unbound](https:/
 
 Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
 
-- `nl-fast`: fast interned-term checker for Lean NDJSON exports.
+- `nl-fast`: fast interned-term checker for Lean NDJSON and blean exports.
 - `nl-ref`: reference kernel for core-syntax files and exports.
 - `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict.
 
@@ -16,7 +16,7 @@ Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 
 # Install nl-fast and nl-ref
 cargo install --git https://github.com/sdiehl/nano-lean
 
-# Check a Lean NDJSON export
+# Check a Lean export (NDJSON or blean)
 nl-fast FILE.ndjson [-j THREADS]
 
 # Check a core-syntax file
@@ -54,6 +54,13 @@ nl-fast mathlib.ndjson
 
 # Or pipe it straight through
 lake env olean-export Mathlib -q | nl-fast
+
+# The blean binary format is smaller and faster to load, nl-fast detects it
+lake env olean-export Mathlib -f blean -o mathlib.blean
+nl-fast mathlib.blean
+
+# Convert an existing export between NDJSON and blean
+olean-export convert mathlib.ndjson -o mathlib.blean
 ```
 
 ### Performance
