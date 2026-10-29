@@ -125,7 +125,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     self.ctx.pi(domain, result)
                 }
             }
-            Expr::Let { data, .. } => {
+            Expr::Let { data, .. }
+                if only
+                    || !matches!(*data.ty, Expr::Const { name, .. } if Some(name) == self.names.nat) =>
+            {
                 if !only {
                     let ty = self.inst(data.ty, env)?;
                     self.check_type(ty)?;
@@ -137,6 +140,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 let result = self.infer_under(data.body, env, only);
                 env.pop();
                 result?
+            }
+            // A Nat let body sees a local, so closed literal folding never forces the value.
+            Expr::Let { data, .. } => {
+                let ty = self.inst(data.ty, env)?;
+                self.check_type(ty)?;
+                let actual = self.infer_under(data.val, env, false)?;
+                ensure!(self, self.def_eq(actual, ty)?, "let value type mismatch");
+                let value = self.inst(data.val, env)?;
+                let x = self.let_local(ty, value);
+                env.push(x);
+                let result = self.infer_under(data.body, env, false);
+                env.pop();
+                let result = self.ctx.abstract_locals(result?, &[x]);
+                self.inst1(result, value)?
             }
             _ => {
                 let closed = self.inst(e, env)?;

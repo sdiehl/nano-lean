@@ -4,7 +4,7 @@
 
 # nano-lean
 
-A minimalist (but complete) Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
+A minimalist (but complete) parallel Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
 
 Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
 

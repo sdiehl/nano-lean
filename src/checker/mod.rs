@@ -109,6 +109,8 @@ pub struct Tc<'t, 'a: 't> {
     pub(crate) limit: u32,
     adapter: Option<&'t mut Adapter<'a>>,
     next_local: u32,
+    /// Values of the let-bound locals, unfolded only at the head.
+    pub(crate) let_vals: FxHashMap<u32, ExprPtr<'t>>,
     conversion_depth: Rc<Cell<usize>>,
     conversion_locals: FxHashMap<(usize, ExprPtr<'t>), ExprPtr<'t>>,
     probe_remaining: Option<u32>,
@@ -145,6 +147,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             limit: 0,
             adapter: None,
             next_local: 0,
+            let_vals: FxHashMap::default(),
             conversion_depth: Default::default(),
             conversion_locals: Default::default(),
             probe_remaining: None,
@@ -225,6 +228,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.unfold_cache.clear();
         self.eq_cache.clear();
         self.fail_cache.clear();
+        self.let_vals.clear();
         self.probe_remaining = None;
         self.conversion_depth.set(0);
         self.conversion_locals.clear();
@@ -307,6 +311,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     pub(crate) fn fresh_local(&mut self, ty: ExprPtr<'t>) -> ExprPtr<'t> {
         self.next_local += 1;
         self.ctx.local(self.next_local, ty)
+    }
+
+    pub(crate) fn let_local(&mut self, ty: ExprPtr<'t>, val: ExprPtr<'t>) -> ExprPtr<'t> {
+        let x = self.fresh_local(ty);
+        self.let_vals.insert(self.next_local, val);
+        x
     }
 
     pub(crate) fn empty_levels(&mut self) -> LevelsPtr<'t> {

@@ -18,7 +18,7 @@ pub(super) enum HKey<'t> {
 
 fn head_eq<'t>(a: Head<'t>, b: Head<'t>) -> bool {
     match (a, b) {
-        (Head::Local(i, _), Head::Local(j, _)) => i == j,
+        (Head::Local(i, ..), Head::Local(j, ..)) => i == j,
         (Head::Const(n, l), Head::Const(m, k)) => n == m && l == k,
         (Head::Proj(n, i, x), Head::Proj(m, j, y)) => n == m && i == j && ptr::eq(x, y),
         _ => false,
@@ -31,7 +31,7 @@ where
 {
     let mut s = FxBuildHasher.build_hasher();
     match h {
-        Head::Local(i, _) => (0u8, i).hash(&mut s),
+        Head::Local(i, ..) => (0u8, i).hash(&mut s),
         Head::Const(c, l) => (1u8, c, l).hash(&mut s),
         Head::Proj(c, i, x) => (2u8, c, i, key(x)).hash(&mut s),
     }

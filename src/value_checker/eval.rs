@@ -2,12 +2,14 @@ use super::intern::Ptrs;
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
+use crate::term::FxHashMap;
 use crate::term::decl::Declar;
 use crate::term::expr::{Expr, WIDE};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
+use std::ptr;
 use std::slice::Iter;
 
 const SHALLOW: u32 = 8;
@@ -120,19 +122,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             Expr::Lam { ty, body, .. } => {
                 let env = self.trim(env, e)?;
-                let dom = match self.t.lazies[usize::from(env.open())].get(&(env.key(), sub, ty)) {
-                    Some(&d) => d,
-                    None => {
-                        let d = &*self.ctx.arena.alloc(Lazy {
-                            env,
-                            sub,
-                            e: ty,
-                            val: Cell::new(None),
-                        });
-                        self.t.lazies[usize::from(env.open())].insert((env.key(), sub, ty), d);
-                        d
-                    }
-                };
+                let dom = self.lazy(env, sub, ty);
                 self.mk(
                     K::Lam(
                         dom,
@@ -184,6 +174,135 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
         }
         Ok(v)
+    }
+
+    fn lazy(&mut self, env: Env<'t>, sub: Sub<'t>, ty: ExprPtr<'t>) -> &'t Lazy<'t> {
+        let o = usize::from(env.open());
+        if let Some(&d) = self.t.lazies[o].get(&(env.key(), sub, ty)) {
+            return d;
+        }
+        let d = &*self.ctx.arena.alloc(Lazy {
+            env,
+            sub,
+            e: ty,
+            val: Cell::new(None),
+        });
+        self.t.lazies[o].insert((env.key(), sub, ty), d);
+        d
+    }
+
+    /// Replaces the let-bound local `x` with its value `v`, sharing every part that never met `x`.
+    pub(crate) fn zeta(&mut self, x: V<'t>, v: V<'t>, t: V<'t>) -> R<V<'t>> {
+        let K::Neu(Head::Local(x, ..), _) = x.k else {
+            unreachable!("zeta of a non-local")
+        };
+        let mut memo = FxHashMap::default();
+        self.zeta_val(x, v, t, &mut memo)
+    }
+
+    fn zeta_val(
+        &mut self,
+        x: u32,
+        v: V<'t>,
+        t: V<'t>,
+        memo: &mut FxHashMap<usize, V<'t>>,
+    ) -> R<V<'t>> {
+        if !t.open {
+            return Ok(t);
+        }
+        if let Some(&r) = memo.get(&key(t)) {
+            return Ok(r);
+        }
+        self.guard()?;
+        self.tick()?;
+        let r = match t.k {
+            K::Neu(h, args) => {
+                let mut vs = SmallVec::<[V<'t>; 8]>::with_capacity(args.len());
+                for &a in args {
+                    vs.push(self.zeta_val(x, v, a, memo)?);
+                }
+                let head = match h {
+                    Head::Local(i, ..) if i == x => Err(v),
+                    Head::Proj(n, i, s) => {
+                        let s1 = self.zeta_val(x, v, s, memo)?;
+                        if ptr::eq(s, s1) {
+                            Ok(h)
+                        } else {
+                            Err(self.proj(n, i, s1))
+                        }
+                    }
+                    _ => Ok(h),
+                };
+                match head {
+                    Ok(_) if vs.iter().zip(args).all(|(a, b)| ptr::eq(*a, *b)) => t,
+                    Ok(h) => {
+                        let open = matches!(h, Head::Local(..))
+                            || matches!(h, Head::Proj(_, _, s) if s.open)
+                            || vs.iter().any(|a| a.open);
+                        self.neu(h, &[], &vs, open)
+                    }
+                    Err(f) => self.apply(f, &vs)?,
+                }
+            }
+            K::Pi(d, c) => {
+                let d1 = self.zeta_val(x, v, d, memo)?;
+                let env = self.zeta_env(x, v, c.env, memo)?;
+                if ptr::eq(d, d1) && env.key() == c.env.key() {
+                    t
+                } else {
+                    self.mk(K::Pi(d1, Clo { env, ..c }), d1.open || env.open())
+                }
+            }
+            K::Lam(l, c) => {
+                let le = self.zeta_env(x, v, l.env, memo)?;
+                let env = self.zeta_env(x, v, c.env, memo)?;
+                if le.key() == l.env.key() && env.key() == c.env.key() {
+                    t
+                } else {
+                    let l1 = self.lazy(le, l.sub, l.e);
+                    self.mk(K::Lam(l1, Clo { env, ..c }), env.open())
+                }
+            }
+            _ => t,
+        };
+        memo.insert(key(t), r);
+        Ok(r)
+    }
+
+    fn zeta_env(
+        &mut self,
+        x: u32,
+        v: V<'t>,
+        env: Env<'t>,
+        memo: &mut FxHashMap<usize, V<'t>>,
+    ) -> R<Env<'t>> {
+        if !env.open() {
+            return Ok(env);
+        }
+        self.guard()?;
+        Ok(match env.view() {
+            View::Nil => env,
+            View::Node(n) => {
+                let tail = self.zeta_env(x, v, n.tail, memo)?;
+                let head = self.zeta_val(x, v, n.head, memo)?;
+                if tail.key() == n.tail.key() && ptr::eq(head, n.head) {
+                    env
+                } else {
+                    self.push(tail, head)
+                }
+            }
+            View::Frame(f) => {
+                let mut vs = SmallVec::<[V<'t>; 32]>::with_capacity(f.vals.len());
+                for &a in f.vals {
+                    vs.push(self.zeta_val(x, v, a, memo)?);
+                }
+                if vs.iter().zip(f.vals).all(|(a, b)| ptr::eq(*a, *b)) {
+                    env
+                } else {
+                    self.frame(&vs)
+                }
+            }
+        })
     }
 
     /// Keep only the slots `e` reads, so closures equal up to unused captures share one value.

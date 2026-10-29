@@ -81,7 +81,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             (K::Neu(h, xs), K::Neu(g, ys)) => {
                 xs.len() == ys.len()
                     && match (h, g) {
-                        (Head::Local(i, _), Head::Local(j, _)) => i == j,
+                        (Head::Local(i, ..), Head::Local(j, ..)) => i == j,
                         (Head::Const(m, ls), Head::Const(n, ks)) => m == n && ls == ks,
                         (Head::Proj(m, i, x), Head::Proj(n, j, y)) => {
                             m == n && i == j && self.same(x, y, fuel)
@@ -297,7 +297,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 strip_pis(h, ty.num_args())
                     .is_some_and(|s| matches!(*s, Expr::Sort { level, .. } if positive(level)))
             }
-            K::Neu(Head::Local(_, ty), []) => match ty.k {
+            K::Neu(Head::Local(_, ty, _), []) => match ty.k {
                 K::Sort(_) => true,
                 K::Neu(Head::Const(n, _), args) => self
                     .declar(n)
@@ -509,7 +509,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn heads_eq(&mut self, a: Head<'t>, b: Head<'t>) -> R<bool> {
         Ok(match (a, b) {
-            (Head::Local(x, _), Head::Local(y, _)) => x == y,
+            (Head::Local(x, ..), Head::Local(y, ..)) => x == y,
             (Head::Const(x, lx), Head::Const(y, ly)) => x == y && self.levels_eq(lx, ly)?,
             (Head::Proj(m, i, x), Head::Proj(n, j, y)) => m == n && i == j && self.def_eq(x, y)?,
             _ => false,

@@ -14,6 +14,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     pub fn whnf_core(&mut self, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
         self.tick()?;
         if !matches!(*e, Expr::App { .. } | Expr::Let { .. } | Expr::Proj { .. }) {
+            if let Expr::Local { id, .. } = *e
+                && !self.let_vals.is_empty()
+            {
+                return self.zeta_local(e, id);
+            }
             return Ok(e);
         }
         if let Some(&r) = self.whnf_core_cache.get(&e) {
@@ -67,6 +72,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Ok(r)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn zeta_local(&mut self, e: ExprPtr<'t>, id: u32) -> R<ExprPtr<'t>> {
+        match self.let_vals.get(&id) {
+            Some(&v) => self.whnf_core(v),
+            None => Ok(e),
+        }
+    }
+
     /// Keeps substitutions outside the body across beta and let until syntax is needed.
     fn reduce_binders(
         &mut self,
@@ -114,8 +128,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 | Expr::Lam { .. }
                 | Expr::NatLit { .. }
                 | Expr::StrLit { .. }
-                | Expr::Local { .. }
         ) {
+            return Ok(e);
+        }
+        if let Expr::Local { id, .. } = *e
+            && !self.let_vals.contains_key(&id)
+        {
             return Ok(e);
         }
         if let Some(&r) = self.whnf_cache.get(&e) {

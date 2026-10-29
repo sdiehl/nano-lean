@@ -79,7 +79,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             K::Neu(h, args) => {
                 let mut t = match h {
-                    Head::Local(_, ty) => ty,
+                    Head::Local(_, ty, _) => ty,
                     Head::Const(n, ls) => self.const_type(n, ls)?,
                     Head::Proj(n, i, s) => self.proj_type(n, i, s)?,
                 };
@@ -167,7 +167,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 reject!(self, "unexpected bound variable")
             };
             return match v.k {
-                K::Neu(Head::Local(_, ty), []) => Ok(ty),
+                K::Neu(Head::Local(_, ty, _), []) => Ok(ty),
                 _ => self.type_of(v),
             };
         }
@@ -304,7 +304,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
             }
-            Expr::Let { data, .. } => {
+            Expr::Let { data, .. } if only || !self.nat_typed(data.ty) => {
                 if !only {
                     let s = self.infer(env, sub, data.ty, false)?;
                     self.ensure_sort(s)?;
@@ -315,6 +315,19 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let v = self.eval(env, sub, data.val)?;
                 let env1 = self.push(env, v);
                 self.infer(env1, sub, data.body, only)?
+            }
+            // A Nat let body sees a local, so closed literal folding never forces the value.
+            Expr::Let { data, .. } => {
+                let s = self.infer(env, sub, data.ty, false)?;
+                self.ensure_sort(s)?;
+                let tv = self.eval(env, sub, data.ty)?;
+                let at = self.infer(env, sub, data.val, false)?;
+                ensure!(self, self.def_eq(at, tv)?, "let value type mismatch");
+                let v = self.eval(env, sub, data.val)?;
+                let x = self.local(tv, Some(v));
+                let env1 = self.push(env, x);
+                let t = self.infer(env1, sub, data.body, false)?;
+                self.zeta(x, v, t)?
             }
             Expr::Proj {
                 name, idx, e: s, ..
@@ -343,5 +356,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
         }
         Ok(t)
+    }
+}
+
+impl<'t, 'a: 't> Vc<'t, 'a> {
+    fn nat_typed(&self, ty: ExprPtr<'t>) -> bool {
+        matches!(*ty, Expr::Const { name, .. } if Some(name) == self.names.nat)
     }
 }

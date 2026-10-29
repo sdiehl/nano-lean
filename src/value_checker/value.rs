@@ -22,7 +22,8 @@ pub enum K<'t> {
 
 #[derive(Clone, Copy)]
 pub enum Head<'t> {
-    Local(u32, V<'t>),
+    /// A let-bound local carries its value and unfolds only at the head.
+    Local(u32, V<'t>, Option<V<'t>>),
     Const(NamePtr<'t>, LevelsPtr<'t>),
     Proj(NamePtr<'t>, u16, V<'t>),
 }

@@ -15,7 +15,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.tick()?;
         self.guard()?;
         let K::Neu(h, args) = v.k else { return Ok(v) };
-        if matches!(h, Head::Local(..)) {
+        if matches!(h, Head::Local(_, _, None)) {
             return Ok(v);
         }
         if let Some(&r) = self.t.whnf_core_cache.get(&key(v)) {
@@ -33,7 +33,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
                 None => v,
             },
-            Head::Local(..) => unreachable!(),
+            Head::Local(_, _, Some(x)) => {
+                let f = self.apply(x, args)?;
+                self.whnf_core(f)?
+            }
+            Head::Local(_, _, None) => unreachable!(),
         };
         self.t.whnf_core_cache.insert(key(v), r);
         Ok(r)
@@ -41,7 +45,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     pub(crate) fn whnf(&mut self, v: V<'t>) -> R<V<'t>> {
         match v.k {
-            K::Neu(Head::Local(..), _)
+            K::Neu(Head::Local(_, _, None), _)
             | K::Sort(_)
             | K::Pi(..)
             | K::Lam(..)

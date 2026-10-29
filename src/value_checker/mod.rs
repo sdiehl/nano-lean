@@ -199,12 +199,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn fresh_local(&mut self, ty: V<'t>) -> V<'t> {
+        self.local(ty, None)
+    }
+
+    pub(crate) fn local(&mut self, ty: V<'t>, val: Option<V<'t>>) -> V<'t> {
         self.next_local += 1;
         let id = self.next_local;
         // Ids are never reused, so interning could only miss.
         stat!(self, vals);
         self.ctx.arena.alloc(Val {
-            k: K::Neu(Head::Local(id, ty), &[]),
+            k: K::Neu(Head::Local(id, ty, val), &[]),
             open: true,
         })
     }

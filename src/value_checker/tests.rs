@@ -81,6 +81,31 @@ fn fixture_outcomes_match_the_term_checker() {
 }
 
 #[test]
+fn nat_let_value_is_not_folded_in_its_body() {
+    let bytes = include_bytes!("../../tests/fixtures/let/nat-let-fold.ndjson");
+    let arena = Arena::new();
+    let store = import_bytes(&arena, bytes).unwrap();
+    let mut a = Adapter::new(&store);
+    let mut b = Adapter::new(&store);
+    for i in 0..store.declars.len() as u32 {
+        let mut local = Arena::new();
+        let name = store.declars[i as usize].name();
+        let term = checker::check_with_adapter(
+            &store,
+            &mut local,
+            i,
+            Limits::default(),
+            Some(&mut a),
+            true,
+        );
+        assert!(term.is_ok(), "term core: {name}");
+        local.reset();
+        let value = check(&store, &mut local, i, Limits::default(), Some(&mut b), true);
+        assert!(value.is_ok(), "value core: {name}");
+    }
+}
+
+#[test]
 fn deep_term_declines_instead_of_overflowing() {
     const DEPTH: usize = 200_000;
     let mut s = String::from(concat!(
