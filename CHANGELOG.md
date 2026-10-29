@@ -10,12 +10,11 @@
 - Add `--cache-audit` and `--no-cache`.
 - Save the cache when `nl-fast` is interrupted.
 - Add `nl-fast --olean MODULES` to check `.olean` files directly.
+- Import `.olean` records straight into the checker, with no blean buffer.
 - Add `nl-fast --quiet` for a one-line summary.
 - Add `nl-watch` to rebuild and recheck a Lake project on every save.
 - Keep Mathlib and standard library caches in the Actions cache, with a weekly cold run.
-- Move the trust model to `docs/TRUST.md`.
 - Add a weekly mutation campaign and an export of nested inductive shapes.
-- Skip the forged `Nat.add` fixture in mutation sweeps.
 - Add adversarial fixtures for forged primitives, eta, universe closures and nested names.
 
 ## 0.2.0 (2026-10-25)

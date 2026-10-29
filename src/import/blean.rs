@@ -228,6 +228,106 @@ pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
     unreachable!()
 }
 
+/// Imports records as an exporter writes them, with no encoding in between.
+pub struct Records<'a> {
+    im: Option<Importer<'a>>,
+    next: Counts,
+    n: usize,
+    buf: Vec<u8>,
+    done: Option<Result<Store<'a>>>,
+}
+
+impl<'a> Records<'a> {
+    pub fn new(arena: &'a Arena, records: usize) -> Self {
+        Self {
+            im: Some(Importer::new(arena, records * BYTES_PER_LINE)),
+            next: Counts::default(),
+            n: 0,
+            buf: Vec::new(),
+            done: None,
+        }
+    }
+
+    /// Records `e` unless a record already failed.
+    pub fn fail(&mut self, e: ExportError) {
+        self.done.get_or_insert(Err(e));
+        self.im = None;
+    }
+
+    /// The store, or the first error a record raised.
+    pub fn finish(self) -> Result<Store<'a>> {
+        self.done
+            .unwrap_or_else(|| invalid("export ended without an end record"))
+    }
+
+    fn take(&mut self, r: &Record<'_>) -> Result<()> {
+        let Some(im) = self.im.as_mut() else {
+            return invalid("record after the end record");
+        };
+        let (n, i) = (self.n, self.next.assign(r).unwrap_or_default());
+        self.n += 1;
+        if n == 0 && !matches!(r, Record::Meta(_)) {
+            return invalid("missing export metadata");
+        }
+        match r {
+            Record::Meta(_) if n > 0 => invalid("metadata after the first record"),
+            Record::Meta(_) | Record::Decl(_) => {
+                line(r, &mut self.buf).and_then(|v| im.general(&v, n == 0))
+            }
+            Record::End(_) => {
+                let im = self.im.take().expect("importer is live");
+                self.done = Some(im.finish());
+                Ok(())
+            }
+            Record::NameStr { pre, str } => im.do_str(i, *pre, str),
+            Record::NameNum { pre, i: k } => im.do_num(i, *pre, *k),
+            Record::Succ(l) => im.do_succ(i, *l),
+            Record::Max(a, b) => im.do_max(i, *a, *b, false),
+            Record::IMax(a, b) => im.do_max(i, *a, *b, true),
+            Record::Param(p) => im.do_param(i, *p),
+            Record::BVar(v) => im.do_bvar(i, *v),
+            Record::Sort(l) => im.do_sort(i, *l),
+            Record::Const { name, us } => im.do_const(i, *name, us),
+            Record::App { fun, arg } => im.do_app(i, *fun, *arg),
+            Record::Lam(b) => im.do_binder(i, b.name, b.ty, b.body, true),
+            Record::Pi(b) => im.do_binder(i, b.name, b.ty, b.body, false),
+            Record::Let {
+                name,
+                ty,
+                value,
+                body,
+                nondep,
+            } => im.do_let(i, *name, *ty, *value, *body, *nondep),
+            Record::Nat(d) => im.do_nat(i, d),
+            Record::Str(s) => im.do_strlit(i, s),
+            Record::Proj {
+                type_name,
+                idx,
+                struct_,
+            } => im.do_proj(i, *type_name, *idx, *struct_),
+            Record::MData(e) => im.alias(i, *e),
+        }
+        .map_err(|e| e.at("record", n))
+    }
+}
+
+/// Keeps the first error for [`Records::finish`] and stops the exporter with a stand-in.
+impl Sink for &mut Records<'_> {
+    type Output = ();
+
+    fn record(&mut self, r: &Record<'_>) -> olean_export::Result<()> {
+        self.take(r).map_err(|e| {
+            let msg = e.to_string();
+            self.fail(e);
+            olean_export::Error::Corrupt(msg)
+        })
+    }
+
+    fn finish(self) -> olean_export::Result<()> {
+        Ok(())
+    }
+}
+
 #[inline(always)]
 fn expr(im: &mut Importer<'_>, cur: &mut Cur<'_>, us: &mut Vec<u32>, t: u32, i: u32) -> Result<()> {
     match t {
@@ -283,51 +383,11 @@ mod tests {
 
     fn reference<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
         let c = blean::counts(bytes).map_err(corrupt)?;
-        let mut im = Importer::new(arena, records(&c) * BYTES_PER_LINE);
-        let mut next = Counts::default();
-        let mut buf = Vec::new();
-        for (n, e) in blean::entries(bytes).map_err(corrupt)?.enumerate() {
-            let (r, _) = e.map_err(corrupt)?;
-            if n == 0 && !matches!(r, Record::Meta(_)) {
-                return invalid("missing export metadata");
-            }
-            let i = next.assign(&r).unwrap_or_default();
-            match r {
-                Record::Meta(_) if n > 0 => invalid("metadata after the first record"),
-                Record::Meta(_) | Record::Decl(_) => {
-                    line(&r, &mut buf).and_then(|v| im.general(&v, n == 0))
-                }
-                Record::End(_) => return im.finish(),
-                Record::NameStr { pre, str } => im.do_str(i, pre, &str),
-                Record::NameNum { pre, i: k } => im.do_num(i, pre, k),
-                Record::Succ(l) => im.do_succ(i, l),
-                Record::Max(a, b) => im.do_max(i, a, b, false),
-                Record::IMax(a, b) => im.do_max(i, a, b, true),
-                Record::Param(p) => im.do_param(i, p),
-                Record::BVar(v) => im.do_bvar(i, v),
-                Record::Sort(l) => im.do_sort(i, l),
-                Record::Const { name, us } => im.do_const(i, name, &us),
-                Record::App { fun, arg } => im.do_app(i, fun, arg),
-                Record::Lam(b) => im.do_binder(i, b.name, b.ty, b.body, true),
-                Record::Pi(b) => im.do_binder(i, b.name, b.ty, b.body, false),
-                Record::Let {
-                    name,
-                    ty,
-                    value,
-                    body,
-                    nondep,
-                } => im.do_let(i, name, ty, value, body, nondep),
-                Record::Nat(d) => im.do_nat(i, &d),
-                Record::Str(s) => im.do_strlit(i, &s),
-                Record::Proj {
-                    type_name,
-                    idx,
-                    struct_,
-                } => im.do_proj(i, type_name, idx, struct_),
-                Record::MData(e) => im.alias(i, e),
-            }?;
+        let mut sink = Records::new(arena, records(&c));
+        if let Err(e) = blean::read(bytes, &mut sink) {
+            sink.fail(corrupt(e));
         }
-        invalid("blean ended without an end record")
+        sink.finish()
     }
 
     use crate::term::expr::Expr;
