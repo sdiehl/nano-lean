@@ -1,0 +1,26 @@
+inductive Nat Nat.zero Nat.succ Nat.rec
+inductive Eq Eq.refl Eq.rec
+inductive List List.nil List.cons List.rec
+inductive U1 U1.mk U1.rec
+inductive U2 U2.mk U2.rec
+axiom T
+axiom h
+error: type mismatch:
+  expected: @U1
+  inferred: @U2
+error: type mismatch:
+  expected: (((@Eq.{1} @T) ((@h @U1) @U1.mk)) ((@h @U2) @U2.mk))
+  inferred: (((@Eq.{1} @T) ((@h @U1) @U1.mk)) ((@h @U1) @U1.mk))
+theorem unit_eta
+defined G
+axiom P
+axiom hp
+error: type mismatch:
+  expected: (@P @G.{1})
+  inferred: (@P @G.{0})
+theorem same_closure
+axiom Rose._nested_1
+axiom Rose._nested_1.rec
+axiom Rose._nested_1.ctor_0
+inductive Rose Rose.node Rose.rec Rose.rec_1
+defined leaf

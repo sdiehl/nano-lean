@@ -3,6 +3,11 @@
 ## Unreleased
 
 - Keep a `Nat` let value behind a local in both fast cores, so closed literal folding in the body never evaluates it, as in Lean's kernel.
+- Add `nl-fast --prelude FILE`, which rejects an export unless its primitives and the closure of their types and definition bodies match a trusted export, as Lean's comparator does.
+- Add `nl-fast --axioms NAMES`, which rejects an export that declares an axiom outside the list.
+- Read `nl-fast` settings from `nano-lean.toml` or `--config FILE`, with flags taking precedence.
+- Add a weekly mutation campaign over every fixture and an export of nested inductive shapes.
+- Add adversarial fixtures for a forged `Nat.add`, unit-like eta across types, closures that differ only in universe substitution, auxiliary nested names that collide with declared constants, and constructors their inductive does not list.
 
 ## 0.2.0 (2026-10-25)
 

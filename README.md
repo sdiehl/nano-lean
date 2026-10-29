@@ -20,6 +20,9 @@ cargo install --git https://github.com/sdiehl/nano-lean
 nl-fast FILE.ndjson [-j THREADS]
 nl-fast FILE.blean [-j THREADS]
 
+# Reject an export whose primitives differ from a trusted export of Init
+nl-fast --prelude init.blean FILE.blean
+
 # Check a core-syntax file
 nl-ref examples/core.ltc
 
@@ -115,6 +118,37 @@ Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/b
 | Instructions          | 796.9 G       | 837.9 G        |
 | Cycles                | 375.6 G       | 550.0 G        |
 | Peak memory footprint | 12.64 GB      | 26.42 GB       |
+
+## Trust model
+
+Like Lean's kernel, every checker reduces `Nat` and `String` primitives such as `Nat.add` by name and trusts their bodies. The importer rejects a primitive name declared with the wrong type, but an export can redefine `Nat.add` with the right type and a different body, then prove `False` by literal folding ([`tests/fixtures/ForgedNatAdd.lean`](tests/fixtures/ForgedNatAdd.lean)). Lean rules this out with [comparator](https://github.com/leanprover/comparator), and `--prelude` does the same: it compares every primitive, and the closure of their types and definition bodies, with a trusted export and rejects any difference. Build the trusted export from the same toolchain as the export under check.
+
+```sh
+lake env olean-export Init -f blean -o init.blean
+nl-fast --prelude init.blean FILE.blean
+```
+
+`--axioms` rejects an export that declares any axiom outside the list.
+
+```sh
+nl-fast --prelude init.blean --axioms propext,Classical.choice,Quot.sound FILE.blean
+```
+
+## Configuration
+
+`nl-fast` reads `nano-lean.toml` from the working directory if one exists, or the file given with `--config`. Every key is optional and a flag on the command line overrides it. A relative `prelude` path resolves against the file's directory.
+
+```toml
+threads = 10
+steps = 200000000
+arena_mib = 2048
+fallback = false
+term_core = false
+prelude = "init.blean"
+axioms = ["propext", "Classical.choice", "Quot.sound"]
+```
+
+Without the file the defaults are one thread, no prelude check and no axiom restriction.
 
 ## License
 

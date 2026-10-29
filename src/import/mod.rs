@@ -1,11 +1,13 @@
 pub mod blean;
 mod importer;
 mod json;
+mod prelude;
 mod primitives;
 mod scan;
 
 use crate::export::ExportError;
 use crate::term::arena::Arena;
+use crate::term::decl::Declar;
 use crate::term::intern::Store;
 use importer::Importer;
 use std::fs::File;
@@ -75,4 +77,22 @@ pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
     let mut n = 0;
     im.lines(bytes, &mut n)?;
     im.finish_lines(n)
+}
+
+/// Rejects `target` unless every declaration the checkers reduce by name matches `reference`.
+pub fn check_prelude(target: &Store<'_>, reference: &Store<'_>) -> Result<()> {
+    prelude::compare(target, reference)
+}
+
+/// Rejects `store` if it declares an axiom outside `permitted`.
+pub fn check_axioms(store: &Store<'_>, permitted: &[String]) -> Result<()> {
+    for d in &store.declars {
+        if let Declar::Axiom(i) = d {
+            let name = i.name.to_string();
+            if !permitted.contains(&name) {
+                return invalid(format!("axiom {name} is not permitted"));
+            }
+        }
+    }
+    Ok(())
 }

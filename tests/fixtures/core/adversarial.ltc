@@ -1,0 +1,35 @@
+-- Shapes behind sokonanoda's soundness fixes. Every bad_ declaration is invalid.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+inductive List.{u} (A : Sort (u+1)) : Sort (u+1)
+  | List.nil : List A
+  | List.cons : A -> List A -> List A
+
+-- Unit-like eta only relates values of one type.
+inductive U1 : Type
+  | U1.mk : U1
+inductive U2 : Type
+  | U2.mk : U2
+axiom T : Type
+axiom h : forall (A : Type), A -> T
+def bad_unit : U1 := U2.mk
+theorem bad_unit_arg : Eq.{1} T (h U1 U1.mk) (h U2 U2.mk) := Eq.refl.{1} T (h U1 U1.mk)
+theorem unit_eta : forall (x : U1), Eq.{1} U1 x U1.mk := fun (x : U1) => Eq.refl.{1} U1 x
+
+-- Closures that share code but not universe substitutions differ.
+def G.{u} : Nat -> Prop := fun (n : Nat) => forall (x : Sort u) (y : x), Eq.{u} x y y
+axiom P : (Nat -> Prop) -> Prop
+axiom hp : P G.{0}
+theorem bad_closure : P G.{1} := hp
+theorem same_closure : P G.{0} := hp
+
+-- A nested inductive's auxiliary names never alias declared constants.
+axiom Rose._nested_1 : Type
+axiom Rose._nested_1.rec : Nat
+axiom Rose._nested_1.ctor_0 : Nat
+inductive Rose : Type
+  | Rose.node : List.{0} Rose -> Rose
+def leaf : Rose := Rose.node (List.nil.{0} Rose)

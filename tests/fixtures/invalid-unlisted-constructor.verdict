@@ -1,0 +1,3 @@
+reference: rejected: line 25: extraneous constructor
+fast: rejected: B: extraneous constructor
+value: rejected: B: extraneous constructor

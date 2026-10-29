@@ -7,8 +7,10 @@ use nano_lean::import::{self, blean};
 use nano_lean::term::{arena::Arena, intern::Store};
 use nano_lean::value_checker::{self, Session};
 use nano_lean::verdict::Core;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -20,6 +22,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
 const DEFAULT_STEPS: u64 = 200_000_000;
 const DEFAULT_ARENA_MIB: u32 = 2048;
+const CONFIG: &str = "nano-lean.toml";
 const MIB: usize = 1 << 20;
 const MAX_THREADS: i64 = 64;
 const WORKER_STACK_BYTES: usize = 256 << 20;
@@ -35,8 +38,11 @@ const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
 struct Cli {
     /// Export to check, or `-` for stdin
     path: Option<String>,
-    #[arg(short = 'j', long, default_value_t = 1, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
-    threads: u16,
+    /// Settings file, `nano-lean.toml` in the working directory by default
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    #[arg(short = 'j', long, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
+    threads: Option<u16>,
     /// Check only this declaration
     #[arg(long, value_name = "NAME")]
     declaration: Option<String>,
@@ -47,10 +53,10 @@ struct Cli {
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
     /// Work budget per declaration
-    #[arg(long, value_name = "N", default_value_t = DEFAULT_STEPS)]
-    steps: u64,
-    #[arg(long, value_name = "MIB", default_value_t = DEFAULT_ARENA_MIB)]
-    arena_mib: u32,
+    #[arg(long, value_name = "N")]
+    steps: Option<u64>,
+    #[arg(long, value_name = "MIB")]
+    arena_mib: Option<u32>,
     /// Stop after import
     #[arg(long)]
     import_only: bool,
@@ -62,6 +68,53 @@ struct Cli {
     /// Use the term core instead of the value core
     #[arg(long)]
     term_core: bool,
+    /// Reject the export unless its primitives match this trusted export
+    #[arg(long, value_name = "FILE")]
+    prelude: Option<PathBuf>,
+    /// Reject the export if it declares an axiom outside this list
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    axioms: Option<Vec<String>>,
+}
+
+/// The same settings as the flags, which override them.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    threads: Option<u16>,
+    steps: Option<u64>,
+    arena_mib: Option<u32>,
+    fallback: Option<bool>,
+    term_core: Option<bool>,
+    prelude: Option<PathBuf>,
+    axioms: Option<Vec<String>>,
+}
+
+fn config(path: Option<&Path>) -> Config {
+    let (path, explicit) = match path {
+        Some(p) => (p, true),
+        None => (Path::new(CONFIG), false),
+    };
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if explicit || e.kind() != io::ErrorKind::NotFound => {
+            eprintln!("{}: {e}", path.display());
+            process::exit(2)
+        }
+        Err(_) => return Config::default(),
+    };
+    let mut c: Config = toml::from_str(&text).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", path.display());
+        process::exit(2)
+    });
+    if c.threads
+        .is_some_and(|j| !(1..=MAX_THREADS).contains(&i64::from(j)))
+    {
+        eprintln!("{}: threads must be in 1..={MAX_THREADS}", path.display());
+        process::exit(2)
+    }
+    let dir = path.parent().unwrap_or(Path::new(""));
+    c.prelude = c.prelude.map(|p| dir.join(p));
+    c
 }
 
 struct Options {
@@ -73,6 +126,8 @@ struct Options {
     import_only: bool,
     trace: bool,
     native_only: bool,
+    prelude: Option<PathBuf>,
+    axioms: Option<Vec<String>>,
     core: Core,
     limits: Limits,
 }
@@ -91,28 +146,39 @@ fn names(file: &str) -> HashSet<String> {
 
 fn options() -> Options {
     let cli = Cli::parse();
+    let c = config(cli.config.as_deref());
     Options {
         path: cli.path.filter(|p| p != "-"),
-        threads: cli.threads.into(),
+        threads: cli.threads.or(c.threads).unwrap_or(1).into(),
         selected: cli.declaration,
         only: cli.only.as_deref().map(names),
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
         trace: cli.trace,
-        native_only: !cli.fallback,
-        core: if cli.term_core {
+        native_only: !(cli.fallback || c.fallback == Some(true)),
+        prelude: cli.prelude.or(c.prelude),
+        axioms: cli.axioms.or(c.axioms),
+        core: if cli.term_core || c.term_core == Some(true) {
             Core::Term
         } else {
             Core::Value
         },
         limits: Limits {
-            steps: cli.steps,
-            arena_bytes: cli.arena_mib as usize * MIB,
+            steps: cli.steps.or(c.steps).unwrap_or(DEFAULT_STEPS),
+            arena_bytes: cli.arena_mib.or(c.arena_mib).unwrap_or(DEFAULT_ARENA_MIB) as usize * MIB,
         },
     }
 }
 
-fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
+fn exit_on(e: &ExportError) -> ! {
+    println!("{e}");
+    process::exit(match e {
+        ExportError::Invalid(_) => 1,
+        ExportError::Unsupported(_) => 2,
+    })
+}
+
+fn load<'a>(arena: &'a Arena, path: Option<&Path>) -> Store<'a> {
     let imported = match path {
         Some(p) => import::import(arena, p),
         None => {
@@ -128,20 +194,14 @@ fn load<'a>(arena: &'a Arena, path: Option<&str>) -> Store<'a> {
             }
         }
     };
-    imported.unwrap_or_else(|e| {
-        println!("{e}");
-        process::exit(match e {
-            ExportError::Invalid(_) => 1,
-            ExportError::Unsupported(_) => 2,
-        })
-    })
+    imported.unwrap_or_else(|e| exit_on(&e))
 }
 
 fn main() {
     let o = options();
     let t = Instant::now();
     let arena = Arena::new();
-    let store = load(&arena, o.path.as_deref());
+    let store = load(&arena, o.path.as_deref().map(Path::new));
     // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
     // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
     unsafe {
@@ -158,6 +218,14 @@ fn main() {
         s.names,
         s.levels
     );
+    if let Some(p) = &o.prelude {
+        let arena = Arena::new();
+        let reference = load(&arena, Some(p));
+        import::check_prelude(&store, &reference).unwrap_or_else(|e| exit_on(&e));
+    }
+    if let Some(a) = &o.axioms {
+        import::check_axioms(&store, a).unwrap_or_else(|e| exit_on(&e));
+    }
     if o.import_only {
         return;
     }

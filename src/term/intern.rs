@@ -298,6 +298,10 @@ macro_rules! names {
                 $($(if let Some(n) = names.$field { n.set_nat_red(NatRed::$red); })?)*
                 names
             }
+
+            pub fn all(&self) -> Vec<(&'static str, Option<NamePtr<'a>>)> {
+                vec![$(($path, self.$field),)*]
+            }
         }
     };
 }

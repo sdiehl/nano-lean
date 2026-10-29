@@ -194,3 +194,51 @@ fn fast_checks_every_declaration_and_selected_blocks() {
         "{rec}"
     );
 }
+
+#[test]
+fn prelude_rejects_a_forged_primitive() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let reference = format!("{dir}/prelude/nat-add.ndjson");
+    let run = |target: &str| {
+        Command::new(env!("CARGO_BIN_EXE_nl-fast"))
+            .args(["--prelude", &reference, target])
+            .output()
+            .unwrap()
+    };
+    let forged = run(&format!("{dir}/forged-nat-add.ndjson"));
+    assert_eq!(forged.status.code(), Some(1), "{forged:?}");
+    assert!(
+        String::from_utf8_lossy(&forged.stdout)
+            .contains("Nat.add differs from the trusted prelude")
+    );
+    assert!(run(&reference).status.success());
+}
+
+#[test]
+fn config_permits_axioms_and_flags_override_it() {
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/session-universe-scope.ndjson"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("nano-lean.toml");
+    std::fs::write(&config, "axioms = [\"propext\"]\n").unwrap();
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_nl-fast"))
+            .current_dir(dir.path())
+            .args(extra)
+            .arg(export)
+            .output()
+            .unwrap()
+    };
+    let denied = run(&[]);
+    assert_eq!(denied.status.code(), Some(1), "{denied:?}");
+    assert!(String::from_utf8_lossy(&denied.stdout).contains("axiom scopeGood is not permitted"));
+    assert!(
+        run(&["--import-only", "--axioms", "scopeGood,scopeBad"])
+            .status
+            .success()
+    );
+    std::fs::write(&config, "steps = 1\nthread = 2\n").unwrap();
+    assert_eq!(run(&[]).status.code(), Some(2));
+}

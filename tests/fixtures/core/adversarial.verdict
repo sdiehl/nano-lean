@@ -1,0 +1,5 @@
+reference: rejected: line 184: type mismatch:
+  expected: @["U1"]
+  inferred: @["U2"]
+fast: rejected: bad_unit: declaration type mismatch
+value: rejected: bad_unit: declaration type mismatch

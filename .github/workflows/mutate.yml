@@ -1,0 +1,59 @@
+# Weekly mutation campaign over every fixture and an export of nested inductive shapes,
+# with seeds that rotate per run.
+
+name: Mutation campaign
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CARGO_BUILD_JOBS: 2
+      LEAN_TOOLCHAIN: leanprover/lean4:v4.34.1
+      EXPORTER_VERSION: 0.2.0
+      SHAPES: rose_ex ArrTree OptList PairTree Even' Odd' Term VTree Deep SWrap Sig Univ Ex
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - run: cargo build --release --locked --bin nl-mutate
+      - name: Export nested shapes
+        run: |
+          root=$PWD
+          export ELAN_HOME=$root/.ci/elan PATH=$root/.ci/elan/bin:$PATH
+          mkdir -p .ci/shapes
+          curl --fail --location --retry 3 -o .ci/elan-init.sh \
+            https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh
+          bash .ci/elan-init.sh -y --default-toolchain none
+          elan toolchain install "$LEAN_TOOLCHAIN"
+          cargo install olean-export --version "=$EXPORTER_VERSION" --locked -j 2 --root .ci/exporter
+          cp tests/fixtures/mutate/NestedShapes.lean .ci/shapes/
+          cd .ci/shapes
+          elan run "$LEAN_TOOLCHAIN" lean -o NestedShapes.olean NestedShapes.lean
+          args=()
+          for c in $SHAPES; do args+=(-c "$c"); done
+          LEAN_PATH="$(elan run "$LEAN_TOOLCHAIN" lean --print-prefix)/lib/lean:." \
+            "$root/.ci/exporter/bin/olean-export" NestedShapes "${args[@]}" -q -o nested-shapes.ndjson
+      - name: Mutate
+        run: |
+          status=0
+          for f in tests/fixtures/*.ndjson .ci/shapes/nested-shapes.ndjson; do
+            for k in 0 1 2; do
+              seed=$(( GITHUB_RUN_NUMBER * 3 + k + 100 ))
+              echo "== $f seed $seed"
+              ./target/release/nl-mutate --seed "$seed" --per-op 200 --out mutants "$f" || status=1
+            done
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mutants-${{ github.run_number }}
+          path: mutants
