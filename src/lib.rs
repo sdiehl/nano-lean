@@ -8,6 +8,7 @@ pub mod kernel;
 pub mod level;
 mod lexer;
 pub mod mutate;
+pub mod parallel;
 pub mod parser;
 #[cfg(feature = "profile")]
 mod profile;

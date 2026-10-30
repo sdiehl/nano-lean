@@ -1,10 +1,8 @@
-mod parallel;
-
 use clap::{ArgGroup, Parser};
 use nano_lean::{
     Environment, emit,
     export::{ExportError, Report, check_export, check_export_file, check_export_file_shard},
-    parser,
+    parallel, parser,
 };
 use std::{
     error::Error,

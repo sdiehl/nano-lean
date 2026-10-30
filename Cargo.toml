@@ -6,10 +6,6 @@ default-run = "nl-ref"
 description = "A small dependent type checker built with unbound"
 license = "MIT"
 
-[[bin]]
-name = "nl-ref"
-path = "src/main.rs"
-
 [features]
 profile = []
 vstats = []

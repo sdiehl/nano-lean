@@ -8,10 +8,10 @@ A minimalist (but complete) parallel Lean type checker in Rust built on [unbound
 
 The package providers four binaries:
 
-- `nl-fast`: the main fast typechecker
-- `nl-ref`: reference kernel for checking core-syntax files and exports
-- `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict
-- `nl-watch`: a fast cached build watch tool for Lake projects
+- [`nl-fast`](src/bin/nl-fast.rs): the main fast typechecker
+- [`nl-ref`](src/bin/nl-ref.rs): reference kernel for checking core-syntax files and exports
+- [`nl-mutate`](src/bin/nl-mutate.rs): mutation tester that edits an export and diffs every checker's verdict
+- [`nl-watch`](src/bin/nl-watch.rs): a fast cached build watch tool for Lake projects
 
 Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
 

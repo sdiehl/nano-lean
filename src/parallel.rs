@@ -1,4 +1,4 @@
-use nano_lean::export::{ExportReport, Report, ShardReport, TRACE_VAR, Trace};
+use crate::export::{ExportReport, Report, ShardReport, TRACE_VAR, Trace};
 use serde_json::Value;
 use std::{
     env,
