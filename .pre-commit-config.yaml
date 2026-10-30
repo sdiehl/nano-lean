@@ -19,3 +19,15 @@ repos:
         language: system
         files: \.(rs|lalrpop|ndjson|ltc)$|^Cargo\.(toml|lock)$
         pass_filenames: false
+      - id: ruff-format
+        name: ruff format
+        entry: uvx ruff format --check
+        language: system
+        types: [python]
+        files: ^benches/
+      - id: ruff-check
+        name: ruff check
+        entry: uvx ruff check
+        language: system
+        types: [python]
+        files: ^benches/

@@ -1,0 +1,18 @@
+-- Iota reduction: unary recursion through Nat.rec on literal majors, under names the kernel does not accelerate.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+def plus : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) m (fun (k : Nat) (ih : Nat) => Nat.succ ih) n
+def times : Nat -> Nat -> Nat :=
+  fun (m : Nat) (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) 0 (fun (k : Nat) (ih : Nat) => plus ih m) n
+def tri : Nat -> Nat :=
+  fun (n : Nat) => Nat.rec.{1} (fun (k : Nat) => Nat) 0 (fun (k : Nat) (ih : Nat) => plus ih (Nat.succ k)) n
+theorem times_0 : Eq.{1} Nat (times 30 30) (900) := Eq.refl.{1} Nat (900)
+theorem times_1 : Eq.{1} Nat (times 45 45) (2025) := Eq.refl.{1} Nat (2025)
+theorem times_2 : Eq.{1} Nat (times 60 60) (3600) := Eq.refl.{1} Nat (3600)
+theorem tri_0 : Eq.{1} Nat (tri 60) (1830) := Eq.refl.{1} Nat (1830)
+theorem tri_1 : Eq.{1} Nat (tri 90) (4095) := Eq.refl.{1} Nat (4095)
+theorem tri_2 : Eq.{1} Nat (tri 120) (7260) := Eq.refl.{1} Nat (7260)

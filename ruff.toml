@@ -1,0 +1,5 @@
+include = ["benches/**/*.py"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "PL", "RUF"]
+ignore = ["E501", "PLR2004"]

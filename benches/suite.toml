@@ -1,0 +1,205 @@
+# Benches for `cargo bench --bench kernel`. Paths are relative to this file.
+#
+# kind = "all"     every declaration in order on one session, as `nl-fast -j 1` checks
+# kind = "target"  one declaration on a fresh session: `declaration`, else the last one
+# kind = "import"  decoding the export into a store
+#
+# micro/ is committed. fixtures/ is filled by benches/fixtures.sh.
+
+[[bench]]
+name = "micro/church"
+file = "micro/church.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/recursor"
+file = "micro/recursor.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/literals"
+file = "micro/literals.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/delta"
+file = "micro/delta.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/lets"
+file = "micro/lets.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/eta"
+file = "micro/eta.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "micro/irrelevance"
+file = "micro/irrelevance.ltc"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "import/init"
+file = "fixtures/init.blean"
+kind = "import"
+reps = 5
+
+[[bench]]
+name = "corpus/init"
+file = "fixtures/init.blean"
+kind = "all"
+reps = 3
+
+[[bench]]
+name = "corpus/std"
+file = "fixtures/std.blean"
+kind = "all"
+reps = 3
+
+[[bench]]
+name = "closure/char-succ"
+file = "fixtures/char-succ.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/char-succ"
+file = "fixtures/char-succ.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/int32-size"
+file = "fixtures/int32-size.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/int32-size"
+file = "fixtures/int32-size.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/prev-aux"
+file = "fixtures/prev-aux.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/prev-aux"
+file = "fixtures/prev-aux.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/week-offset"
+file = "fixtures/week-offset.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/week-offset"
+file = "fixtures/week-offset.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/fin-insert"
+file = "fixtures/fin-insert.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/fin-insert"
+file = "fixtures/fin-insert.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/rat-encodable-instance"
+file = "fixtures/rat-encodable-instance.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/rat-encodable-instance"
+file = "fixtures/rat-encodable-instance.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "closure/uniform-prod"
+file = "fixtures/uniform-prod.blean"
+kind = "all"
+reps = 10
+
+[[bench]]
+name = "target/uniform-prod"
+file = "fixtures/uniform-prod.blean"
+kind = "target"
+reps = 30
+
+[[bench]]
+name = "arena/app-lam"
+file = "fixtures/app-lam.ndjson"
+kind = "all"
+reps = 5
+
+[[bench]]
+name = "arena/church-numerals"
+file = "fixtures/church-numerals.ndjson"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "arena/fueled-chain"
+file = "fixtures/fueled-chain.ndjson"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "arena/grind-ring-5"
+file = "fixtures/grind-ring-5.ndjson"
+kind = "all"
+reps = 5
+
+[[bench]]
+name = "arena/let-ladder"
+file = "fixtures/let-ladder.ndjson"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "arena/magma-list-deep-n21"
+file = "fixtures/magma-list-deep-n21.ndjson"
+kind = "all"
+reps = 5
+
+[[bench]]
+name = "arena/magma-list-pair-n7"
+file = "fixtures/magma-list-pair-n7.ndjson"
+kind = "all"
+reps = 5
+
+[[bench]]
+name = "arena/shared-subterm"
+file = "fixtures/shared-subterm.ndjson"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "arena/shift-cascade"
+file = "fixtures/shift-cascade.ndjson"
+kind = "all"
+reps = 20

@@ -1,0 +1,21 @@
+-- Beta reduction and closure application: Church numeral arithmetic normalized to s^n z.
+inductive Nat : Type
+  | Nat.zero : Nat
+  | Nat.succ : Nat -> Nat
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+axiom T : Type
+axiom s : T -> T
+axiom z : T
+def Ch : Sort 2 := forall (A : Type), (A -> A) -> A -> A
+def c2 : Ch := fun (A : Type) (f : A -> A) (x : A) => f (f x)
+def c3 : Ch := fun (A : Type) (f : A -> A) (x : A) => f (f (f x))
+def cadd : Ch -> Ch -> Ch := fun (m : Ch) (n : Ch) (A : Type) (f : A -> A) (x : A) => m A f (n A f x)
+def cmul : Ch -> Ch -> Ch := fun (m : Ch) (n : Ch) (A : Type) (f : A -> A) => m A (n A f)
+def cexp : Ch -> Ch -> Ch := fun (m : Ch) (n : Ch) (A : Type) => n (A -> A) (m A)
+def c4 : Ch := cmul c2 c2
+def c8 : Ch := cmul c2 c4
+def c12 : Ch := cmul c3 c4
+theorem exp_mul : Eq.{1} T (cexp c2 c12 T s z) (cmul (cexp c2 c4) (cexp c2 c8) T s z) := Eq.refl.{1} T (cmul (cexp c2 c4) (cexp c2 c8) T s z)
+theorem exp_exp : Eq.{1} T (cexp c3 c8 T s z) (cmul (cexp c3 c4) (cexp c3 c4) T s z) := Eq.refl.{1} T (cmul (cexp c3 c4) (cexp c3 c4) T s z)
+theorem add_mul : Eq.{1} T (cadd (cexp c2 c12) (cexp c2 c12) T s z) (cexp c2 (cadd c12 (fun (A : Type) (f : A -> A) => f)) T s z) := Eq.refl.{1} T (cexp c2 (cadd c12 (fun (A : Type) (f : A -> A) => f)) T s z)
