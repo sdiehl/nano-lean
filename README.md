@@ -6,12 +6,14 @@
 
 A minimalist (but complete) parallel Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
 
-Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
+The package providers four binaries:
 
-- `nl-fast`: fast interned-term checker for Lean NDJSON and blean exports.
-- `nl-ref`: reference kernel for core-syntax files and exports.
-- `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict.
-- `nl-watch`: rebuilds a Lake project on every save and rechecks it in place, reloading only changed modules.
+- `nl-fast`: the main fast typechecker
+- `nl-ref`: reference kernel for checking core-syntax files and exports
+- `nl-mutate`: mutation tester that edits an export and diffs every checker's verdict
+- `nl-watch`: a fast cached build watch tool for Lake projects
+
+Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 timeouts.
 
 ```sh
 # Install nl-fast and nl-ref
@@ -42,9 +44,6 @@ nl-ref --emit FILE.ltc > FILE.ndjson
 
 # Mutate an export and report checker disagreements, shrinking each finding
 nl-mutate [--seed N] [--per-op N] [--op NAME] [--out DIR] FILE.ndjson
-
-# Run the tests (BLESS=1 regenerates golden .out and .verdict files)
-cargo test
 ```
 
 ## Checking Mathlib
@@ -130,6 +129,17 @@ Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/b
 
 See [docs/TRUST.md](docs/TRUST.md) for what the checkers trust and how `--prelude`, `--axioms` and the cache bound it.
 
+## Caching
+
+`--cache FILE` skips declarations a previous run accepted and records the new ones. Editing a declaration rechecks it and everything that depends on it, and a new checker version starts the file over.
+
+```sh
+nl-fast --cache mathlib.accepted mathlib.blean
+nl-fast --cache mathlib.accepted --cache-audit mathlib.blean  # recheck everything
+```
+
+In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` turns it off for one run.
+
 ## Configuration
 
 `nl-fast` reads `nano-lean.toml` from the working directory if one exists, or the file given with `--config`. Every key is optional and a flag on the command line overrides it. A relative `prelude` or `cache` path resolves against the file's directory.
@@ -147,17 +157,6 @@ cache_audit = false
 ```
 
 Without the file the defaults are one thread, no prelude check, no axiom restriction and no cache.
-
-## Cache
-
-`--cache FILE` skips declarations a previous run accepted and records the new ones. Editing a declaration rechecks it and everything that depends on it, and a new checker version starts the file over.
-
-```sh
-nl-fast --cache mathlib.accepted mathlib.blean
-nl-fast --cache mathlib.accepted --cache-audit mathlib.blean  # recheck everything
-```
-
-In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` turns it off for one run. The cache file is trusted input, see [docs/TRUST.md](docs/TRUST.md).
 
 ## License
 
