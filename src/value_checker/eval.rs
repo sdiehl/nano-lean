@@ -133,13 +133,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let ls = self.ctx.subst_levels(levels, sub.ks, sub.vs);
                 self.mk(K::Neu(Head::Const(name, ls), &[]), false)
             }
-            Expr::App { .. } => {
+            Expr::App { .. } => 'app: {
                 let mut args = [e; SPINE];
                 let mut n = 0;
                 let mut f = e;
                 while let Expr::App { fun, arg, .. } = *f {
                     if n == SPINE {
-                        return self.eval_app_wide(env, sub, e);
+                        break 'app self.eval_app_wide(env, sub, e)?;
                     }
                     args[n] = arg;
                     n += 1;
