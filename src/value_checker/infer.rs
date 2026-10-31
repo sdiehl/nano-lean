@@ -1,4 +1,4 @@
-use super::value::{Clo, Env, Head, K, Sub, V, key};
+use super::value::{Clo, Env, Head, K, Sub, V};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::term::expr::Expr;
@@ -50,7 +50,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn type_of(&mut self, v: V<'t>) -> R<V<'t>> {
-        if let Some(&t) = self.t.type_of.get(&key(v)) {
+        if let Some(t) = self.memo(v).and_then(|m| m.ty.get()) {
             return Ok(t);
         }
         self.tick()?;
@@ -90,7 +90,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 t
             }
         };
-        self.t.type_of.insert(key(v), t);
+        self.memo_of(v).ty.set(Some(t));
         Ok(t)
     }
 

@@ -32,8 +32,9 @@ use stats::Stats;
 use stats::{bytes, stat};
 use std::fmt;
 use std::mem::{take, transmute};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use tables::{POOL, Tables};
-use value::{Head, K, Sub, V, Val};
+use value::{Head, K, Memo, Sub, V, Val};
 
 pub(crate) use decl::{RecCheck, check_recursor};
 pub use session::{BRIDGED, Session, check};
@@ -42,6 +43,8 @@ pub use stats::{RESETS, TOTAL, report};
 
 const ARENA_STRIDE_MASK: u64 = 1023;
 const INCLUDED_MAX: usize = 8;
+
+static EPOCH: AtomicU32 = AtomicU32::new(0);
 
 struct Vc<'t, 'a: 't> {
     pub ctx: Ctx<'t, 'a>,
@@ -66,6 +69,8 @@ struct Vc<'t, 'a: 't> {
     /// Set while a rule is derived over locals whose types are placeholders.
     deriving: bool,
     derivations: u32,
+    /// Tags the memos this checker writes on values, so older ones read as absent.
+    epoch: u32,
     #[cfg(feature = "vstats")]
     pub stats: Stats,
     #[cfg(feature = "vstats")]
@@ -84,10 +89,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let mut ctx = Ctx::new(store, arena);
         let e = ctx.levels(&[]);
         let z = ctx.zero();
-        let dummy = arena.alloc(Val {
-            k: K::Sort(z),
-            open: false,
-        });
+        let dummy = arena.alloc(Val::new(K::Sort(z), false));
         Self {
             names: store.names,
             ctx,
@@ -113,10 +115,33 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             fail: None,
             deriving: false,
             derivations: 0,
+            epoch: EPOCH.fetch_add(1, Relaxed).wrapping_add(1),
             #[cfg(feature = "vstats")]
             stats: Stats::default(),
             #[cfg(feature = "vstats")]
             unfolded: Default::default(),
+        }
+    }
+
+    #[inline(always)]
+    fn memo(&self, v: V<'t>) -> Option<&'t Memo<'t>> {
+        v.memo.get().filter(|m| m.epoch.get() == self.epoch)
+    }
+
+    fn memo_of(&mut self, v: V<'t>) -> &'t Memo<'t> {
+        match v.memo.get() {
+            Some(m) => {
+                if m.epoch.get() != self.epoch {
+                    m.reset(self.epoch);
+                }
+                m
+            }
+            None => {
+                let m = &*self.ctx.arena.alloc(Memo::default());
+                m.epoch.set(self.epoch);
+                v.memo.set(Some(m));
+                m
+            }
         }
     }
 
@@ -224,10 +249,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         // Ids are never reused, so interning could only miss.
         stat!(self, vals);
         bytes!(self, b_val, size_of::<Val>());
-        self.ctx.arena.alloc(Val {
-            k: K::Neu(Head::Local(id, ty, val), &[]),
-            open: true,
-        })
+        self.ctx
+            .arena
+            .alloc(Val::new(K::Neu(Head::Local(id, ty, val), &[]), true))
     }
 
     pub(crate) fn konst0(&mut self, n: Option<NamePtr<'t>>) -> R<V<'t>> {

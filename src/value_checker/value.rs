@@ -8,6 +8,37 @@ pub struct Val<'t> {
     pub k: K<'t>,
     /// May mention a local, over-approximated through closure environments.
     pub open: bool,
+    pub memo: Cell<Option<&'t Memo<'t>>>,
+}
+
+impl<'t> Val<'t> {
+    pub fn new(k: K<'t>, open: bool) -> Self {
+        Self {
+            k,
+            open,
+            memo: Cell::new(None),
+        }
+    }
+}
+
+/// Results cached on a value, valid only for the checker whose generation they carry.
+#[derive(Default)]
+pub struct Memo<'t> {
+    pub epoch: Cell<u32>,
+    pub whnf_core: Cell<Option<V<'t>>>,
+    pub whnf: Cell<Option<V<'t>>>,
+    pub unfold: Cell<Option<Option<V<'t>>>>,
+    pub ty: Cell<Option<V<'t>>>,
+}
+
+impl Memo<'_> {
+    pub fn reset(&self, epoch: u32) {
+        self.epoch.set(epoch);
+        self.whnf_core.set(None);
+        self.whnf.set(None);
+        self.unfold.set(None);
+        self.ty.set(None);
+    }
 }
 
 #[derive(Clone, Copy)]

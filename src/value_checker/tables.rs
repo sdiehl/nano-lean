@@ -72,10 +72,6 @@ pub(super) struct Tables<'t> {
     /// Closed results with the parameter list they relied on, valid under any list including it.
     pub(super) infer_closed: [FxHashMap<(ExprPtr<'t>, Sub<'t>), (V<'t>, LevelsPtr<'t>)>; 2],
     pub(super) infer_open: [Logged<(ExprPtr<'t>, Sub<'t>, usize), V<'t>>; 2],
-    pub(super) type_of: Logged<usize, V<'t>>,
-    pub(super) whnf_core_cache: Lossy<usize, V<'t>>,
-    pub(super) whnf_cache: Lossy<usize, V<'t>>,
-    pub(super) unfold_cache: Lossy<usize, Option<V<'t>>>,
     pub(super) eq_cache: LoggedSet<(usize, usize)>,
     pub(super) fail_cache: LoggedSet<(usize, usize)>,
     /// Pairs decided unequal, smaller key first.
@@ -155,9 +151,6 @@ impl Tables<'_> {
             self.infer_closed[0],
             self.infer_closed[1]
         );
-        self.type_of.empty(keep);
-        self.whnf_core_cache.empty(keep);
-        self.whnf_cache.empty(keep);
         for l in [
             &mut self.eq_cache,
             &mut self.fail_cache,
@@ -167,7 +160,6 @@ impl Tables<'_> {
         }
         self.conv_locals.empty(keep);
         self.eval_memo.empty(keep);
-        self.unfold_cache.empty(keep);
         self.infer_open.iter_mut().for_each(|l| l.empty(keep));
         self.hc.iter_mut().for_each(|l| l.empty(keep));
         self.envs.iter_mut().for_each(|l| l.empty(keep));
@@ -370,15 +362,6 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
     pub(super) fn probe(&self, k: &K) -> Result<&V, u64> {
         let h = fx(k);
         self.find(h, k).ok_or(h)
-    }
-
-    #[inline]
-    pub(super) fn get<Q>(&self, q: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        self.find(fx(q), q)
     }
 
     #[inline]
@@ -596,10 +579,6 @@ impl Tables<'_> {
             "infer_closed1" self.infer_closed[1],
             "infer_open0" self.infer_open[0],
             "infer_open1" self.infer_open[1],
-            "type_of" self.type_of,
-            "whnf_core_cache" self.whnf_core_cache,
-            "whnf_cache" self.whnf_cache,
-            "unfold_cache" self.unfold_cache,
             "eq_cache" self.eq_cache,
             "fail_cache" self.fail_cache,
             "neq_cache" self.neq_cache,

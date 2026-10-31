@@ -92,7 +92,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if open && matches!(k, K::Pi(..)) {
             stat!(self, vals);
             bytes!(self, b_val, size_of::<Val>());
-            return self.ctx.arena.alloc(Val { k, open });
+            return self.ctx.arena.alloc(Val::new(k, open));
         }
         match k {
             K::Nat(n) => return self.nat(n.clone()),
@@ -121,7 +121,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         #[cfg(feature = "vstats")]
         self.stats.mk_kind(kind, false);
-        let v = self.ctx.arena.alloc(Val { k, open });
+        let v = self.ctx.arena.alloc(Val::new(k, open));
         hc.insert(h, v);
         bytes!(self, b_val, size_of::<Val>());
         stat!(self, vals);
@@ -184,10 +184,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, vals);
         bytes!(self, b_val, size_of::<Val>());
         bytes!(self, b_spine, size_of_val(all));
-        let v = self.ctx.arena.alloc(Val {
-            k: K::Neu(h, all),
-            open,
-        });
+        let v = self.ctx.arena.alloc(Val::new(K::Neu(h, all), open));
         if open && self.t.neu_log.len() < LOG {
             self.t.neu_log.push((hash, v));
         }

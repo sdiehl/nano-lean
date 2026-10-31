@@ -1,6 +1,6 @@
 use super::derive::HOT;
 use super::tables::Hot;
-use super::value::{Head, K, V, Val, key};
+use super::value::{Head, K, V, Val};
 use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};
@@ -31,7 +31,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if matches!(h, Head::Local(_, _, None)) {
             return Ok(v);
         }
-        if let Some(&r) = self.t.whnf_core_cache.get(&key(v)) {
+        if let Some(r) = self.memo(v).and_then(|m| m.whnf_core.get()) {
             return Ok(r);
         }
         self.tick()?;
@@ -54,7 +54,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             Head::Local(_, _, None) => unreachable!(),
         };
-        self.t.whnf_core_cache.insert(key(v), r);
+        self.memo_of(v).whnf_core.set(Some(r));
         Ok(r)
     }
 
@@ -68,7 +68,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             | K::Str(_) => return Ok(v),
             _ => {}
         }
-        if let Some(&r) = self.t.whnf_cache.get(&key(v)) {
+        if let Some(r) = self.memo(v).and_then(|m| m.whnf.get()) {
             return Ok(r);
         }
         stat!(self, whnfs);
@@ -76,7 +76,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let mut path = SmallVec::<[V<'t>; 8]>::new();
         let r = loop {
             self.tick()?;
-            if let Some(&r) = self.t.whnf_cache.get(&key(t)) {
+            if let Some(r) = self.memo(t).and_then(|m| m.whnf.get()) {
                 break r;
             }
             path.push(t);
@@ -93,7 +93,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
         };
         for p in path {
-            self.t.whnf_cache.insert(key(p), r);
+            self.memo_of(p).whnf.set(Some(r));
         }
         Ok(r)
     }
@@ -111,12 +111,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// still sees the same-head states it compares by arguments, and fired results stay out of
     /// the cache for the same reason.
     pub(crate) fn unfold(&mut self, v: V<'t>, rules: bool) -> R<Option<V<'t>>> {
-        if let Some(&r) = self.t.unfold_cache.get(&key(v)) {
+        if let Some(r) = self.memo(v).and_then(|m| m.unfold.get()) {
             return Ok(r);
         }
         let (r, fired) = self.unfold_uncached(v, rules)?;
         if !fired {
-            self.t.unfold_cache.insert(key(v), r);
+            self.memo_of(v).unfold.set(Some(r));
         }
         Ok(r)
     }
@@ -356,10 +356,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             size_of::<Val>() + size_of::<BigUint>() + n.bits().div_ceil(64) as usize * 8
         );
         let p = self.ctx.arena.alloc_nat(n.clone());
-        let v = &*self.ctx.arena.alloc(Val {
-            k: K::Nat(p),
-            open: false,
-        });
+        let v = &*self.ctx.arena.alloc(Val::new(K::Nat(p), false));
         self.t.nats.insert(n, v);
         v
     }
