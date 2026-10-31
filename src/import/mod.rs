@@ -155,7 +155,8 @@ fn import_lines<'a>(
             im.batch(&b, &mut carry, &mut n)
         });
         pipe.close();
-        r.and_then(|()| im.raw_line(&carry, &mut n)).map(|()| n)
+        r.and_then(|()| im.raw_line(&carry, carry.len(), &mut n))
+            .map(|()| n)
     })?;
     im.finish_lines(n)
 }

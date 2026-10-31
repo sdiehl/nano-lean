@@ -17,15 +17,17 @@ pub enum Line {
 
 /// Value and length of a leading run of at most 15 digits, read eight bytes at
 /// a time. None when the run is longer or too near the end to load a word.
-#[inline]
+#[inline(always)]
 fn digits(b: &[u8]) -> Option<(u64, usize)> {
     let (hi, n) = chunk(b)?;
     if n < 8 {
         return Some((hi, n));
     }
     let (lo, m) = chunk(&b[8..])?;
-    (m < 8).then(|| (hi * 10u64.pow(m as u32) + lo, 8 + m))
+    (m < 8).then(|| (hi * POW10[m] + lo, 8 + m))
 }
+
+const POW10: [u64; 8] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
 
 /// Multiplying by this broadcasts a byte to all lanes.
 const LANES: u64 = 0x0101_0101_0101_0101;
@@ -41,7 +43,7 @@ const BYTE_PAIRS: u64 = 0x00ff_00ff_00ff_00ff;
 const HALF_WORDS: u64 = 0x0000_ffff_0000_ffff;
 const LOW_WORD: u64 = 0x0000_0000_ffff_ffff;
 
-#[inline]
+#[inline(always)]
 fn chunk(b: &[u8]) -> Option<(u64, usize)> {
     let word = u64::from_le_bytes(*b.first_chunk::<8>()?);
     let values = word & LOW_NIBBLES;
@@ -62,13 +64,16 @@ fn chunk(b: &[u8]) -> Option<(u64, usize)> {
     Some((x, len))
 }
 
+/// `b` may run on past the line so word loads near its end stay in bounds, `len`
+/// is where the line stops.
 struct Cur<'b> {
     b: &'b [u8],
     i: usize,
+    len: usize,
 }
 
 impl<'b> Cur<'b> {
-    #[inline]
+    #[inline(always)]
     fn lit(&mut self, s: &[u8]) -> Option<()> {
         if self.b.get(self.i..self.i + s.len())? == s {
             self.i += s.len();
@@ -78,7 +83,7 @@ impl<'b> Cur<'b> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn u64(&mut self) -> Option<u64> {
         let start = self.i;
         let n = match digits(&self.b[start..]) {
@@ -103,7 +108,7 @@ impl<'b> Cur<'b> {
         Some(n)
     }
 
-    #[inline]
+    #[inline(always)]
     fn u32(&mut self) -> Option<u32> {
         u32::try_from(self.u64()?).ok()
     }
@@ -159,7 +164,7 @@ impl<'b> Cur<'b> {
     }
 
     fn end(&self) -> Option<()> {
-        let rest = &self.b[self.i..];
+        let rest = self.b.get(self.i..self.len)?;
         (rest.is_empty() || rest == b"\r").then_some(())
     }
 }
@@ -184,7 +189,7 @@ impl Batch {
             let mut s = first + 1;
             for e in memchr::memchr_iter(b'\n', &buf[s..=last]).map(|e| e + first + 1) {
                 if e > s {
-                    let l = fast(&buf[s..e], &mut scratch);
+                    let l = fast(&buf[s..], e - s, &mut scratch);
                     if let Some(Line::Const(..)) = l {
                         us.push(scratch.len() as u32);
                         us.extend_from_slice(&scratch);
@@ -203,8 +208,8 @@ impl Batch {
     }
 }
 
-pub fn fast(b: &[u8], scratch: &mut Vec<u32>) -> Option<Line> {
-    let mut c = Cur { b, i: 0 };
+pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<Line> {
+    let mut c = Cur { b, i: 0, len };
     let r = match (b.get(2)?, b.get(3)?) {
         (b'a', _) => {
             c.lit(b"{\"app\":{\"arg\":")?;
@@ -357,13 +362,21 @@ mod tests {
     use super::Cur;
 
     fn slow(b: &[u8]) -> Option<(u64, usize)> {
-        let mut c = Cur { b, i: 0 };
+        let mut c = Cur {
+            b,
+            i: 0,
+            len: b.len(),
+        };
         let n = c.u64_slow()?;
         (c.i > 0 && (c.i == 1 || b[0] != b'0')).then_some((n, c.i))
     }
 
     fn fast(b: &[u8]) -> Option<(u64, usize)> {
-        let mut c = Cur { b, i: 0 };
+        let mut c = Cur {
+            b,
+            i: 0,
+            len: b.len(),
+        };
         c.u64().map(|n| (n, c.i))
     }
 

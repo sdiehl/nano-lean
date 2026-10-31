@@ -127,9 +127,9 @@ impl<'a> Importer<'a> {
     pub(super) fn lines(&mut self, bytes: &[u8], n: &mut usize) -> Result<()> {
         let mut start = 0;
         for end in memchr::memchr_iter(b'\n', bytes).chain([bytes.len()]) {
-            let line = &bytes[start..end];
+            let line = &bytes[start..];
+            self.raw_line(line, end - start, n)?;
             start = end + 1;
-            self.raw_line(line, n)?;
         }
         Ok(())
     }
@@ -311,8 +311,10 @@ impl<'a> Importer<'a> {
         self.add_expr(i, mk::str(s))
     }
 
-    fn line(&mut self, b: &[u8], first: bool) -> Result<()> {
-        if !first && let Some(l) = scan::fast(b, &mut self.scratch) {
+    /// Only the first `len` bytes of `b` are the line, the rest give the scanner read slack.
+    #[inline(always)]
+    fn line(&mut self, b: &[u8], len: usize, first: bool) -> Result<()> {
+        if !first && let Some(l) = scan::fast(b, len, &mut self.scratch) {
             if let Line::Const(i, n) = l {
                 let us = std::mem::take(&mut self.scratch);
                 let r = self.do_const(i, n, &us);
@@ -321,13 +323,14 @@ impl<'a> Importer<'a> {
             }
             return self.apply(l, b);
         }
-        let v: Value = serde_json::from_slice(b)?;
+        let v: Value = serde_json::from_slice(&b[..len])?;
         self.general(&v, first)
     }
 
-    pub(super) fn raw_line(&mut self, b: &[u8], n: &mut usize) -> Result<()> {
-        if !b.is_empty() {
-            self.line(b, *n == 0).map_err(|e| e.at("line", *n))?;
+    #[inline(always)]
+    pub(super) fn raw_line(&mut self, b: &[u8], len: usize, n: &mut usize) -> Result<()> {
+        if len > 0 {
+            self.line(b, len, *n == 0).map_err(|e| e.at("line", *n))?;
             *n += 1;
         }
         Ok(())
@@ -341,7 +344,7 @@ impl<'a> Importer<'a> {
         };
         let mut head = std::mem::take(carry);
         head.extend_from_slice(&b.buf[..first]);
-        self.raw_line(&head, n)?;
+        self.raw_line(&head, head.len(), n)?;
         let mut us = &b.us[..];
         for &(s, e, l) in &b.lines {
             let raw = &b.buf[s as usize..e as usize];
@@ -371,7 +374,7 @@ impl<'a> Importer<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn apply(&mut self, l: Line, b: &[u8]) -> Result<()> {
         match l {
             Line::Str(i, pre, s, e) => match std::str::from_utf8(&b[s as usize..e as usize]) {
