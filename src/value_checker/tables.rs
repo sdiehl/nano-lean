@@ -343,6 +343,7 @@ impl<K, V> Default for Lossy<K, V> {
 
 const LOSSY_MIN: usize = 1 << 10;
 const LOSSY_MAX: usize = 1 << 20;
+const LOSSY_KEEP: usize = 1 << 16;
 
 impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
     #[inline]
@@ -411,7 +412,7 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
     }
 
     fn empty(&mut self, keep: usize) {
-        if self.slots.len() > keep {
+        if self.slots.len() > keep.max(LOSSY_KEEP) {
             self.slots = Vec::new();
             self.grow_at = 0;
         } else if self.live != 0 {
