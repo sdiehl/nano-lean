@@ -28,7 +28,7 @@ use crate::{ensure, reject};
 use smallvec::SmallVec;
 #[cfg(feature = "vstats")]
 use stats::Stats;
-use stats::stat;
+use stats::{bytes, stat};
 use std::fmt;
 use std::mem::{take, transmute};
 use tables::{POOL, Tables};
@@ -104,7 +104,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 .map_or_else(Default::default, |t| unsafe {
                     transmute::<Tables<'static>, Tables<'t>>(t)
                 }),
-            base: arena.allocated_bytes(),
+            base: arena.used_bytes(),
             floor: stack_floor(),
             fail: None,
             #[cfg(feature = "vstats")]
@@ -115,7 +115,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn used(&self) -> usize {
-        self.ctx.arena.allocated_bytes() - self.base
+        self.ctx.arena.used_bytes() - self.base
     }
 
     #[cold]
@@ -207,6 +207,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let id = self.next_local;
         // Ids are never reused, so interning could only miss.
         stat!(self, vals);
+        bytes!(self, b_val, size_of::<Val>());
         self.ctx.arena.alloc(Val {
             k: K::Neu(Head::Local(id, ty, val), &[]),
             open: true,

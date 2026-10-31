@@ -78,16 +78,12 @@ pub struct EnvNode<'t> {
     pub open: bool,
     pub depth: u32,
     pub len: u32,
-    pub prune: Prune<'t>,
 }
 
 pub struct Frame<'t> {
     pub vals: &'t [V<'t>],
     pub open: bool,
-    pub prune: Prune<'t>,
 }
-
-pub type Prune<'t> = Cell<(u32, Env<'t>)>;
 
 impl<'t> Env<'t> {
     pub const EMPTY: Self = Env(None);
@@ -118,27 +114,6 @@ impl<'t> Env<'t> {
                 }
                 View::Frame(f) => return f.vals.get(usize::from(i)).copied(),
             }
-        }
-    }
-
-    #[inline]
-    fn prune(self) -> Option<&'t Prune<'t>> {
-        match self.view() {
-            View::Nil => None,
-            View::Node(n) => Some(&n.prune),
-            View::Frame(f) => Some(&f.prune),
-        }
-    }
-
-    #[inline]
-    pub fn pruned(self, mask: u32) -> Option<Env<'t>> {
-        let (m, r) = self.prune()?.get();
-        (m == mask).then_some(r)
-    }
-
-    pub fn set_pruned(self, mask: u32, r: Env<'t>) {
-        if let Some(p) = self.prune() {
-            p.set((mask, r));
         }
     }
 

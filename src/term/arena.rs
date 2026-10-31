@@ -38,6 +38,12 @@ impl Arena {
             .saturating_add(self.nat_bytes.get())
     }
 
+    /// Bytes handed out, without the unused tail of the current chunk, which doubles in size
+    /// and is only touched as it fills.
+    pub fn used_bytes(&self) -> usize {
+        self.allocated_bytes() - self.bump.chunk_capacity()
+    }
+
     /// Bumped by every reset, so anything keyed to an older value is stale.
     pub fn epoch(&self) -> u64 {
         self.epoch

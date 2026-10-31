@@ -211,7 +211,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn check_in(&mut self, idx: u32) -> R<()> {
-        if self.ctx.arena.allocated_bytes() > self.limits.arena_bytes {
+        if self.ctx.arena.used_bytes() > self.limits.arena_bytes {
             return Err(self.decline(Budget::Arena));
         }
         self.infer_cache

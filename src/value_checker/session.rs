@@ -143,6 +143,8 @@ impl<'a> Session<'a> {
         }
         let result = vc.check(idx);
         #[cfg(feature = "vstats")]
+        vc.report_declaration(idx);
+        #[cfg(feature = "vstats")]
         TOTAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

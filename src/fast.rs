@@ -18,7 +18,7 @@ use std::{fs, io::ErrorKind};
 const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
 pub const CONFIG: &str = "nano-lean.toml";
 pub const DEFAULT_STEPS: u64 = 200_000_000;
-pub const DEFAULT_ARENA_MIB: u32 = 2048;
+pub const DEFAULT_ARENA_MIB: u32 = 3072;
 pub const MAX_THREADS: i64 = 64;
 const MIB: usize = 1 << 20;
 const WORKER_STACK_BYTES: usize = 256 << 20;

@@ -42,7 +42,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
         self.steps_left -= 1;
         if self.steps_left & ARENA_CHECK_MASK == 0
-            && self.ctx.arena.allocated_bytes() > self.limits.arena_bytes
+            && self.ctx.arena.used_bytes() > self.limits.arena_bytes
         {
             return Err(self.decline(Budget::Arena));
         }

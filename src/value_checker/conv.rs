@@ -367,10 +367,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 body = next;
                 consumed += 1;
             }
-            mask[..consumed].fill(false);
-            for j in self.slots(body) {
-                if let Some(i) = consumed.checked_sub(usize::from(j) + 1) {
-                    mask[i] = true;
+            if let Some(slots) = self.slots(body) {
+                mask[..consumed].fill(false);
+                for j in slots {
+                    if let Some(i) = consumed.checked_sub(usize::from(j) + 1) {
+                        mask[i] = true;
+                    }
                 }
             }
         }

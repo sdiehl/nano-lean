@@ -1,11 +1,12 @@
 use super::intern::Ptrs;
+use super::tables::fx;
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
-use super::{R, Vc, stat};
+use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
-use crate::term::FxHashMap;
 use crate::term::decl::Declar;
 use crate::term::expr::{Expr, WIDE};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -13,6 +14,7 @@ use std::ptr;
 use std::slice::Iter;
 
 const SHALLOW: u32 = 8;
+const EXACT: usize = 256;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn push(&mut self, env: Env<'t>, v: V<'t>) -> Env<'t> {
@@ -23,23 +25,24 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         {
             self.stats.push_open_req += u64::from(open);
         }
-        if let Some(&e) = self.t.envs[usize::from(open)].get(&k) {
-            return e;
-        }
+        let h = match self.t.envs[usize::from(open)].probe(&k) {
+            Ok(&e) => return e,
+            Err(h) => h,
+        };
         stat!(self, push_new);
         #[cfg(feature = "vstats")]
         {
             self.stats.push_open_new += u64::from(open);
         }
+        bytes!(self, b_env, size_of::<EnvObj>());
         let e = Env::new(self.ctx.arena.alloc(EnvObj::Node(EnvNode {
             head: v,
             tail: env,
             open,
             depth: env.depth() + 1,
             len: env.size() as u32 + 1,
-            prune: Cell::new((0, Env::EMPTY)),
         })));
-        self.t.envs[usize::from(open)].insert(k, e);
+        self.t.envs[usize::from(open)].insert_new(h, k, e);
         e
     }
 
@@ -178,16 +181,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn lazy(&mut self, env: Env<'t>, sub: Sub<'t>, ty: ExprPtr<'t>) -> &'t Lazy<'t> {
         let o = usize::from(env.open());
-        if let Some(&d) = self.t.lazies[o].get(&(env.key(), sub, ty)) {
+        let ek = env.key();
+        let h = fx(&(ek, sub, ty));
+        if let Some(d) =
+            self.t.lazies[o].find(h, |d| d.env.key() == ek && d.sub == sub && d.e == ty)
+        {
             return d;
         }
+        bytes!(self, b_lazy, size_of::<Lazy>());
         let d = &*self.ctx.arena.alloc(Lazy {
             env,
             sub,
             e: ty,
             val: Cell::new(None),
         });
-        self.t.lazies[o].insert((env.key(), sub, ty), d);
+        self.t.lazies[o].insert(h, d);
         d
     }
 
@@ -308,7 +316,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// Keep only the slots `e` reads, so closures equal up to unused captures share one value.
     pub(crate) fn trim(&mut self, env: Env<'t>, e: ExprPtr<'t>) -> R<Env<'t>> {
         stat!(self, trims);
-        let sup = self.slots(e);
+        let Some(sup) = self.slots(e) else {
+            return Ok(self.flatten(env));
+        };
         let Some((max, len)) = sup.bounds() else {
             return Ok(Env::EMPTY);
         };
@@ -321,7 +331,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Slots::Wide(_) => 0,
         };
         if mask != 0
-            && let Some(r) = env.pruned(mask)
+            && let Ok(&r) = self.t.prunes.probe(&(env.key(), mask))
         {
             return Ok(r);
         }
@@ -353,9 +363,25 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         ensure!(self, it.peek().is_none(), "unexpected bound variable");
         let r = self.frame(&buf);
         if mask != 0 {
-            env.set_pruned(mask, r);
+            self.t.prunes.insert((env.key(), mask), r);
         }
         Ok(r)
+    }
+
+    /// Exact support is quadratic down a binder ladder, so expressions past `EXACT` slots keep
+    /// every capture and only cap the chain depth.
+    fn flatten(&mut self, env: Env<'t>) -> Env<'t> {
+        if env.depth() <= SHALLOW {
+            return env;
+        }
+        let h = match self.t.prunes.probe(&(env.key(), WIDE)) {
+            Ok(&r) => return r,
+            Err(h) => h,
+        };
+        let buf: SmallVec<[V<'t>; 32]> = env.iter().collect();
+        let r = self.frame(&buf);
+        self.t.prunes.insert_new(h, (env.key(), WIDE), r);
+        r
     }
 
     fn frame(&mut self, vals: &[V<'t>]) -> Env<'t> {
@@ -366,12 +392,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return f;
         }
         stat!(self, frame_new);
+        bytes!(self, b_frame, size_of::<EnvObj>() + size_of_val(vals));
         let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
-        let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame {
-            vals,
-            open,
-            prune: Cell::new((0, Env::EMPTY)),
-        })));
+        let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame { vals, open })));
         self.t.frames[o].insert(Ptrs::new(vals), f);
         f
     }
@@ -405,8 +428,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
-    pub(crate) fn uses_arg(&mut self, c: Clo<'t>) -> bool {
-        !c.body.closed() && self.slots(c.body).next() == Some(0)
+    /// May answer true for a wide body, where exact support is quadratic down a ladder.
+    pub(crate) fn uses_arg(&self, c: Clo<'t>) -> bool {
+        !c.body.closed() && c.body.sup() & 1 != 0
+    }
+
+    pub(crate) fn reads_arg(&mut self, c: Clo<'t>) -> bool {
+        match self.slots(c.body) {
+            Some(mut s) => s.next() == Some(0),
+            None => mentions(c.body, 0, &mut FxHashSet::default()),
+        }
     }
 
     pub(crate) fn apply(&mut self, mut f: V<'t>, args: &[V<'t>]) -> R<V<'t>> {
@@ -455,7 +486,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(f)
     }
 
-    pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Slots<'t> {
+    /// None once a support passes `EXACT` slots.
+    pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Option<Slots<'t>> {
         #[cfg(debug_assertions)]
         if e.sup() != WIDE
             && let Some(naive) = naive_support(e, &mut 4096)
@@ -465,44 +497,49 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         match e.sup() {
             WIDE => {
                 stat!(self, sup_wide);
-                Slots::Wide(self.support_of(e).iter())
+                Some(Slots::Wide(self.support_of(e)?.iter()))
             }
             m => {
                 stat!(self, sup_mask);
-                Slots::Mask(m)
+                Some(Slots::Mask(m))
             }
         }
     }
 
-    fn support_of(&mut self, e: ExprPtr<'t>) -> &'t [u16] {
+    fn support_of(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
         }
+        let s = self.support_in(e);
+        self.t.support.insert(e, s);
+        s
+    }
+
+    fn support_in(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         stat!(self, sup_wide_new);
         let mut slots = Vec::new();
         match *e {
             Expr::Var { idx, .. } => slots.push(idx),
             Expr::App { fun, arg, .. } => {
-                slots.extend(self.slots(fun));
-                slots.extend(self.slots(arg));
+                slots.extend(self.slots(fun)?);
+                slots.extend(self.slots(arg)?);
             }
             Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-                slots.extend(self.slots(ty));
-                slots.extend(self.slots(body).filter_map(|i| i.checked_sub(1)));
+                slots.extend(self.slots(ty)?);
+                slots.extend(self.slots(body)?.filter_map(|i| i.checked_sub(1)));
             }
             Expr::Let { data, .. } => {
-                slots.extend(self.slots(data.ty));
-                slots.extend(self.slots(data.val));
-                slots.extend(self.slots(data.body).filter_map(|i| i.checked_sub(1)));
+                slots.extend(self.slots(data.ty)?);
+                slots.extend(self.slots(data.val)?);
+                slots.extend(self.slots(data.body)?.filter_map(|i| i.checked_sub(1)));
             }
-            Expr::Proj { e, .. } => slots.extend(self.slots(e)),
+            Expr::Proj { e, .. } => slots.extend(self.slots(e)?),
             _ => {}
         }
         slots.sort_unstable();
         slots.dedup();
-        let s = &*self.ctx.arena.alloc_slice_copy(&slots);
-        self.t.support.insert(e, s);
-        s
+        bytes!(self, b_sup, size_of_val(&slots[..]));
+        (slots.len() <= EXACT).then(|| &*self.ctx.arena.alloc_slice_copy(&slots))
     }
 
     pub(crate) fn const_type(&mut self, n: NamePtr<'t>, ls: LevelsPtr<'t>) -> R<V<'t>> {
@@ -546,6 +583,26 @@ impl Iterator for Slots<'_> {
             }),
             Slots::Wide(it) => it.next().copied(),
         }
+    }
+}
+
+fn mentions<'t>(e: ExprPtr<'t>, i: u16, seen: &mut FxHashSet<(ExprPtr<'t>, u16)>) -> bool {
+    if i >= e.nlb() || !seen.insert((e, i)) {
+        return false;
+    }
+    match *e {
+        Expr::Var { idx, .. } => idx == i,
+        Expr::App { fun, arg, .. } => mentions(fun, i, seen) || mentions(arg, i, seen),
+        Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
+            mentions(ty, i, seen) || mentions(body, i + 1, seen)
+        }
+        Expr::Let { data, .. } => {
+            mentions(data.ty, i, seen)
+                || mentions(data.val, i, seen)
+                || mentions(data.body, i + 1, seen)
+        }
+        Expr::Proj { e, .. } => mentions(e, i, seen),
+        _ => false,
     }
 }
 

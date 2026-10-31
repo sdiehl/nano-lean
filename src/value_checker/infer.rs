@@ -121,7 +121,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             let K::Pi(d, c) = self.whnf(r)?.k else {
                 reject!(self, "invalid projection")
             };
-            if self.uses_arg(c) {
+            if self.reads_arg(c) {
                 ensure!(self, !is_prop || self.is_prop(d)?, "invalid projection");
                 let p = self.proj(name, i, s);
                 r = self.inst(c, p)?;
@@ -150,6 +150,37 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             let x = vc.binder_local(dom);
             let env1 = vc.push(env, x);
             vc.infer(env1, sub, body, only)
+        })
+    }
+
+    /// Types `(fun x => body) a` by checking `body` once under a local and substituting `a`
+    /// into its type, so a ladder of redexes never re-infers the bodies below it.
+    fn infer_redex(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        ty: ExprPtr<'t>,
+        body: ExprPtr<'t>,
+        a: ExprPtr<'t>,
+    ) -> R<V<'t>> {
+        let s = self.infer(env, sub, ty, false)?;
+        self.ensure_sort(s)?;
+        let dom = self.eval(env, sub, ty)?;
+        let at = self.infer(env, sub, a, false)?;
+        ensure!(self, self.def_eq(at, dom)?, "application type mismatch");
+        let v = if !body.closed() && body.sup() & 1 != 0 {
+            Some(self.eval(env, sub, a)?)
+        } else {
+            None
+        };
+        self.restoring_depth(|vc| {
+            let x = vc.binder_local(dom);
+            let env1 = vc.push(env, x);
+            let t = vc.infer(env1, sub, body, false)?;
+            match v {
+                Some(v) => vc.zeta(x, v, t),
+                None => Ok(t),
+            }
         })
     }
 
@@ -258,8 +289,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     args.push(arg);
                     f = fun;
                 }
-                let mut ft = self.infer(env, sub, f, only)?;
-                for &a in args.iter().rev() {
+                let (mut ft, rest) = match *f {
+                    Expr::Lam { ty, body, .. } if !only => {
+                        let a = args.pop().expect("an application has an argument");
+                        (self.infer_redex(env, sub, ty, body, a)?, args)
+                    }
+                    _ => (self.infer(env, sub, f, only)?, args),
+                };
+                for &a in rest.iter().rev() {
                     self.tick()?;
                     let (d, c) = self.ensure_pi(ft)?;
                     if !only {

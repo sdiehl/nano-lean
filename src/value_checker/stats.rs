@@ -114,7 +114,14 @@ stats!(
     deq_same,
     closed_hit,
     closed_miss,
-    resets
+    resets,
+    b_val,
+    b_spine,
+    b_env,
+    b_frame,
+    b_lazy,
+    b_nat,
+    b_sup
 );
 
 #[cfg(feature = "vstats")]
@@ -164,12 +171,43 @@ impl Vc<'_, '_> {
             .iter()
             .map(|(n, c)| (*c, n.to_string()))
             .collect();
+        let s = &self.stats;
+        let own = [
+            s.b_val, s.b_spine, s.b_env, s.b_frame, s.b_lazy, s.b_nat, s.b_sup,
+        ];
+        eprintln!(
+            "  bytes val {} spine {} env {} frame {} lazy {} nat {} sup {} rest {} headroom {}",
+            s.b_val,
+            s.b_spine,
+            s.b_env,
+            s.b_frame,
+            s.b_lazy,
+            s.b_nat,
+            s.b_sup,
+            self.used().saturating_sub(own.iter().sum::<u64>() as usize),
+            self.ctx.arena.chunk_capacity()
+        );
+        let mut tables = self.t.footprint();
+        tables.sort_unstable_by_key(|t| std::cmp::Reverse(t.2));
+        for (name, len, bytes) in tables.iter().filter(|t| t.2 > 0) {
+            eprintln!("  table {name} {len} {bytes}");
+        }
         top.sort_unstable_by(|a, b| b.cmp(a));
         for (c, n) in top.iter().take(TOP_UNFOLDS) {
             eprintln!("  unfold {c} {n}");
         }
     }
 }
+
+macro_rules! bytes {
+    ($s:expr, $f:ident, $n:expr) => {
+        #[cfg(feature = "vstats")]
+        {
+            $s.stats.$f += ($n) as u64;
+        }
+    };
+}
+pub(crate) use bytes;
 
 macro_rules! stat {
     ($s:expr, $f:ident) => {

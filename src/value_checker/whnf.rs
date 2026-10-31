@@ -1,5 +1,5 @@
 use super::value::{Head, K, V, Val, key};
-use super::{R, Vc, stat};
+use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};
 use crate::reject;
@@ -289,6 +289,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(&v) = self.t.nats.get(&n) {
             return v;
         }
+        bytes!(
+            self,
+            b_nat,
+            size_of::<Val>() + size_of::<BigUint>() + n.bits().div_ceil(64) as usize * 8
+        );
         let p = self.ctx.arena.alloc_nat(n.clone());
         let v = &*self.ctx.arena.alloc(Val {
             k: K::Nat(p),

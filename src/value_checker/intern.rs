@@ -1,6 +1,6 @@
-use super::tables::LOG;
+use super::tables::{LOG, fx};
 use super::value::{Clo, Head, K, Lazy, Sub, V, Val, key};
-use super::{Vc, stat};
+use super::{Vc, bytes, stat};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use rustc_hash::FxBuildHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -14,6 +14,23 @@ pub(super) enum HKey<'t> {
     Const(NamePtr<'t>, LevelsPtr<'t>),
     Proj(NamePtr<'t>, u16, usize),
     Str(usize, usize),
+}
+
+/// The interning key of a value, recomputed so the table stores only the value.
+fn hkey<'t>(k: K<'t>) -> HKey<'t> {
+    let ck = |c: Clo<'t>| (c.env.key(), c.sub, c.body, c.typed);
+    match k {
+        K::Sort(l) => HKey::Sort(l),
+        K::Pi(d, c) => HKey::Pi(key(d), ck(c)),
+        K::Lam(d, c) => HKey::Lam(d as *const Lazy as usize, ck(c)),
+        K::Neu(h, _) => match h {
+            Head::Local(..) => unreachable!("locals are not interned"),
+            Head::Const(n, ls) => HKey::Const(n, ls),
+            Head::Proj(n, i, x) => HKey::Proj(n, i, key(x)),
+        },
+        K::Nat(_) => unreachable!("literals are interned by value"),
+        K::Str(x) => HKey::Str(x.as_ptr() as usize, x.len()),
+    }
 }
 
 fn head_eq<'t>(a: Head<'t>, b: Head<'t>) -> bool {
@@ -74,24 +91,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         // Open Pi values almost never recur, so probing for them only costs.
         if open && matches!(k, K::Pi(..)) {
             stat!(self, vals);
+            bytes!(self, b_val, size_of::<Val>());
             return self.ctx.arena.alloc(Val { k, open });
         }
-        let ck = |c: Clo<'t>| (c.env.key(), c.sub, c.body, c.typed);
-        let hk = match k {
-            K::Sort(l) => HKey::Sort(l),
-            K::Pi(d, c) => HKey::Pi(key(d), ck(c)),
-            K::Lam(d, c) => HKey::Lam(d as *const Lazy as usize, ck(c)),
-            K::Neu(h, a) => {
-                debug_assert!(a.is_empty());
-                match h {
-                    Head::Local(..) => unreachable!("locals are not interned"),
-                    Head::Const(n, ls) => HKey::Const(n, ls),
-                    Head::Proj(n, i, x) => HKey::Proj(n, i, key(x)),
-                }
-            }
+        match k {
             K::Nat(n) => return self.nat(n.clone()),
-            K::Str(x) => HKey::Str(x.as_ptr() as usize, x.len()),
-        };
+            K::Neu(_, a) => debug_assert!(a.is_empty()),
+            _ => {}
+        }
+        let hk = hkey(k);
         stat!(self, mk_req);
         #[cfg(feature = "vstats")]
         let kind = match (&hk, open) {
@@ -105,18 +113,17 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             (_, false) => 7,
         };
         let hc = &mut self.t.hc[usize::from(open)];
-        let h = match hc.probe(&hk) {
-            Ok(&v) => {
-                #[cfg(feature = "vstats")]
-                self.stats.mk_kind(kind, true);
-                return v;
-            }
-            Err(h) => h,
-        };
+        let h = fx(&hk);
+        if let Some(v) = hc.find(h, |v| hkey(v.k) == hk) {
+            #[cfg(feature = "vstats")]
+            self.stats.mk_kind(kind, true);
+            return v;
+        }
         #[cfg(feature = "vstats")]
         self.stats.mk_kind(kind, false);
         let v = self.ctx.arena.alloc(Val { k, open });
-        hc.insert_new(h, hk, v);
+        hc.insert(h, v);
+        bytes!(self, b_val, size_of::<Val>());
         stat!(self, vals);
         v
     }
@@ -160,6 +167,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.stats.spine_copied += n as u64;
         }
         stat!(self, vals);
+        bytes!(self, b_val, size_of::<Val>());
+        bytes!(self, b_spine, size_of_val(all));
         let v = self.ctx.arena.alloc(Val {
             k: K::Neu(h, all),
             open,
