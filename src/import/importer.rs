@@ -66,6 +66,10 @@ impl<T: Copy> Table<T> {
     #[inline]
     fn put(&mut self, i: u32, x: T) -> Result<()> {
         let k = i as usize;
+        if k == self.dense.len() && self.sparse.is_empty() {
+            self.dense.push(Some(x));
+            return Ok(());
+        }
         if !self.sparse.is_empty() || k >= self.dense.len() + MAX_GAP {
             return self.put_sparse(i, x);
         }
@@ -314,10 +318,10 @@ impl<'a> Importer<'a> {
     /// Only the first `len` bytes of `b` are the line, the rest give the scanner read slack.
     #[inline(always)]
     fn line(&mut self, b: &[u8], len: usize, first: bool) -> Result<()> {
-        if !first && let Some(l) = scan::fast(b, len, &mut self.scratch) {
-            if let Line::Const(i, n) = l {
+        if !first && let Some((l, _)) = scan::fast(b, len, &mut self.scratch) {
+            if l.listed() {
                 let us = std::mem::take(&mut self.scratch);
-                let r = self.do_const(i, n, &us);
+                let r = self.listed(l, &us);
                 self.scratch = us;
                 return r;
             }
@@ -349,13 +353,13 @@ impl<'a> Importer<'a> {
         for &(s, e, l) in &b.lines {
             let raw = &b.buf[s as usize..e as usize];
             let r = match l {
-                Some(Line::Const(i, c)) => {
+                Some(l) if l.listed() => {
                     let (now, rest) = us[1..].split_at(us[0] as usize);
                     us = rest;
                     if *n == 0 {
                         None
                     } else {
-                        Some(self.do_const(i, c, now))
+                        Some(self.listed(l, now))
                     }
                 }
                 Some(l) if *n != 0 => Some(self.apply(l, raw)),
@@ -374,6 +378,15 @@ impl<'a> Importer<'a> {
         Ok(())
     }
 
+    fn listed(&mut self, l: Line, us: &[u32]) -> Result<()> {
+        match l {
+            Line::Const(i, n) => self.do_const(i, n, us),
+            Line::Thm(n, ty, val) => self.do_thm(n, us, ty, val),
+            Line::Def(n, ty, val, h) => self.do_def(n, us, ty, val, h, "safe"),
+            _ => unreachable!("only listed lines carry a universe list"),
+        }
+    }
+
     #[inline(always)]
     fn apply(&mut self, l: Line, b: &[u8]) -> Result<()> {
         match l {
@@ -388,7 +401,9 @@ impl<'a> Importer<'a> {
             Line::App(i, f, a) => self.do_app(i, f, a),
             Line::Bvar(i, v) => self.do_bvar(i, v),
             Line::Sort(i, l) => self.do_sort(i, l),
-            Line::Const(..) => unreachable!("constants carry their universe list separately"),
+            Line::Const(..) | Line::Thm(..) | Line::Def(..) => {
+                unreachable!("listed lines carry their universe list separately")
+            }
             Line::Binder(i, name, ty, body, lam) => self.do_binder(i, name, ty, body, lam),
             Line::Let(i, name, ty, val, body, nondep) => {
                 self.do_let(i, name, ty, val, body, nondep)
@@ -409,7 +424,9 @@ impl<'a> Importer<'a> {
             .iter()
             .filter(|(i, _)| all.binary_search(i).is_err())
             .map(|(_, &e)| e);
+        let fresh = self.stats.expressions - self.aliases.len();
         self.dag.exprs.fill(
+            fresh,
             (0..)
                 .zip(&self.exprs.dense)
                 .filter(move |(i, _)| aliases.next_if_eq(i).is_none())

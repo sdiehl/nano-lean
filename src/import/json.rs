@@ -257,7 +257,7 @@ impl<'a> Importer<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn do_def(
+    pub(super) fn do_def(
         &mut self,
         name: u32,
         uparams: &[u32],
@@ -280,7 +280,7 @@ impl<'a> Importer<'a> {
         self.add_declar(Declar::Def(info, val, hint))
     }
 
-    fn do_thm(&mut self, name: u32, uparams: &[u32], ty: u32, val: u32) -> Result<()> {
+    pub(super) fn do_thm(&mut self, name: u32, uparams: &[u32], ty: u32, val: u32) -> Result<()> {
         let info = self.info(name, uparams, ty)?;
         let val = self.expr(val)?;
         self.add_declar(Declar::Thm(info, val))

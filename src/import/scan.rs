@@ -1,3 +1,5 @@
+use crate::term::decl::Hint;
+
 /// A scanned line. A string name holds the byte range of its text within the line.
 #[derive(Clone, Copy)]
 pub enum Line {
@@ -13,55 +15,73 @@ pub enum Line {
     Binder(u32, u32, u32, u32, bool),
     Let(u32, u32, u32, u32, u32, bool),
     Proj(u32, u32, u64, u32),
+    Thm(u32, u32, u32),
+    Def(u32, u32, u32, Hint),
+}
+
+impl Line {
+    /// Lines whose universe list rides separately, in the scratch vector.
+    pub fn listed(&self) -> bool {
+        matches!(self, Line::Const(..) | Line::Thm(..) | Line::Def(..))
+    }
 }
 
 /// Value and length of a leading run of at most 15 digits, read eight bytes at
 /// a time. None when the run is longer or too near the end to load a word.
 #[inline(always)]
 fn digits(b: &[u8]) -> Option<(u64, usize)> {
-    let (hi, n) = chunk(b)?;
+    let x = word(b)?;
+    let n = run(x);
     if n < 8 {
-        return Some((hi, n));
+        return Some((packed(x, n), n));
     }
-    let (lo, m) = chunk(&b[8..])?;
-    (m < 8).then(|| (hi * POW10[m] + lo, 8 + m))
+    let hi = packed(x, 8);
+    if !b.get(8)?.is_ascii_digit() {
+        return Some((hi, 8));
+    }
+    let y = word(&b[8..])?;
+    let m = run(y);
+    (m < 8).then(|| (hi * POW10[m] + packed(y, m), 8 + m))
 }
 
 const POW10: [u64; 8] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
 
 /// Multiplying by this broadcasts a byte to all lanes.
 const LANES: u64 = 0x0101_0101_0101_0101;
-const LOW_NIBBLES: u64 = 0x0f * LANES;
-const HIGH_NIBBLES: u64 = 0xf0 * LANES;
-/// High nibble of every ASCII digit, `b'0' & 0xf0`.
-const DIGIT_HIGH: u64 = 0x30 * LANES;
-/// Added to a low nibble, carries into the high nibble exactly when it exceeds 9.
-const ABOVE_NINE: u64 = 0x06 * LANES;
-const LOW_SEVEN_BITS: u64 = 0x7f * LANES;
-const TOP_BITS: u64 = 0x80 * LANES;
-const BYTE_PAIRS: u64 = 0x00ff_00ff_00ff_00ff;
-const HALF_WORDS: u64 = 0x0000_ffff_0000_ffff;
-const LOW_WORD: u64 = 0x0000_0000_ffff_ffff;
 
+/// Eight bytes with ASCII digits mapped to their values.
 #[inline(always)]
-fn chunk(b: &[u8]) -> Option<(u64, usize)> {
-    let word = u64::from_le_bytes(*b.first_chunk::<8>()?);
-    let values = word & LOW_NIBBLES;
-    let wrong_high = (word & HIGH_NIBBLES) ^ DIGIT_HIGH;
-    let too_big = (values + ABOVE_NINE) & HIGH_NIBBLES;
-    let not_digit = wrong_high | too_big;
-    let nonzero_lanes = (((not_digit & LOW_SEVEN_BITS) + LOW_SEVEN_BITS) | not_digit) & TOP_BITS;
-    let len = (nonzero_lanes.trailing_zeros() / 8) as usize;
-    if len == 0 {
-        return Some((0, 0));
+fn word(b: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(*b.first_chunk::<8>()?) ^ (0x30 * LANES))
+}
+
+/// Leading lanes below ten. A lane at or above ten sets its top bit, and carries
+/// out of a lane only disturb the lanes above it.
+#[inline(always)]
+fn run(x: u64) -> usize {
+    let above = (x.wrapping_add(0x76 * LANES) | x) & (0x80 * LANES);
+    if above == 0 {
+        8
+    } else {
+        (above.trailing_zeros() / 8) as usize
     }
-    // Left-align the digits so the first is most significant, then fold
-    // adjacent lanes: pairs of digits, then groups of four, then all eight.
-    let mut x = values << (64 - 8 * len);
-    x = (x * 10 + (x >> 8)) & BYTE_PAIRS;
-    x = (x * 100 + (x >> 16)) & HALF_WORDS;
-    x = (x * 10_000 + (x >> 32)) & LOW_WORD;
-    Some((x, len))
+}
+
+/// The first `n` lanes as a decimal number, folding digit pairs then halves.
+#[inline(always)]
+fn packed(x: u64, n: usize) -> u64 {
+    const PAIRS: u64 = 0x0000_00ff_0000_00ff;
+    const HIGH: u64 = 0x000f_4240_0000_0064;
+    const LOW: u64 = 0x0000_2710_0000_0001;
+    if n == 0 {
+        return 0;
+    }
+    let v = x << (64 - 8 * n);
+    let y = v.wrapping_mul(10).wrapping_add(v >> 8);
+    ((y & PAIRS)
+        .wrapping_mul(HIGH)
+        .wrapping_add(((y >> 16) & PAIRS).wrapping_mul(LOW)))
+        >> 32
 }
 
 /// `b` may run on past the line so word loads near its end stay in bounds, `len`
@@ -163,15 +183,17 @@ impl<'b> Cur<'b> {
         }
     }
 
-    fn end(&self) -> Option<()> {
-        let rest = self.b.get(self.i..self.len)?;
-        (rest.is_empty() || rest == b"\r").then_some(())
+    /// Where the line stops: `len`, or a newline after an optional carriage return.
+    fn end(&self) -> Option<usize> {
+        let j = self.i + usize::from(self.b.get(self.i) == Some(&b'\r'));
+        (j == self.len || self.b.get(j) == Some(&b'\n')).then_some(j)
     }
 }
 
 /// The whole lines of one chunk, scanned off the importing thread. The bytes before
 /// the first and after the last newline belong to lines split across chunks. Universe
 /// lists of constants follow each other in `us`, each prefixed by its length.
+#[derive(Default)]
 pub struct Batch {
     pub buf: Vec<u8>,
     pub body: Option<(usize, usize)>,
@@ -180,17 +202,31 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn scan(buf: Vec<u8>) -> Self {
-        let mut lines = Vec::with_capacity(buf.len() / 56);
-        let mut us = Vec::new();
+    /// Scans `buf`, reusing the line and universe vectors of an earlier batch.
+    pub fn scan(&mut self) {
+        let Self {
+            buf,
+            body,
+            lines,
+            us,
+        } = self;
+        lines.clear();
+        lines.reserve(buf.len() / 56);
+        us.clear();
         let mut scratch = Vec::new();
-        let body = memchr::memchr(b'\n', &buf).zip(memchr::memrchr(b'\n', &buf));
-        if let Some((first, last)) = body {
+        *body = memchr::memchr(b'\n', buf).zip(memchr::memrchr(b'\n', buf));
+        if let Some((first, last)) = *body {
             let mut s = first + 1;
-            for e in memchr::memchr_iter(b'\n', &buf[s..=last]).map(|e| e + first + 1) {
+            while s <= last {
+                let (l, e) = match fast(&buf[s..], usize::MAX, &mut scratch) {
+                    Some((l, e)) => (Some(l), s + e),
+                    None => (
+                        None,
+                        memchr::memchr(b'\n', &buf[s..=last]).map_or(last, |k| s + k),
+                    ),
+                };
                 if e > s {
-                    let l = fast(&buf[s..], e - s, &mut scratch);
-                    if let Some(Line::Const(..)) = l {
+                    if l.as_ref().is_some_and(Line::listed) {
                         us.push(scratch.len() as u32);
                         us.extend_from_slice(&scratch);
                     }
@@ -199,18 +235,63 @@ impl Batch {
                 s = e + 1;
             }
         }
-        Self {
-            buf,
-            body,
-            lines,
-            us,
-        }
     }
 }
 
-pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<Line> {
+/// The rest of a declaration whose group is just itself, with its universe list
+/// in `scratch`. Definitions read their hint and must be safe.
+#[inline]
+fn decl(
+    c: &mut Cur<'_>,
+    scratch: &mut Vec<u32>,
+    hint: Option<&mut Hint>,
+) -> Option<(u32, u32, u32)> {
+    let all = c.u32()?;
+    c.lit(b"]")?;
+    let def = hint.is_some();
+    if let Some(h) = hint {
+        c.lit(b",\"hints\":")?;
+        *h = if c.lit(b"\"abbrev\"").is_some() {
+            Hint::Abbrev
+        } else if c.lit(b"\"opaque\"").is_some() {
+            Hint::Opaque
+        } else {
+            c.lit(b"{\"regular\":")?;
+            let r = c.u32()?;
+            c.lit(b"}")?;
+            Hint::Regular(r)
+        };
+    }
+    c.lit(b",\"levelParams\":")?;
+    c.u32s(scratch)?;
+    c.lit(b",\"name\":")?;
+    let n = c.u32()?;
+    if def {
+        c.lit(b",\"safety\":\"safe\"")?;
+    }
+    c.lit(b",\"type\":")?;
+    let ty = c.u32()?;
+    c.lit(b",\"value\":")?;
+    let val = c.u32()?;
+    c.lit(b"}}")?;
+    (n == all).then_some((n, ty, val))
+}
+
+/// The line and where it stops. Pass `usize::MAX` as `len` to stop at the next newline.
+pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> {
     let mut c = Cur { b, i: 0, len };
     let r = match (b.get(2)?, b.get(3)?) {
+        (b't', _) => {
+            c.lit(b"{\"thm\":{\"all\":[")?;
+            let (n, ty, val) = decl(&mut c, scratch, None)?;
+            Line::Thm(n, ty, val)
+        }
+        (b'd', _) => {
+            c.lit(b"{\"def\":{\"all\":[")?;
+            let mut h = Hint::Opaque;
+            let (n, ty, val) = decl(&mut c, scratch, Some(&mut h))?;
+            Line::Def(n, ty, val, h)
+        }
         (b'a', _) => {
             c.lit(b"{\"app\":{\"arg\":")?;
             let a = c.u32()?;
@@ -340,8 +421,7 @@ pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<Line> {
         }
         _ => return None,
     };
-    c.end()?;
-    Some(r)
+    c.end().map(|e| (r, e))
 }
 
 fn binder(c: &mut Cur<'_>) -> Option<(u32, u32, u32)> {

@@ -58,6 +58,7 @@ const PAR_CHUNK: usize = 4 << 20;
 
 struct Ready {
     batches: FxHashMap<usize, Batch>,
+    spent: Vec<Batch>,
     consumed: usize,
     closed: bool,
 }
@@ -94,6 +95,16 @@ impl Pipe {
         b
     }
 
+    fn spare(&self) -> Batch {
+        let mut r = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        r.spent.pop().unwrap_or_default()
+    }
+
+    fn give(&self, b: Batch) {
+        let mut r = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        r.spent.push(b);
+    }
+
     fn close(&self) {
         self.ready
             .lock()
@@ -115,6 +126,7 @@ fn import_lines<'a>(
     let pipe = Pipe {
         ready: Mutex::new(Ready {
             batches: FxHashMap::default(),
+            spent: Vec::new(),
             consumed: 0,
             closed: false,
         }),
@@ -135,12 +147,14 @@ fn import_lines<'a>(
                         break;
                     }
                     let at = k * chunk;
-                    let mut buf = vec![0; chunk.min(len - at)];
-                    if let Err(e) = file.read_exact_at(&mut buf, at as u64) {
+                    let mut b = pipe.spare();
+                    b.buf.resize(chunk.min(len - at), 0);
+                    if let Err(e) = file.read_exact_at(&mut b.buf, at as u64) {
                         *failed.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
-                        buf.clear();
+                        b.buf.clear();
                     }
-                    if !pipe.put(k, Batch::scan(buf)) {
+                    b.scan();
+                    if !pipe.put(k, b) {
                         break;
                     }
                 }
@@ -152,7 +166,9 @@ fn import_lines<'a>(
             if let Some(e) = failed.lock().unwrap_or_else(PoisonError::into_inner).take() {
                 return Err(e.into());
             }
-            im.batch(&b, &mut carry, &mut n)
+            im.batch(&b, &mut carry, &mut n)?;
+            pipe.give(b);
+            Ok(())
         });
         pipe.close();
         r.and_then(|()| im.raw_line(&carry, carry.len(), &mut n))

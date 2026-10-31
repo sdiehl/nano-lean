@@ -85,8 +85,7 @@ impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
         r
     }
 
-    pub fn fill(&mut self, items: impl Iterator<Item = &'a T> + Clone) {
-        let n = items.clone().count();
+    pub fn fill(&mut self, n: usize, items: impl Iterator<Item = &'a T> + Clone) {
         self.0.reserve(n, |r| r.key_hash());
         let buckets = (self.0.capacity() * 8 / 7).next_power_of_two();
         let shift = buckets.trailing_zeros().saturating_sub(FILL_RADIX_BITS);
