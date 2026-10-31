@@ -1,4 +1,4 @@
-use super::scan::{self, Line};
+use super::scan::{self, Batch, Line};
 use super::{Result, invalid, unsupported};
 use crate::hash64;
 use crate::term::FxHashMap;
@@ -129,10 +129,7 @@ impl<'a> Importer<'a> {
         for end in memchr::memchr_iter(b'\n', bytes).chain([bytes.len()]) {
             let line = &bytes[start..end];
             start = end + 1;
-            if !line.is_empty() {
-                self.line(line, *n == 0).map_err(|e| e.at("line", *n))?;
-                *n += 1;
-            }
+            self.raw_line(line, n)?;
         }
         Ok(())
     }
@@ -315,34 +312,86 @@ impl<'a> Importer<'a> {
     }
 
     fn line(&mut self, b: &[u8], first: bool) -> Result<()> {
-        if !first {
-            match scan::fast(b, &mut self.scratch) {
-                Some(Line::Str(i, pre, s)) => return self.do_str(i, pre, s),
-                Some(Line::Num(i, pre, n)) => return self.do_num(i, pre, n),
-                Some(Line::Succ(i, l)) => return self.do_succ(i, l),
-                Some(Line::Max(i, a, c, imax)) => return self.do_max(i, a, c, imax),
-                Some(Line::Param(i, n)) => return self.do_param(i, n),
-                Some(Line::App(i, f, a)) => return self.do_app(i, f, a),
-                Some(Line::Bvar(i, v)) => return self.do_bvar(i, v),
-                Some(Line::Sort(i, l)) => return self.do_sort(i, l),
-                Some(Line::Const(i, n)) => {
-                    let us = std::mem::take(&mut self.scratch);
-                    let r = self.do_const(i, n, &us);
-                    self.scratch = us;
-                    return r;
-                }
-                Some(Line::Binder(i, name, ty, body, lam)) => {
-                    return self.do_binder(i, name, ty, body, lam);
-                }
-                Some(Line::Let(i, name, ty, val, body, nondep)) => {
-                    return self.do_let(i, name, ty, val, body, nondep);
-                }
-                Some(Line::Proj(i, n, idx, e)) => return self.do_proj(i, n, idx, e),
-                None => {}
+        if !first && let Some(l) = scan::fast(b, &mut self.scratch) {
+            if let Line::Const(i, n) = l {
+                let us = std::mem::take(&mut self.scratch);
+                let r = self.do_const(i, n, &us);
+                self.scratch = us;
+                return r;
             }
+            return self.apply(l, b);
         }
         let v: Value = serde_json::from_slice(b)?;
         self.general(&v, first)
+    }
+
+    pub(super) fn raw_line(&mut self, b: &[u8], n: &mut usize) -> Result<()> {
+        if !b.is_empty() {
+            self.line(b, *n == 0).map_err(|e| e.at("line", *n))?;
+            *n += 1;
+        }
+        Ok(())
+    }
+
+    /// Applies a scanned chunk, completing the line `carry` holds from earlier chunks.
+    pub(super) fn batch(&mut self, b: &Batch, carry: &mut Vec<u8>, n: &mut usize) -> Result<()> {
+        let Some((first, last)) = b.body else {
+            carry.extend_from_slice(&b.buf);
+            return Ok(());
+        };
+        let mut head = std::mem::take(carry);
+        head.extend_from_slice(&b.buf[..first]);
+        self.raw_line(&head, n)?;
+        let mut us = &b.us[..];
+        for &(s, e, l) in &b.lines {
+            let raw = &b.buf[s as usize..e as usize];
+            let r = match l {
+                Some(Line::Const(i, c)) => {
+                    let (now, rest) = us[1..].split_at(us[0] as usize);
+                    us = rest;
+                    if *n == 0 {
+                        None
+                    } else {
+                        Some(self.do_const(i, c, now))
+                    }
+                }
+                Some(l) if *n != 0 => Some(self.apply(l, raw)),
+                _ => None,
+            };
+            let r = r.unwrap_or_else(|| {
+                let v: Value = serde_json::from_slice(raw)?;
+                self.general(&v, *n == 0)
+            });
+            r.map_err(|e| e.at("line", *n))?;
+            *n += 1;
+        }
+        head.clear();
+        head.extend_from_slice(&b.buf[last + 1..]);
+        *carry = head;
+        Ok(())
+    }
+
+    #[inline]
+    fn apply(&mut self, l: Line, b: &[u8]) -> Result<()> {
+        match l {
+            Line::Str(i, pre, s, e) => match std::str::from_utf8(&b[s as usize..e as usize]) {
+                Ok(s) => self.do_str(i, pre, s),
+                Err(_) => invalid("invalid string"),
+            },
+            Line::Num(i, pre, n) => self.do_num(i, pre, n),
+            Line::Succ(i, l) => self.do_succ(i, l),
+            Line::Max(i, a, c, imax) => self.do_max(i, a, c, imax),
+            Line::Param(i, n) => self.do_param(i, n),
+            Line::App(i, f, a) => self.do_app(i, f, a),
+            Line::Bvar(i, v) => self.do_bvar(i, v),
+            Line::Sort(i, l) => self.do_sort(i, l),
+            Line::Const(..) => unreachable!("constants carry their universe list separately"),
+            Line::Binder(i, name, ty, body, lam) => self.do_binder(i, name, ty, body, lam),
+            Line::Let(i, name, ty, val, body, nondep) => {
+                self.do_let(i, name, ty, val, body, nondep)
+            }
+            Line::Proj(i, n, idx, e) => self.do_proj(i, n, idx, e),
+        }
     }
 
     pub(super) fn finish(mut self) -> Result<Store<'a>> {

@@ -142,9 +142,9 @@ fn exit_on(e: &ExportError) -> ! {
     })
 }
 
-fn load<'a>(arena: &'a Arena, path: Option<&Path>) -> Store<'a> {
+fn load<'a>(arena: &'a Arena, path: Option<&Path>, threads: usize) -> Store<'a> {
     let imported = match path {
-        Some(p) => import::import(arena, p),
+        Some(p) => import::import_with(arena, p, threads),
         None => {
             let mut stdin = io::stdin().lock();
             if stdin.fill_buf().is_ok_and(blean::sniff) {
@@ -192,7 +192,7 @@ fn main() {
             import::olean(&arena, &olean_export::search_path(), &roots)
                 .unwrap_or_else(|e| exit_on(&e))
         }
-        None => load(&arena, o.path.as_deref().map(Path::new)),
+        None => load(&arena, o.path.as_deref().map(Path::new), o.checks.threads),
     };
     // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
     // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
@@ -214,7 +214,7 @@ fn main() {
     }
     if let Some(p) = &o.prelude {
         let arena = Arena::new();
-        let reference = load(&arena, Some(p));
+        let reference = load(&arena, Some(p), 1);
         import::check_prelude(&store, &reference).unwrap_or_else(|e| exit_on(&e));
     }
     if let Some(a) = &o.axioms {

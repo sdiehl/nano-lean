@@ -1,5 +1,7 @@
-pub enum Line<'b> {
-    Str(u32, u32, &'b str),
+/// A scanned line. A string name holds the byte range of its text within the line.
+#[derive(Clone, Copy)]
+pub enum Line {
+    Str(u32, u32, u32, u32),
     Num(u32, u32, u64),
     Succ(u32, u32),
     Max(u32, u32, u32, bool),
@@ -162,7 +164,46 @@ impl<'b> Cur<'b> {
     }
 }
 
-pub fn fast<'b>(b: &'b [u8], scratch: &mut Vec<u32>) -> Option<Line<'b>> {
+/// The whole lines of one chunk, scanned off the importing thread. The bytes before
+/// the first and after the last newline belong to lines split across chunks. Universe
+/// lists of constants follow each other in `us`, each prefixed by its length.
+pub struct Batch {
+    pub buf: Vec<u8>,
+    pub body: Option<(usize, usize)>,
+    pub lines: Vec<(u32, u32, Option<Line>)>,
+    pub us: Vec<u32>,
+}
+
+impl Batch {
+    pub fn scan(buf: Vec<u8>) -> Self {
+        let mut lines = Vec::with_capacity(buf.len() / 56);
+        let mut us = Vec::new();
+        let mut scratch = Vec::new();
+        let body = memchr::memchr(b'\n', &buf).zip(memchr::memrchr(b'\n', &buf));
+        if let Some((first, last)) = body {
+            let mut s = first + 1;
+            for e in memchr::memchr_iter(b'\n', &buf[s..=last]).map(|e| e + first + 1) {
+                if e > s {
+                    let l = fast(&buf[s..e], &mut scratch);
+                    if let Some(Line::Const(..)) = l {
+                        us.push(scratch.len() as u32);
+                        us.extend_from_slice(&scratch);
+                    }
+                    lines.push((s as u32, e as u32, l));
+                }
+                s = e + 1;
+            }
+        }
+        Self {
+            buf,
+            body,
+            lines,
+            us,
+        }
+    }
+}
+
+pub fn fast(b: &[u8], scratch: &mut Vec<u32>) -> Option<Line> {
     let mut c = Cur { b, i: 0 };
     let r = match (b.get(2)?, b.get(3)?) {
         (b'a', _) => {
@@ -251,8 +292,9 @@ pub fn fast<'b>(b: &'b [u8], scratch: &mut Vec<u32>) -> Option<Line<'b>> {
                 let pre = c.u32()?;
                 c.lit(b",\"str\":")?;
                 let s = c.quoted()?;
+                let at = s.as_ptr() as usize - b.as_ptr() as usize;
                 c.lit(b"}}")?;
-                Line::Str(i, pre, s)
+                Line::Str(i, pre, at as u32, (at + s.len()) as u32)
             } else {
                 c.lit(b",\"num\":{\"i\":")?;
                 let n = c.u64()?;

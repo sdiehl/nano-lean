@@ -6,13 +6,19 @@ mod primitives;
 mod scan;
 
 use crate::export::ExportError;
+use crate::term::FxHashMap;
 use crate::term::arena::Arena;
 use crate::term::decl::Declar;
 use crate::term::intern::Store;
 use importer::Importer;
+use scan::Batch;
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::thread;
 
 type Result<T> = std::result::Result<T, ExportError>;
 
@@ -25,6 +31,15 @@ fn unsupported<T>(s: impl Into<String>) -> Result<T> {
 }
 
 pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>> {
+    import_with(arena, path, 1)
+}
+
+/// Like `import`, but an ndjson file is scanned by `threads - 1` helpers while this thread builds.
+pub fn import_with<'a>(
+    arena: &'a Arena,
+    path: impl AsRef<Path>,
+    threads: usize,
+) -> Result<Store<'a>> {
     let file = File::open(path)?;
     let len = file.metadata()?.len() as usize;
     if let Some(map) = blean::map(&file)? {
@@ -33,7 +48,116 @@ pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>>
         drop(map);
         return im.finish();
     }
+    if threads > 1 && len > 2 * PAR_CHUNK {
+        return import_lines(arena, &file, len, threads - 1, PAR_CHUNK);
+    }
     import_reader(arena, file, len)
+}
+
+const PAR_CHUNK: usize = 4 << 20;
+
+struct Ready {
+    batches: FxHashMap<usize, Batch>,
+    consumed: usize,
+    closed: bool,
+}
+
+/// Scanners take chunks in any order and park them, at most `ahead` past the builder.
+struct Pipe {
+    ready: Mutex<Ready>,
+    filled: Condvar,
+    drained: Condvar,
+    ahead: usize,
+}
+
+impl Pipe {
+    fn put(&self, k: usize, b: Batch) -> bool {
+        let mut r = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        while k >= r.consumed + self.ahead && !r.closed {
+            r = self.drained.wait(r).unwrap_or_else(PoisonError::into_inner);
+        }
+        r.batches.insert(k, b);
+        self.filled.notify_one();
+        !r.closed
+    }
+
+    fn take(&self, k: usize) -> Batch {
+        let mut r = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        let b = loop {
+            match r.batches.remove(&k) {
+                Some(b) => break b,
+                None => r = self.filled.wait(r).unwrap_or_else(PoisonError::into_inner),
+            }
+        };
+        r.consumed = k + 1;
+        self.drained.notify_all();
+        b
+    }
+
+    fn close(&self) {
+        self.ready
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closed = true;
+        self.drained.notify_all();
+    }
+}
+
+/// Scanners read and scan fixed chunks with positioned reads, this thread builds in order.
+fn import_lines<'a>(
+    arena: &'a Arena,
+    file: &File,
+    len: usize,
+    scanners: usize,
+    chunk: usize,
+) -> Result<Store<'a>> {
+    let chunks = len.div_ceil(chunk);
+    let pipe = Pipe {
+        ready: Mutex::new(Ready {
+            batches: FxHashMap::default(),
+            consumed: 0,
+            closed: false,
+        }),
+        filled: Condvar::new(),
+        drained: Condvar::new(),
+        ahead: 4 * scanners,
+    };
+    let next = AtomicUsize::new(0);
+    let failed = Mutex::new(None);
+    let mut im = Importer::new(arena, len);
+    let mut carry = Vec::new();
+    let n = thread::scope(|s| {
+        for _ in 0..scanners {
+            s.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, Relaxed);
+                    if k >= chunks {
+                        break;
+                    }
+                    let at = k * chunk;
+                    let mut buf = vec![0; chunk.min(len - at)];
+                    if let Err(e) = file.read_exact_at(&mut buf, at as u64) {
+                        *failed.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
+                        buf.clear();
+                    }
+                    if !pipe.put(k, Batch::scan(buf)) {
+                        break;
+                    }
+                }
+            });
+        }
+        let mut n = 0;
+        let r = (0..chunks).try_for_each(|k| {
+            let b = pipe.take(k);
+            if let Some(e) = failed.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                return Err(e.into());
+            }
+            im.batch(&b, &mut carry, &mut n)
+        });
+        pipe.close();
+        r.and_then(|()| im.raw_line(&carry, &mut n)).map(|()| n)
+    })?;
+    im.finish_lines(n)
 }
 
 const CHUNK: usize = 16 << 20;
@@ -113,4 +237,98 @@ pub fn check_axioms(store: &Store<'_>, permitted: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::term::expr::Expr;
+    use crate::term::level::Level;
+    use crate::term::ptr::{ExprPtr, LevelPtr};
+    use std::hash::{Hash, Hasher};
+    use std::io::Write;
+
+    fn level(l: LevelPtr<'_>) -> String {
+        match *l.as_ref() {
+            Level::Zero => "0".into(),
+            Level::Succ(a, _) => format!("s({})", level(a)),
+            Level::Max(a, b, _) => format!("max({},{})", level(a), level(b)),
+            Level::IMax(a, b, _) => format!("imax({},{})", level(a), level(b)),
+            Level::Param(n, _) => n.to_string(),
+        }
+    }
+
+    /// A structural fingerprint, since stored hashes depend on addresses.
+    fn shape<'a>(e: ExprPtr<'a>, memo: &mut FxHashMap<ExprPtr<'a>, u64>) -> u64 {
+        if let Some(&h) = memo.get(&e) {
+            return h;
+        }
+        let mut s = std::hash::DefaultHasher::new();
+        match *e.as_ref() {
+            Expr::Var { idx, .. } => (0, idx).hash(&mut s),
+            Expr::Sort { level: l, .. } => (1, level(l)).hash(&mut s),
+            Expr::Const { name, levels, .. } => {
+                let ls: Vec<_> = levels.iter().map(|&l| level(l)).collect();
+                (2, name.to_string(), ls).hash(&mut s);
+            }
+            Expr::App { fun, arg, .. } => (3, shape(fun, memo), shape(arg, memo)).hash(&mut s),
+            Expr::Lam { ty, body, .. } => (4, shape(ty, memo), shape(body, memo)).hash(&mut s),
+            Expr::Pi { ty, body, .. } => (5, shape(ty, memo), shape(body, memo)).hash(&mut s),
+            Expr::Let { data: d, .. } => {
+                let parts = [d.ty, d.val, d.body].map(|x| shape(x, memo));
+                (6, parts, d.nondep).hash(&mut s);
+            }
+            Expr::Proj { name, idx, e, .. } => {
+                (7, name.to_string(), idx, shape(e, memo)).hash(&mut s);
+            }
+            Expr::NatLit { n, .. } => (8, n.as_ref().to_string()).hash(&mut s),
+            Expr::StrLit { s: x, .. } => (9, x.as_ref().s).hash(&mut s),
+            Expr::Local { .. } => unreachable!("exports have no locals"),
+        }
+        let h = s.finish();
+        memo.insert(e, h);
+        h
+    }
+
+    fn summary(r: Result<Store<'_>>) -> String {
+        let mut memo = FxHashMap::default();
+        match r {
+            Ok(s) => {
+                let decls: Vec<_> = s
+                    .declars
+                    .iter()
+                    .map(|d| (d.name().to_string(), shape(d.ty(), &mut memo)))
+                    .collect();
+                format!("{:?} {decls:?}", s.stats)
+            }
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn agree(bytes: &[u8], chunks: &[usize]) {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(bytes).unwrap();
+        let arena = Arena::new();
+        let want = summary(import_reader(&arena, bytes, bytes.len()));
+        for &chunk in chunks {
+            for scanners in 1..=3 {
+                let (arena, file) = (Arena::new(), File::open(f.path()).unwrap());
+                let got = import_lines(&arena, &file, bytes.len(), scanners, chunk);
+                assert_eq!(summary(got), want, "chunk {chunk} scanners {scanners}");
+            }
+        }
+    }
+
+    #[test]
+    fn chunked_scan_matches_sequential_reader() {
+        let ladder = include_bytes!("../../benches/fixtures/let-ladder.ndjson");
+        agree(ladder, &[4096, 65536]);
+        let church = include_bytes!("../../benches/fixtures/church-numerals.ndjson");
+        agree(church, &[1, 7, 100, 1 << 20]);
+        let mut cut = church.to_vec();
+        let mid = cut.len() / 2;
+        cut[mid..].iter_mut().take(40).for_each(|b| *b = b'x');
+        agree(&cut, &[7, 100]);
+        agree(&church[..church.len() - 1], &[13]);
+    }
 }
