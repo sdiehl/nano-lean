@@ -1,5 +1,6 @@
 mod conv;
 mod decl;
+mod derive;
 mod eval;
 mod infer;
 mod intern;
@@ -62,6 +63,9 @@ struct Vc<'t, 'a: 't> {
     base: usize,
     floor: usize,
     fail: Option<Failure>,
+    /// Set while a rule is derived over locals whose types are placeholders.
+    deriving: bool,
+    derivations: u32,
     #[cfg(feature = "vstats")]
     pub stats: Stats,
     #[cfg(feature = "vstats")]
@@ -107,6 +111,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             base: arena.used_bytes(),
             floor: stack_floor(),
             fail: None,
+            deriving: false,
+            derivations: 0,
             #[cfg(feature = "vstats")]
             stats: Stats::default(),
             #[cfg(feature = "vstats")]

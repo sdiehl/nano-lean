@@ -461,7 +461,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn unfold_core(&mut self, v: V<'t>) -> R<V<'t>> {
-        let u = self.unfold(v)?.expect("delta hint without unfolding");
+        let u = self
+            .unfold(v, false)?
+            .expect("delta hint without unfolding");
         self.whnf_core(u)
     }
 

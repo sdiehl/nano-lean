@@ -9,6 +9,7 @@ license = "MIT"
 [features]
 profile = []
 vstats = []
+derivecheck = []
 
 [dependencies]
 unbound = "0.4.0"

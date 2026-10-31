@@ -1,14 +1,29 @@
+use super::derive::HOT;
+use super::tables::Hot;
 use super::value::{Head, K, V, Val, key};
 use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};
 use crate::reject;
 use crate::term::decl::{Declar, Hint, Recursor};
+use crate::term::name::Name;
 use crate::term::names::{QUOT_FN, QUOT_MK_ARITY};
 use crate::term::ptr::{LevelsPtr, NamePtr};
 use num_bigint::BigUint;
 use num_traits::Zero;
 use smallvec::SmallVec;
+
+/// Kept folded while deriving so a rule leaves arithmetic to the literal extension.
+/// A Nat primitive or one of its auxiliaries, reached only when the literal extension declined,
+/// where a rule would redo literal arithmetic structurally.
+fn nat_backed(n: NamePtr<'_>) -> bool {
+    n.nat_red().is_some()
+        || matches!(n.kind, Name::Str(p, ..) | Name::Num(p, ..) if p.nat_red().is_some())
+}
+
+fn opaque_nat(v: V<'_>) -> bool {
+    matches!(v.k, K::Neu(Head::Const(n, _), _) if v.open && n.nat_red().is_some())
+}
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn whnf_core(&mut self, v: V<'t>) -> R<V<'t>> {
@@ -69,7 +84,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             if let Some(n) = self.reduce_nat(t1)? {
                 break n;
             }
-            match self.unfold(t1)? {
+            if self.deriving && opaque_nat(t1) {
+                break t1;
+            }
+            match self.unfold(t1, true)? {
                 Some(n) => t = n,
                 None => break t1,
             }
@@ -89,42 +107,79 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         (ls.len() == d.uparams().len()).then_some(h)
     }
 
-    pub(crate) fn unfold(&mut self, v: V<'t>) -> R<Option<V<'t>>> {
+    /// With `rules`, a derived rule may jump several steps at once. Lazy delta passes false so it
+    /// still sees the same-head states it compares by arguments, and fired results stay out of
+    /// the cache for the same reason.
+    pub(crate) fn unfold(&mut self, v: V<'t>, rules: bool) -> R<Option<V<'t>>> {
         if let Some(&r) = self.t.unfold_cache.get(&key(v)) {
             return Ok(r);
         }
-        let r = self.unfold_uncached(v)?;
-        self.t.unfold_cache.insert(key(v), r);
+        let (r, fired) = self.unfold_uncached(v, rules)?;
+        if !fired {
+            self.t.unfold_cache.insert(key(v), r);
+        }
         Ok(r)
     }
 
-    fn unfold_uncached(&mut self, v: V<'t>) -> R<Option<V<'t>>> {
+    fn unfold_uncached(&mut self, v: V<'t>, rules: bool) -> R<(Option<V<'t>>, bool)> {
         let K::Neu(Head::Const(n, ls), args) = v.k else {
-            return Ok(None);
+            return Ok((None, false));
         };
         let Some(d) = self.declar(n) else {
-            return Ok(None);
+            return Ok((None, false));
         };
         let Some((body, _)) = d.unfoldable() else {
-            return Ok(None);
+            return Ok((None, false));
         };
         #[cfg(feature = "vstats")]
         {
             *self.unfolded.entry(n).or_default() += 1;
         }
         if ls.len() != d.uparams().len() {
-            return Ok(None);
+            return Ok((None, false));
         }
         stat!(self, unfolds);
-        let f = match self.t.delta.get(&(n, ls)) {
-            Some(&f) => f,
+        let (f, hot) = match self.t.delta.get_mut(&(n, ls)) {
+            Some(e) => {
+                if let Hot::Count(c) = &mut e.1 {
+                    *c += u32::from(!self.deriving);
+                }
+                *e
+            }
             None => {
                 let f = self.eval_at(d.uparams(), ls, body)?;
-                self.t.delta.insert((n, ls), f);
-                f
+                self.t.delta.insert((n, ls), (f, Hot::Count(1)));
+                (f, Hot::Count(1))
             }
         };
-        Ok(Some(self.apply(f, args)?))
+        let rule = match hot {
+            Hot::Rule(i) if rules => Some(i),
+            Hot::Count(c) if rules && c >= HOT && !self.deriving && !nat_backed(n) => {
+                let h = self.derive(f, body)?;
+                if let Some(e) = self.t.delta.get_mut(&(n, ls)) {
+                    e.1 = h;
+                }
+                match h {
+                    Hot::Rule(i) => Some(i),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(i) = rule
+            && let Some(r) = self.fire(i, args)?
+        {
+            #[cfg(feature = "derivecheck")]
+            {
+                let u = self.apply(f, args)?;
+                assert!(
+                    self.deriving || self.def_eq(r, u)?,
+                    "derived rule for {n} disagrees"
+                );
+            }
+            return Ok((Some(r), true));
+        }
+        Ok((Some(self.apply(f, args)?), false))
     }
 
     fn reduce_proj(&mut self, idx: u16, s: V<'t>) -> R<Option<V<'t>>> {
@@ -233,6 +288,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let Some(ind) = self.rec_induct(rec) else {
             return Ok(e);
         };
+        if self.deriving && e.open {
+            return Ok(e);
+        }
         let t = self.type_of(e)?;
         let t = self.whnf(t)?;
         let K::Neu(Head::Const(n, ls), targs) = t.k else {
@@ -255,6 +313,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let K::Neu(Head::Const(n, _), _) = e.k
             && matches!(self.declar(n), Some(Declar::Ctor(_)))
         {
+            return Ok(e);
+        }
+        if self.deriving && e.open {
             return Ok(e);
         }
         let t = self.type_of(e)?;

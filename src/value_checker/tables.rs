@@ -14,12 +14,57 @@ use std::ops::Deref;
 use std::ptr;
 use std::rc::Rc;
 
+#[derive(Clone, Copy)]
+pub(super) enum Hot {
+    Count(u32),
+    Rule(u32),
+    Never,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Node<'t> {
+    Leaf(Option<V<'t>>),
+    Split { slot: u16, start: u32, len: u16 },
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Branch<'t> {
+    pub(super) ctor: NamePtr<'t>,
+    pub(super) ls: LevelsPtr<'t>,
+    pub(super) nargs: u16,
+    pub(super) id0: u32,
+    pub(super) node: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Rule {
+    pub(super) arity: u16,
+    pub(super) id0: u32,
+    pub(super) root: u32,
+}
+
+#[derive(Default)]
+pub(super) struct Derived<'t> {
+    pub(super) rules: Vec<Rule>,
+    pub(super) nodes: Vec<Node<'t>>,
+    pub(super) branches: Vec<Branch<'t>>,
+}
+
+impl Derived<'_> {
+    fn clear(&mut self) {
+        self.rules.clear();
+        self.nodes.clear();
+        self.branches.clear();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Tables<'t> {
     pub(super) conv_locals: Logged<(usize, usize), V<'t>>,
     pub(super) eval_memo: Lossy<(ExprPtr<'t>, Sub<'t>, usize), V<'t>>,
     pub(super) eval_closed: Memo<(ExprPtr<'t>, Sub<'t>), V<'t>>,
-    pub(super) delta: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'t>>,
+    pub(super) delta: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), (V<'t>, Hot)>,
+    pub(super) derived: Derived<'t>,
     pub(super) const_ty: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'t>>,
     pub(super) rules: FxHashMap<(NamePtr<'t>, usize, LevelsPtr<'t>), V<'t>>,
     pub(super) support: FxHashMap<ExprPtr<'t>, Option<&'t [u16]>>,
@@ -52,6 +97,7 @@ impl<'t> Tables<'t> {
     pub(super) fn durable(&mut self) -> Tables<'t> {
         Tables {
             delta: take(&mut self.delta),
+            derived: take(&mut self.derived),
             const_ty: take(&mut self.const_ty),
             rules: take(&mut self.rules),
             eval_closed: take(&mut self.eval_closed),
@@ -67,6 +113,7 @@ impl<'t> Tables<'t> {
 
     pub(super) fn absorb(&mut self, d: Tables<'t>) {
         self.delta = d.delta;
+        self.derived = d.derived;
         self.const_ty = d.const_ty;
         self.rules = d.rules;
         self.eval_closed = d.eval_closed;
@@ -96,6 +143,7 @@ impl Tables<'_> {
                 }
             )*};
         }
+        self.derived.clear();
         reuse!(
             self.eval_closed,
             self.delta,

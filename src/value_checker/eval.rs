@@ -204,14 +204,18 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let K::Neu(Head::Local(x, ..), _) = x.k else {
             unreachable!("zeta of a non-local")
         };
+        self.subst(&[(x, v)], t)
+    }
+
+    /// Replaces each local `x` in `s` with its paired value.
+    pub(crate) fn subst(&mut self, s: &[(u32, V<'t>)], t: V<'t>) -> R<V<'t>> {
         let mut memo = FxHashMap::default();
-        self.zeta_val(x, v, t, &mut memo)
+        self.zeta_val(s, t, &mut memo)
     }
 
     fn zeta_val(
         &mut self,
-        x: u32,
-        v: V<'t>,
+        sub: &[(u32, V<'t>)],
         t: V<'t>,
         memo: &mut FxHashMap<usize, V<'t>>,
     ) -> R<V<'t>> {
@@ -227,12 +231,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             K::Neu(h, args) => {
                 let mut vs = SmallVec::<[V<'t>; 8]>::with_capacity(args.len());
                 for &a in args {
-                    vs.push(self.zeta_val(x, v, a, memo)?);
+                    vs.push(self.zeta_val(sub, a, memo)?);
                 }
                 let head = match h {
-                    Head::Local(i, ..) if i == x => Err(v),
+                    Head::Local(i, ..) => match sub.iter().find(|p| p.0 == i) {
+                        Some(&(_, v)) => Err(v),
+                        None => Ok(h),
+                    },
                     Head::Proj(n, i, s) => {
-                        let s1 = self.zeta_val(x, v, s, memo)?;
+                        let s1 = self.zeta_val(sub, s, memo)?;
                         if ptr::eq(s, s1) {
                             Ok(h)
                         } else {
@@ -253,8 +260,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
             }
             K::Pi(d, c) => {
-                let d1 = self.zeta_val(x, v, d, memo)?;
-                let env = self.zeta_env(x, v, c.env, memo)?;
+                let d1 = self.zeta_val(sub, d, memo)?;
+                let env = self.zeta_env(sub, c.env, memo)?;
                 if ptr::eq(d, d1) && env.key() == c.env.key() {
                     t
                 } else {
@@ -262,8 +269,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
             }
             K::Lam(l, c) => {
-                let le = self.zeta_env(x, v, l.env, memo)?;
-                let env = self.zeta_env(x, v, c.env, memo)?;
+                let le = self.zeta_env(sub, l.env, memo)?;
+                let env = self.zeta_env(sub, c.env, memo)?;
                 if le.key() == l.env.key() && env.key() == c.env.key() {
                     t
                 } else {
@@ -279,8 +286,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn zeta_env(
         &mut self,
-        x: u32,
-        v: V<'t>,
+        sub: &[(u32, V<'t>)],
         env: Env<'t>,
         memo: &mut FxHashMap<usize, V<'t>>,
     ) -> R<Env<'t>> {
@@ -291,8 +297,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(match env.view() {
             View::Nil => env,
             View::Node(n) => {
-                let tail = self.zeta_env(x, v, n.tail, memo)?;
-                let head = self.zeta_val(x, v, n.head, memo)?;
+                let tail = self.zeta_env(sub, n.tail, memo)?;
+                let head = self.zeta_val(sub, n.head, memo)?;
                 if tail.key() == n.tail.key() && ptr::eq(head, n.head) {
                     env
                 } else {
@@ -302,7 +308,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             View::Frame(f) => {
                 let mut vs = SmallVec::<[V<'t>; 32]>::with_capacity(f.vals.len());
                 for &a in f.vals {
-                    vs.push(self.zeta_val(x, v, a, memo)?);
+                    vs.push(self.zeta_val(sub, a, memo)?);
                 }
                 if vs.iter().zip(f.vals).all(|(a, b)| ptr::eq(*a, *b)) {
                     env
