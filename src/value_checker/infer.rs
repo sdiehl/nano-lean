@@ -191,16 +191,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         e: ExprPtr<'t>,
         only: bool,
     ) -> R<V<'t>> {
-        if !self.tick_fast() {
-            return self.infer_ticked(env, sub, e, only);
-        }
-        self.infer_fast(env, sub, e, only)
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn infer_ticked(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
-        self.tick_slow()?;
         self.infer_fast(env, sub, e, only)
     }
 
@@ -245,6 +235,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     #[inline(never)]
     fn infer_slow(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
+        self.tick()?;
         let closed = e.closed();
         let raw = (e, sub, env.key());
         let mark = self.scoped;

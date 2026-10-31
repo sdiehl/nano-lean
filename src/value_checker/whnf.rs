@@ -27,8 +27,6 @@ fn opaque_nat(v: V<'_>) -> bool {
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn whnf_core(&mut self, v: V<'t>) -> R<V<'t>> {
-        self.tick()?;
-        self.guard()?;
         let K::Neu(h, args) = v.k else { return Ok(v) };
         if matches!(h, Head::Local(_, _, None)) {
             return Ok(v);
@@ -36,6 +34,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(&r) = self.t.whnf_core_cache.get(&key(v)) {
             return Ok(r);
         }
+        self.tick()?;
+        self.guard()?;
         let r = match h {
             Head::Const(n, ls) => match self.reduce_rec(n, ls, args)? {
                 Some(r) => self.whnf_core(r)?,

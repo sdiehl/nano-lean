@@ -227,7 +227,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         match head {
             Ok(fv) => self.apply(fv, vs),
             Err(h) => {
-                self.tick()?;
                 let open = vs.iter().any(|a| a.open);
                 Ok(self.neu(h, &[], vs, open))
             }
@@ -521,7 +520,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn apply(&mut self, mut f: V<'t>, args: &[V<'t>]) -> R<V<'t>> {
         let mut i = 0;
         while i < args.len() {
-            self.tick()?;
             match f.k {
                 K::Lam(_, c) if !c.typed => {
                     // Bind nested lambdas at once and evaluate only the innermost body.
@@ -532,7 +530,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     while i < args.len()
                         && let Expr::Lam { body: b, .. } = *body
                     {
-                        self.tick()?;
                         stat!(self, beta_chain);
                         env = self.push(env, args[i]);
                         body = b;
