@@ -13,6 +13,9 @@ use std::cell::Cell;
 use std::ptr;
 use std::slice::Iter;
 
+/// Arguments an application spine holds before evaluation spills to the heap.
+const SPINE: usize = 8;
+
 const SHALLOW: u32 = 8;
 const EXACT: usize = 256;
 
@@ -29,6 +32,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Ok(&e) => return e,
             Err(h) => h,
         };
+        self.push_new(env, v, open, h)
+    }
+
+    #[inline(never)]
+    fn push_new(&mut self, env: Env<'t>, v: V<'t>, open: bool, h: u64) -> Env<'t> {
+        let k = (key(v), env.key());
         stat!(self, push_new);
         #[cfg(feature = "vstats")]
         {
@@ -58,8 +67,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.eval_compound(env, sub, e)
     }
 
+    /// Hits return from a frameless probe. The body's frame is paid only on a miss.
     fn eval_compound(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
-        self.guard()?;
         let closed = e.closed();
         let env = if closed { Env::EMPTY } else { env };
         let h = match if closed {
@@ -69,10 +78,38 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         } {
             Ok(&v) => {
                 stat!(self, memo_hits);
+                #[cfg(feature = "vstats")]
+                {
+                    match *e {
+                        Expr::App { .. } => self.stats.hit_app += 1,
+                        Expr::Lam { .. } => self.stats.hit_lam += 1,
+                        Expr::Pi { .. } => self.stats.hit_pi += 1,
+                        Expr::Let { .. } => self.stats.hit_let += 1,
+                        _ => self.stats.hit_leaf += 1,
+                    }
+                    if closed {
+                        self.stats.hit_closed += 1;
+                    } else {
+                        self.stats.hit_open += 1;
+                    }
+                }
                 return Ok(v);
             }
             Err(h) => h,
         };
+        self.eval_miss(env, sub, e, closed, h)
+    }
+
+    #[inline(never)]
+    fn eval_miss(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        e: ExprPtr<'t>,
+        closed: bool,
+        h: u64,
+    ) -> R<V<'t>> {
+        self.guard()?;
         stat!(self, evals);
         #[cfg(feature = "vstats")]
         match *e {
@@ -97,31 +134,23 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 self.mk(K::Neu(Head::Const(name, ls), &[]), false)
             }
             Expr::App { .. } => {
-                let mut args = SmallVec::<[ExprPtr<'t>; 8]>::new();
+                let mut args = [e; SPINE];
+                let mut n = 0;
                 let mut f = e;
                 while let Expr::App { fun, arg, .. } = *f {
-                    args.push(arg);
+                    if n == SPINE {
+                        return self.eval_app_wide(env, sub, e);
+                    }
+                    args[n] = arg;
+                    n += 1;
                     f = fun;
                 }
-                // Under the identity substitution a constant head is its own neutral.
-                let head = match *f {
-                    Expr::Const { name, levels, .. } if sub.is_id() => {
-                        Err(Head::Const(name, levels))
-                    }
-                    _ => Ok(self.eval(env, sub, f)?),
-                };
-                let mut vs = SmallVec::<[V<'t>; 8]>::with_capacity(args.len());
-                for &a in args.iter().rev() {
-                    vs.push(self.eval(env, sub, a)?);
+                let head = self.eval_head(env, sub, f)?;
+                let mut vs = [self.dummy; SPINE];
+                for (slot, &a) in vs[..n].iter_mut().zip(args[..n].iter().rev()) {
+                    *slot = self.eval(env, sub, a)?;
                 }
-                match head {
-                    Ok(fv) => self.apply(fv, &vs)?,
-                    Err(h) => {
-                        self.tick()?;
-                        let open = vs.iter().any(|a| a.open);
-                        self.neu(h, &[], &vs, open)
-                    }
-                }
+                self.eval_spine(head, &vs[..n])?
             }
             Expr::Lam { ty, body, .. } => {
                 let env = self.trim(env, e)?;
@@ -177,6 +206,49 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
         }
         Ok(v)
+    }
+
+    /// Under the identity substitution a constant head is its own neutral.
+    #[inline(always)]
+    fn eval_head(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        f: ExprPtr<'t>,
+    ) -> R<Result<V<'t>, Head<'t>>> {
+        Ok(match *f {
+            Expr::Const { name, levels, .. } if sub.is_id() => Err(Head::Const(name, levels)),
+            _ => Ok(self.eval(env, sub, f)?),
+        })
+    }
+
+    #[inline(always)]
+    fn eval_spine(&mut self, head: Result<V<'t>, Head<'t>>, vs: &[V<'t>]) -> R<V<'t>> {
+        match head {
+            Ok(fv) => self.apply(fv, vs),
+            Err(h) => {
+                self.tick()?;
+                let open = vs.iter().any(|a| a.open);
+                Ok(self.neu(h, &[], vs, open))
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn eval_app_wide(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
+        let mut args = Vec::new();
+        let mut f = e;
+        while let Expr::App { fun, arg, .. } = *f {
+            args.push(arg);
+            f = fun;
+        }
+        let head = self.eval_head(env, sub, f)?;
+        let mut vs = Vec::with_capacity(args.len());
+        for &a in args.iter().rev() {
+            vs.push(self.eval(env, sub, a)?);
+        }
+        self.eval_spine(head, &vs)
     }
 
     fn lazy(&mut self, env: Env<'t>, sub: Sub<'t>, ty: ExprPtr<'t>) -> &'t Lazy<'t> {

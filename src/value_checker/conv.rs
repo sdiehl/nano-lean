@@ -35,12 +35,31 @@ fn identical_clo(a: Clo<'_>, b: Clo<'_>) -> bool {
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn def_eq(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
-        self.tick()?;
+        if !self.tick_fast() {
+            return self.def_eq_ticked(t, s);
+        }
+        self.def_eq_fast(t, s)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn def_eq_ticked(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+        self.tick_slow()?;
+        self.def_eq_fast(t, s)
+    }
+
+    #[inline(always)]
+    fn def_eq_fast(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
         stat!(self, deq_calls);
         if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
             stat!(self, deq_ptr_eq);
             return Ok(true);
         }
+        self.def_eq_slow(t, s)
+    }
+
+    #[inline(never)]
+    fn def_eq_slow(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
         let k = if key(t) < key(s) {
             (key(t), key(s))
         } else {

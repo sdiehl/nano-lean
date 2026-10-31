@@ -160,11 +160,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     #[inline]
     pub(crate) fn tick(&mut self) -> R<()> {
-        if self.steps_left & ARENA_STRIDE_MASK >= 2 {
-            self.steps_left -= 1;
+        if self.tick_fast() {
             return Ok(());
         }
         self.tick_slow()
+    }
+
+    /// False means the step needs `tick_slow`. Frameless entries take a cold path then so
+    /// nothing stays live across the call.
+    #[inline(always)]
+    fn tick_fast(&mut self) -> bool {
+        if self.steps_left & ARENA_STRIDE_MASK >= 2 {
+            self.steps_left -= 1;
+            return true;
+        }
+        false
     }
 
     #[inline(never)]

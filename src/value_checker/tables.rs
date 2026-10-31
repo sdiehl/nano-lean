@@ -326,6 +326,7 @@ impl<K: Copy + Eq + Hash, V> Logged<K, V> {
 pub(super) struct Lossy<K, V> {
     slots: Vec<(u32, Option<(K, V)>)>,
     live: usize,
+    grow_at: usize,
     epoch: u32,
 }
 
@@ -334,6 +335,7 @@ impl<K, V> Default for Lossy<K, V> {
         Self {
             slots: Vec::new(),
             live: 0,
+            grow_at: 0,
             epoch: 0,
         }
     }
@@ -345,7 +347,7 @@ const LOSSY_MAX: usize = 1 << 20;
 impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
     #[inline]
     fn slot(&self, h: u64) -> usize {
-        (h >> (64 - self.slots.len().trailing_zeros())) as usize
+        h as usize & (self.slots.len() - 1)
     }
 
     #[inline]
@@ -380,7 +382,7 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
 
     #[inline]
     pub(super) fn insert_new(&mut self, h: u64, k: K, v: V) {
-        if self.live * 4 >= self.slots.len() * 3 && self.slots.len() < LOSSY_MAX {
+        if self.live >= self.grow_at {
             self.grow();
         }
         let i = self.slot(h);
@@ -398,6 +400,7 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
         let n = (self.slots.len() * 2).max(LOSSY_MIN);
         let old = replace(&mut self.slots, vec![(self.epoch.wrapping_sub(1), None); n]);
         self.live = 0;
+        self.grow_at = if n < LOSSY_MAX { n / 4 * 3 } else { usize::MAX };
         for (e, kv) in old {
             if let (true, Some((k, v))) = (e == self.epoch, kv) {
                 let i = self.slot(fx(&k));
@@ -410,6 +413,7 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
     fn empty(&mut self, keep: usize) {
         if self.slots.len() > keep {
             self.slots = Vec::new();
+            self.grow_at = 0;
         } else if self.live != 0 {
             self.epoch = self.epoch.wrapping_add(1);
             if self.epoch == 0 {

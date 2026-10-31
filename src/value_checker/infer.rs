@@ -191,7 +191,22 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         e: ExprPtr<'t>,
         only: bool,
     ) -> R<V<'t>> {
-        self.tick()?;
+        if !self.tick_fast() {
+            return self.infer_ticked(env, sub, e, only);
+        }
+        self.infer_fast(env, sub, e, only)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn infer_ticked(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
+        self.tick_slow()?;
+        self.infer_fast(env, sub, e, only)
+    }
+
+    /// Hits return from a frameless probe. Whatever calls out happens in `infer_slow`.
+    #[inline(always)]
+    fn infer_fast(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
         self.guard()?;
         if let Expr::Var { idx, .. } = *e {
             let Some(v) = env.get(idx) else {
@@ -202,6 +217,34 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 _ => self.type_of(v),
             };
         }
+        if e.closed() {
+            if let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub)) {
+                if s.is_empty() {
+                    stat!(self, closed_hit);
+                    return Ok(t);
+                }
+                if s == self.uparams {
+                    stat!(self, closed_hit);
+                    self.scoped += 1;
+                    return Ok(t);
+                }
+            }
+        } else {
+            let raw = (e, sub, env.key());
+            if let Some(&t) = self.t.infer_open[0].get(&raw) {
+                // Open entries do not record whether they met a parameter.
+                self.scoped += 1;
+                return Ok(t);
+            }
+            if only && let Some(&t) = self.t.infer_open[1].get(&raw) {
+                return Ok(t);
+            }
+        }
+        self.infer_slow(env, sub, e, only)
+    }
+
+    #[inline(never)]
+    fn infer_slow(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
         let closed = e.closed();
         let raw = (e, sub, env.key());
         let mark = self.scoped;
@@ -219,12 +262,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             if only && let Some(&(t, _)) = self.t.infer_closed[1].get(&(e, sub)) {
                 return Ok(t);
             }
-        } else if let Some(&t) = self.t.infer_open[0].get(&raw) {
-            // Open entries do not record whether they met a parameter.
-            self.scoped += 1;
-            return Ok(t);
-        } else if only && let Some(&t) = self.t.infer_open[1].get(&raw) {
-            return Ok(t);
         }
         let env = if closed {
             Env::EMPTY

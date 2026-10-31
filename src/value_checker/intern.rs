@@ -132,10 +132,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, spine_req);
         let n = sp.len() + rest.len();
         let hash = neu_hash(h, n, sp.iter().chain(rest));
+        let m = sp.len();
         let same = |&(hv, v): &(u64, V<'t>)| {
             hv == hash
                 && matches!(v.k, K::Neu(g, a) if a.len() == n && head_eq(g, h)
-                && a.iter().zip(sp.iter().chain(rest)).all(|(&x, &y)| ptr::eq(x, y)))
+                && Ptrs::new(&a[..m]) == Ptrs::new(sp) && Ptrs::new(&a[m..]) == Ptrs::new(rest))
         };
         let o = usize::from(open);
         if let Some(&(_, v)) = self.t.neus[o].find(hash, same) {
@@ -147,6 +148,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             return v;
         }
+        self.neu_new(h, sp, rest, open, hash)
+    }
+
+    #[inline(never)]
+    fn neu_new(
+        &mut self,
+        h: Head<'t>,
+        sp: &[V<'t>],
+        rest: &[V<'t>],
+        open: bool,
+        hash: u64,
+    ) -> V<'t> {
+        let n = sp.len() + rest.len();
+        let o = usize::from(open);
         #[cfg(feature = "vstats")]
         if open {
             self.stats.neu_open_miss += 1;
