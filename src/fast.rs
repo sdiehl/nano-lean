@@ -26,6 +26,7 @@ const FAILURES_SHOWN: usize = 30;
 const TICK: Duration = Duration::from_millis(250);
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const SESSION_BYTES: usize = 64 << 20;
+const RUN: u32 = 64;
 
 /// The same settings as the `nl-fast` flags, which override them.
 #[derive(Default, Deserialize)]
@@ -130,6 +131,13 @@ impl Checks {
         let fails = AtomicUsize::new(0);
         let fallbacks = AtomicUsize::new(0);
         let n = indices.len() as u32;
+        // Neighbours share constants, so runs keep a session's tables warm, shrinking near the end.
+        let claim = || {
+            let left = n.saturating_sub(next.load(Relaxed));
+            let k = (left / (4 * o.threads as u32).max(1)).clamp(1, RUN);
+            let at = next.fetch_add(k, Relaxed);
+            (at < n).then(|| at..(at + k).min(n))
+        };
         let exit = AtomicUsize::new(0);
         let progress = if o.trace || o.quiet {
             ProgressBar::hidden()
@@ -177,14 +185,17 @@ impl Checks {
                             let mut session = Session::new(store);
                             let mut adapter = Adapter::new(store);
                             let mut accepted = Vec::new();
+                            let mut run = 0..0;
                             loop {
                                 if stop.load(Relaxed) {
                                     break;
                                 }
-                                let job = next.fetch_add(1, Relaxed);
-                                if job >= n {
+                                let Some(job) = run.next().or_else(|| {
+                                    run = claim()?;
+                                    run.next()
+                                }) else {
                                     break;
-                                }
+                                };
                                 let idx = indices[job as usize];
                                 let (key, hit) = cache.map_or((None, false), |c| c.lookup(idx));
                                 if hit && cache.is_some_and(|c| !c.audit) {
