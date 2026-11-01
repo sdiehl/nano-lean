@@ -3,6 +3,7 @@ use super::tables::fx;
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
 use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
+use crate::resource::stack_exhausted;
 use crate::term::decl::Declar;
 use crate::term::expr::{Expr, WIDE};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
@@ -585,6 +586,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
         }
+        if stack_exhausted(self.floor) {
+            return None;
+        }
         let s = self.support_in(e);
         self.t.support.insert(e, s);
         s
@@ -662,23 +666,25 @@ impl Iterator for Slots<'_> {
 }
 
 fn mentions<'t>(e: ExprPtr<'t>, i: u16, seen: &mut FxHashSet<(ExprPtr<'t>, u16)>) -> bool {
-    if i >= e.nlb() || !seen.insert((e, i)) {
-        return false;
-    }
-    match *e {
-        Expr::Var { idx, .. } => idx == i,
-        Expr::App { fun, arg, .. } => mentions(fun, i, seen) || mentions(arg, i, seen),
-        Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-            mentions(ty, i, seen) || mentions(body, i + 1, seen)
+    let mut todo = vec![(e, i)];
+    while let Some((e, i)) = todo.pop() {
+        if i >= e.nlb() || !seen.insert((e, i)) {
+            continue;
         }
-        Expr::Let { data, .. } => {
-            mentions(data.ty, i, seen)
-                || mentions(data.val, i, seen)
-                || mentions(data.body, i + 1, seen)
+        match *e {
+            Expr::Var { idx, .. } if idx == i => return true,
+            Expr::App { fun, arg, .. } => todo.extend([(arg, i), (fun, i)]),
+            Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
+                todo.extend([(body, i + 1), (ty, i)]);
+            }
+            Expr::Let { data, .. } => {
+                todo.extend([(data.body, i + 1), (data.val, i), (data.ty, i)]);
+            }
+            Expr::Proj { e, .. } => todo.push((e, i)),
+            _ => {}
         }
-        Expr::Proj { e, .. } => mentions(e, i, seen),
-        _ => false,
     }
+    false
 }
 
 /// Gives up after `fuel` nodes since shared DAGs expand exponentially.

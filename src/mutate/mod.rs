@@ -157,6 +157,15 @@ pub fn finding(expect: Expect, baseline: &Verdicts, v: &Verdicts) -> Option<&'st
     }
 }
 
+/// A checker declined while another accepted, which `agree` tolerates but can hide a wrong accept.
+pub fn declined(v: &Verdicts) -> bool {
+    let all = v.all();
+    all.iter().any(|(_, v)| v.accepted())
+        && all
+            .iter()
+            .any(|(_, v)| matches!(v, Verdict::Unsupported(_)))
+}
+
 /// Removes declarations and dead definitions while `keep` holds, returning the survivors and
 /// where the pinned lines ended up.
 pub fn shrink(

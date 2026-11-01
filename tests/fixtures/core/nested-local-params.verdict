@@ -1,0 +1,3 @@
+reference: rejected: line 70: nested inductive parameters contain constructor-local variables
+fast: rejected: T: invalid recursive inductive occurrence
+value: rejected: T: invalid recursive inductive occurrence

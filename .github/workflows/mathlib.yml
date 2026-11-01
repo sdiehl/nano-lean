@@ -52,7 +52,8 @@ jobs:
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
             .ci/mathlib.blean
-          key: mathlib-export-v4-${{ runner.os }}-lean-${{ matrix.lean }}-${{ matrix.mathlib }}-olean-export-${{ matrix.exporter }}
+            .ci/mathlib.prelude.ndjson
+          key: mathlib-export-v5-${{ runner.os }}-lean-${{ matrix.lean }}-${{ matrix.mathlib }}-olean-export-${{ matrix.exporter }}
       - name: Prepare runner disk
         run: |
           mkdir -p .ci/mathlib-report
@@ -118,6 +119,7 @@ jobs:
             .ci/mathlib.ndjson
             .ci/mathlib.ndjson.sha256
             .ci/mathlib.blean
+            .ci/mathlib.prelude.ndjson
           key: ${{ steps.export.outputs.cache-primary-key }}
       - uses: actions/cache/restore@v4
         if: github.event_name != 'schedule'
@@ -138,6 +140,13 @@ jobs:
       - name: Check Mathlib blean on every core
         timeout-minutes: 20
         run: bash .github/scripts/mathlib-ci.sh check-blean
+      - name: Check primitives against Init and the axiom allowlist
+        timeout-minutes: 10
+        run: bash .github/scripts/mathlib-ci.sh audit
+      - name: Check Mathlib on the term core
+        if: github.event_name != 'push'
+        timeout-minutes: 40
+        run: bash .github/scripts/mathlib-ci.sh check-term-core
       - name: Report result
         if: always()
         run: |

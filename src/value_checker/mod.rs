@@ -115,7 +115,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             fail: None,
             deriving: false,
             derivations: 0,
-            epoch: EPOCH.fetch_add(1, Relaxed).wrapping_add(1),
+            epoch: EPOCH
+                .fetch_update(Relaxed, Relaxed, |e| e.checked_add(1))
+                .expect("value memo epochs exhausted")
+                + 1,
             #[cfg(feature = "vstats")]
             stats: Stats::default(),
             #[cfg(feature = "vstats")]
@@ -153,6 +156,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     #[inline(never)]
     fn reject(&mut self, msg: fmt::Arguments<'_>) -> Stop {
         self.fail = Some(Failure::Rejected(msg.to_string()));
+        Stop
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn internal(&mut self, msg: &str) -> Stop {
+        self.fail = Some(Failure::Internal(msg.to_owned()));
         Stop
     }
 
@@ -244,7 +254,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn local(&mut self, ty: V<'t>, val: Option<V<'t>>) -> V<'t> {
-        self.next_local += 1;
+        self.next_local = self.next_local.checked_add(1).expect("local ids exhausted");
         let id = self.next_local;
         // Ids are never reused, so interning could only miss.
         stat!(self, vals);

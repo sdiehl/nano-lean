@@ -3,7 +3,7 @@ use crate::kernel;
 use crate::term::decl::Recursor;
 use crate::term::intern::Block;
 use crate::term::level::Level;
-use crate::term::outcome::R;
+use crate::term::outcome::{Failure, R, Stop};
 use crate::term::ptr::LevelPtr;
 use crate::value_checker::{RecCheck, check_recursor};
 use crate::{ensure, reject};
@@ -204,6 +204,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         .map_err(|f| self.failed(f))
     }
 
+    /// Acceptance needs both cores, so a value-core rejection the term core overturns is internal.
+    #[cold]
+    pub(super) fn disagree(&mut self) -> Stop {
+        self.failed(Failure::Internal(
+            "the cores disagree on an inductive".into(),
+        ))
+    }
+
     /// The term checker re-decides from the first rejected obligation to keep its reason.
     fn recursor_checks(&mut self, checks: &[RecCheck<'t>]) -> R<()> {
         let Some(i) = self.vc_reject(checks)? else {
@@ -234,6 +242,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 }
             }
         }
-        Ok(())
+        Err(self.disagree())
     }
 }

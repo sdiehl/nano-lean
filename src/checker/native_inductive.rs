@@ -52,7 +52,6 @@ impl<'t> Family<'t> {
                     go(f, data.ty, seen) || go(f, data.val, seen) || go(f, data.body, seen)
                 }
                 Expr::Proj { e, .. } => go(f, e, seen),
-                Expr::Local { ty, .. } => go(f, ty, seen),
                 _ => false,
             }
         }
@@ -368,6 +367,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
             indices.push(is);
         }
+        if !types_wf {
+            return Err(self.disagree());
+        }
         Ok((fam, result_level, indices))
     }
 
@@ -447,6 +449,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 t.is_rec == recursive && t.is_reflexive == reflexive,
                 "incorrect inductive recursion metadata"
             );
+        }
+        if !ctors_wf {
+            return Err(self.disagree());
         }
         Ok(shapes)
     }

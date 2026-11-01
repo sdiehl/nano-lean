@@ -60,7 +60,7 @@ fn main() -> ExitCode {
         .file_stem()
         .map_or_else(|| "export".into(), |s| s.to_string_lossy().into_owned());
     let mut rng = Rng::new(o.seed);
-    let (mut tried, mut findings) = (0, 0);
+    let (mut tried, mut findings, mut declined) = (0, 0, 0);
     let mut tally: BTreeMap<(&str, String), usize> = BTreeMap::new();
     for &op in &ops {
         let mut candidates = mutate::mutants(&lines, op);
@@ -79,6 +79,13 @@ fn main() -> ExitCode {
             let Some(why) = mutate::finding(m.expect, &baseline, &verdicts)
                 .or(slow.then_some("performance edit exceeded time budget"))
             else {
+                if mutate::declined(&verdicts) {
+                    declined += 1;
+                    println!(
+                        "{op}: declined where another accepted ({})\n{verdicts}",
+                        m.site()
+                    );
+                }
                 continue;
             };
             findings += 1;
@@ -109,6 +116,6 @@ fn main() -> ExitCode {
     for ((op, signature), n) in tally {
         println!("{op:>16} {signature} {n}");
     }
-    println!("{tried} mutants, {findings} findings");
+    println!("{tried} mutants, {findings} findings, {declined} declined");
     ExitCode::from(u8::from(findings > 0))
 }

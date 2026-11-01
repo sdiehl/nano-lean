@@ -13,6 +13,8 @@ scripts=$root/.github/scripts
 checker=$root/target/release/nl-fast
 input=$root/.ci/$corpus.ndjson
 blean=$root/.ci/$corpus.blean
+prelude=$root/.ci/$corpus.prelude.ndjson
+axioms=propext,Classical.choice,Quot.sound,sorryAx,Lean.trustCompiler,Lean.ofReduceBool,Lean.ofReduceNat
 report=$root/.ci/$corpus-report
 module=${MODULE:?}
 expected_count=${DECLARATIONS:?}
@@ -71,13 +73,15 @@ export_corpus() {
   export PATH=$ELAN_HOME/bin:$PATH
   elan toolchain install "$toolchain"
   cargo install olean-export --version "=${EXPORTER_VERSION:?}" --locked -j 2 --root .ci/exporter
-  local exporter=$root/.ci/exporter/bin/olean-export
+  local exporter=$root/.ci/exporter/bin/olean-export hashed=(".ci/$corpus.ndjson" ".ci/$corpus.blean")
   if [[ $corpus == mathlib ]]; then
     fetch_mathlib
     (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 \
       -c Eq.symm -c Nat.add_comm -o "$root/.ci/export-smoke.ndjson")
     "$checker" .ci/export-smoke.ndjson >"$report/export-smoke.log" 2>&1
     (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" "$module" -j 2 -o "$input.tmp")
+    (cd .ci/mathlib4 && elan run "$toolchain" lake env "$exporter" Init -j 2 -o "$prelude")
+    hashed+=(".ci/$corpus.prelude.ndjson")
   else
     LEAN_PATH="$(elan run "$toolchain" lean --print-prefix)/lib/lean" \
       "$exporter" "$module" -j 2 -o "$input.tmp"
@@ -85,7 +89,7 @@ export_corpus() {
   mv "$input.tmp" "$input"
   "$exporter" convert "$input" -o "$blean.tmp"
   mv "$blean.tmp" "$blean"
-  sha256sum ".ci/$corpus.ndjson" ".ci/$corpus.blean" >"$input.sha256"
+  sha256sum "${hashed[@]}" >"$input.sha256"
   rm -rf .ci/mathlib4 .ci/exporter .ci/elan .ci/export-smoke.ndjson
 }
 
@@ -149,14 +153,28 @@ check_blean() {
   fi
 }
 
+audit() {
+  verify_input
+  bounded nano-mathlib-audit 11G 600 \
+    "$checker" "$blean" -j "$(nproc)" -q --prelude "$prelude" --axioms "$axioms"
+}
+
+check_term_core() {
+  verify_input
+  bounded nano-mathlib-term 11G 2400 /usr/bin/time -v -o "$report/term-time.txt" \
+    "$checker" "$blean" -j "$(nproc)" -q --term-core
+}
+
 case $command in
   prepare) prepare ;;
   export) export_corpus ;;
   verify) verify ;;
   check) check ;;
   check-blean) check_blean ;;
+  audit) audit ;;
+  check-term-core) check_term_core ;;
   *)
-    echo "Usage: $0 prepare|verify|check|check-blean [mathlib|init-prelude|init|std]" >&2
+    echo "Usage: $0 prepare|verify|check|check-blean|audit|check-term-core [mathlib|init-prelude|init|std]" >&2
     exit 2
     ;;
 esac

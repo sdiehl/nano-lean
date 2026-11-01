@@ -138,7 +138,7 @@ fn exit_on(e: &ExportError) -> ! {
     println!("{e}");
     process::exit(match e {
         ExportError::Invalid(_) => 1,
-        ExportError::Unsupported(_) => 2,
+        ExportError::Unsupported(_) | ExportError::Internal(_) => 2,
     })
 }
 

@@ -136,8 +136,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             (Expr::Sort { level: a, .. }, Expr::Sort { level: b, .. }) => {
                 Some(self.level_eq(a, b)?)
             }
-            (Expr::NatLit { .. }, Expr::NatLit { .. })
-            | (Expr::StrLit { .. }, Expr::StrLit { .. }) => Some(false),
+            (Expr::NatLit { n: a, .. }, Expr::NatLit { n: b, .. }) => Some(*a == *b),
+            (Expr::StrLit { s: a, .. }, Expr::StrLit { s: b, .. }) => Some(a.s == b.s),
             _ => None,
         })
     }

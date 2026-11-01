@@ -31,6 +31,8 @@ pub enum Error {
     Exhausted(Budget),
     #[error("conversion probe exhausted")]
     ProbeExhausted,
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
 impl Error {
@@ -138,6 +140,16 @@ impl Environment {
         }
         self.insert(name, params, ty, value.filter(|_| transparent));
         Ok(())
+    }
+    pub(crate) fn constructor(&self, name: &str) -> Result<&Rc<Constructor>> {
+        self.constructors
+            .get(name)
+            .ok_or_else(|| Error::Internal(format!("missing constructor {name}")))
+    }
+    pub(crate) fn inductive(&self, name: &str) -> Result<&Rc<InductiveType>> {
+        self.inductives
+            .get(name)
+            .ok_or_else(|| Error::Internal(format!("missing inductive {name}")))
     }
     pub fn infer(&self, expr: &Expr) -> Result<Expr> {
         Checker::new(self).infer(expr)

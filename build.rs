@@ -37,6 +37,25 @@ fn source_hash() -> Result<(), Box<dyn std::error::Error>> {
             .output()?
             .stdout,
     );
+    let mut settings: Vec<_> = std::env::vars()
+        .filter(|(k, _)| {
+            k.starts_with("CARGO_FEATURE_")
+                || k.starts_with("CARGO_CFG_")
+                || [
+                    "PROFILE",
+                    "OPT_LEVEL",
+                    "DEBUG",
+                    "TARGET",
+                    "CARGO_ENCODED_RUSTFLAGS",
+                ]
+                .contains(&k.as_str())
+        })
+        .collect();
+    settings.sort();
+    for (k, v) in settings {
+        h.update(format!("{k}={v}\n").as_bytes());
+    }
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rustc-env=NL_SOURCE_HASH={}", h.finalize().to_hex());
     Ok(())

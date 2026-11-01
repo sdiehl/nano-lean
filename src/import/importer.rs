@@ -31,6 +31,8 @@ pub(super) struct Importer<'a> {
 }
 
 const MAX_GAP: usize = 1 << 16;
+/// Decimal parsing is quadratic, so 4M digits would already take 10s.
+const MAX_NAT_DIGITS: usize = 1 << 16;
 
 /// Empty dense slots stay within `MAX_GAP` or the filled count, so ids that would open more go to
 /// `sparse` and forged ids cannot force an allocation beyond the input's size.
@@ -314,6 +316,9 @@ impl<'a> Importer<'a> {
     pub(super) fn do_nat(&mut self, i: u32, digits: &str) -> Result<()> {
         if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
             return invalid("invalid natural literal");
+        }
+        if digits.len() > MAX_NAT_DIGITS {
+            return unsupported("natural literal too long");
         }
         let Some(n) = BigUint::parse_bytes(digits.as_bytes(), 10) else {
             return invalid("invalid natural literal");

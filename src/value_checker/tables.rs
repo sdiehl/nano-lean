@@ -139,49 +139,69 @@ impl Tables<'_> {
                 }
             )*};
         }
-        self.derived.clear();
+        let Tables {
+            conv_locals,
+            eval_memo,
+            eval_closed,
+            delta,
+            derived,
+            const_ty,
+            rules,
+            support,
+            arg_support,
+            infer_closed,
+            infer_open,
+            eq_cache,
+            fail_cache,
+            neq_cache,
+            hc,
+            neus,
+            neu_log,
+            envs,
+            prunes,
+            frames,
+            lazies,
+            nats,
+        } = &mut self;
+        derived.clear();
         reuse!(
-            self.eval_closed,
-            self.delta,
-            self.const_ty,
-            self.rules,
-            self.support,
-            self.arg_support,
-            self.nats,
-            self.infer_closed[0],
-            self.infer_closed[1]
+            eval_closed,
+            delta,
+            const_ty,
+            rules,
+            support,
+            arg_support,
+            nats,
+            infer_closed[0],
+            infer_closed[1]
         );
-        for l in [
-            &mut self.eq_cache,
-            &mut self.fail_cache,
-            &mut self.neq_cache,
-        ] {
+        for l in [eq_cache, fail_cache, neq_cache] {
             l.empty(keep);
         }
-        self.conv_locals.empty(keep);
-        self.eval_memo.empty(keep);
-        self.infer_open.iter_mut().for_each(|l| l.empty(keep));
-        self.hc.iter_mut().for_each(|l| l.empty(keep));
-        self.envs.iter_mut().for_each(|l| l.empty(keep));
-        self.prunes.empty(keep);
-        self.frames.iter_mut().for_each(|l| l.empty(keep));
-        self.lazies.iter_mut().for_each(|l| l.empty(keep));
-        if self.neus[1].len() <= self.neu_log.len() {
-            for (h, v) in self.neu_log.drain(..) {
-                if let Ok(e) = self.neus[1].find_entry(h, |&(_, x)| ptr::eq(x, v)) {
+        conv_locals.empty(keep);
+        eval_memo.empty(keep);
+        infer_open.iter_mut().for_each(|l| l.empty(keep));
+        hc.iter_mut().for_each(|l| l.empty(keep));
+        envs.iter_mut().for_each(|l| l.empty(keep));
+        prunes.empty(keep);
+        frames.iter_mut().for_each(|l| l.empty(keep));
+        lazies.iter_mut().for_each(|l| l.empty(keep));
+        if neus[1].len() <= neu_log.len() {
+            for (h, v) in neu_log.drain(..) {
+                if let Ok(e) = neus[1].find_entry(h, |&(_, x)| ptr::eq(x, v)) {
                     e.remove();
                 }
             }
         }
-        self.neu_log.clear();
-        for n in &mut self.neus {
+        neu_log.clear();
+        for n in neus {
             if n.len() > keep {
                 *n = Default::default();
             } else if !n.is_empty() {
                 n.clear();
             }
         }
-        // SAFETY: every table is empty, so no `'t` reference survives.
+        // SAFETY: the exhaustive destructure above empties every table, so no `'t` reference survives.
         unsafe { transmute::<Tables<'_>, Tables<'static>>(self) }
     }
 }

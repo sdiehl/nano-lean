@@ -2,10 +2,12 @@ use bumpalo::Bump;
 use num_bigint::BigUint;
 use std::cell::{Cell, RefCell};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 const RETAINED_CHUNK_LIMIT: usize = 16 << 20;
 
-#[derive(Default)]
+static EPOCHS: AtomicU64 = AtomicU64::new(1);
+
 pub struct Arena {
     bump: Bump,
     nat_bytes: Cell<usize>,
@@ -13,6 +15,17 @@ pub struct Arena {
     #[allow(clippy::vec_box)]
     nats: RefCell<Vec<Box<BigUint>>>,
     epoch: u64,
+}
+
+impl Default for Arena {
+    fn default() -> Self {
+        Self {
+            bump: Bump::new(),
+            nat_bytes: Cell::new(0),
+            nats: RefCell::default(),
+            epoch: EPOCHS.fetch_add(1, Relaxed),
+        }
+    }
 }
 
 impl Arena {
@@ -44,13 +57,13 @@ impl Arena {
         self.allocated_bytes() - self.bump.chunk_capacity()
     }
 
-    /// Bumped by every reset, so anything keyed to an older value is stale.
+    /// Unique across arenas and resets, so anything keyed to another value is stale.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
     pub fn reset(&mut self) {
-        self.epoch += 1;
+        self.epoch = EPOCHS.fetch_add(1, Relaxed);
         self.nats.get_mut().clear();
         self.nat_bytes.set(0);
         // Bump::reset keeps its largest chunk, so drop one a large declaration left behind.

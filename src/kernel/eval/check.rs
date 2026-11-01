@@ -404,7 +404,10 @@ impl<'b, 'a> Session<'b, 'a> {
                 None => {
                     // The support bitmap omits very deep indices, so test free variables exactly.
                     let (name, opened) = bind(Name::<Expr>::new("_"), body.expr.clone()).unbind();
-                    opened.fv().contains(&name.to_any().expect("free name"))
+                    let Some(name) = name.to_any() else {
+                        return Err(Error::Internal("unbound projection binder".into()));
+                    };
+                    opened.fv().contains(&name)
                 }
             };
             if prop
@@ -421,6 +424,6 @@ impl<'b, 'a> Session<'b, 'a> {
             let arg = self.projection(name, i, source);
             field = self.apply_body(&body, &arg)?;
         }
-        unreachable!()
+        Err(Error::Internal("projection telescope ended early".into()))
     }
 }

@@ -127,11 +127,21 @@ impl<'a, 'b> Cmp<'a, 'b> {
                 | (Quot(_), Quot(_))
                 | (Thm(..), Thm(..))
                 | (Opaque(..), Opaque(..)) => true,
-                (Def(_, v, _), Def(_, w, _)) => self.expr(v, w),
+                (Def(_, v, h), Def(_, w, k)) => h == k && self.expr(v, w),
                 (Ind(x), Ind(y)) => {
-                    (x.num_params, x.num_indices, x.is_rec, x.is_reflexive)
-                        == (y.num_params, y.num_indices, y.is_rec, y.is_reflexive)
-                        && self.konsts(x.all, y.all)
+                    (
+                        x.num_params,
+                        x.num_indices,
+                        x.num_nested,
+                        x.is_rec,
+                        x.is_reflexive,
+                    ) == (
+                        y.num_params,
+                        y.num_indices,
+                        y.num_nested,
+                        y.is_rec,
+                        y.is_reflexive,
+                    ) && self.konsts(x.all, y.all)
                         && self.konsts(x.ctors, y.ctors)
                 }
                 (Ctor(x), Ctor(y)) => {

@@ -324,7 +324,7 @@ impl NestedExpansion {
         reserved: &mut BTreeSet<String>,
         next: &mut usize,
     ) -> Result<String> {
-        let source = &env.inductives[member];
+        let source = env.inductive(member)?;
         demand(
             source.params.len() == levels.len(),
             "nested inductive universe argument count mismatch",
@@ -336,7 +336,7 @@ impl NestedExpansion {
         let ty = pis(&self.params, specialized);
         let mut constructors = Vec::new();
         for (i, source_name) in source.constructors.iter().enumerate() {
-            let source_ctor = &env.constructors[source_name];
+            let source_ctor = env.constructor(source_name)?;
             let cname = auxiliary_ctor_name(&aux_name, i);
             demand(
                 !env.declarations.contains_key(&cname) && reserved.insert(cname.clone()),

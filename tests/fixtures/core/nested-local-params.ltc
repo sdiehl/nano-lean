@@ -1,0 +1,6 @@
+-- A nested occurrence whose parameters mention a constructor field is rejected, as in Lean.
+inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop
+  | Eq.refl : Eq A a a
+inductive T : Type
+  | T.leaf : T
+  | T.node : forall (a : T), Eq.{1} T a a -> T

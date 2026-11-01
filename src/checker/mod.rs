@@ -210,29 +210,57 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.check_in(idx).map_err(|_| self.failure())
     }
 
+    /// Exhaustive so that a new field must be classified as per-declaration or durable.
+    fn reset_declaration_state(&mut self) {
+        let Self {
+            ctx: _,
+            names: _,
+            uparams: _,
+            limit: _,
+            adapter: _,
+            next_local: _,
+            let_vals,
+            conversion_depth,
+            conversion_locals,
+            probe_remaining,
+            limits,
+            steps_left,
+            fail: _,
+            #[cfg(test)]
+                probe_exhaustions: _,
+            open_infer_cache,
+            support_cache,
+            infer_cache,
+            argument_support,
+            rec_cache,
+            whnf_core_cache,
+            unfold_cache,
+            whnf_cache,
+            eq_cache,
+            fail_cache,
+        } = self;
+        infer_cache.iter_mut().for_each(FxHashMap::clear);
+        open_infer_cache.iter_mut().for_each(FxHashMap::clear);
+        support_cache.clear();
+        argument_support.clear();
+        rec_cache.clear();
+        whnf_core_cache.clear();
+        whnf_cache.clear();
+        unfold_cache.clear();
+        eq_cache.clear();
+        fail_cache.clear();
+        let_vals.clear();
+        *probe_remaining = None;
+        conversion_depth.set(0);
+        conversion_locals.clear();
+        *steps_left = limits.steps;
+    }
+
     fn check_in(&mut self, idx: u32) -> R<()> {
         if self.ctx.arena.used_bytes() > self.limits.arena_bytes {
             return Err(self.decline(Budget::Arena));
         }
-        self.infer_cache
-            .iter_mut()
-            .for_each(std::collections::HashMap::clear);
-        self.open_infer_cache
-            .iter_mut()
-            .for_each(std::collections::HashMap::clear);
-        self.support_cache.clear();
-        self.argument_support.clear();
-        self.rec_cache.clear();
-        self.whnf_core_cache.clear();
-        self.whnf_cache.clear();
-        self.unfold_cache.clear();
-        self.eq_cache.clear();
-        self.fail_cache.clear();
-        self.let_vals.clear();
-        self.probe_remaining = None;
-        self.conversion_depth.set(0);
-        self.conversion_locals.clear();
-        self.steps_left = self.limits.steps;
+        self.reset_declaration_state();
         let d: Declar<'t> = self.ctx.store.declars[idx as usize];
         self.uparams = d.uparams();
         self.limit = idx;
@@ -309,7 +337,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub(crate) fn fresh_local(&mut self, ty: ExprPtr<'t>) -> ExprPtr<'t> {
-        self.next_local += 1;
+        self.next_local = self.next_local.checked_add(1).expect("local ids exhausted");
         self.ctx.local(self.next_local, ty)
     }
 

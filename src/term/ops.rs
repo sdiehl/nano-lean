@@ -205,6 +205,10 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
 
     fn fresh(&mut self) -> u32 {
         self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.memo.clear();
+            self.generation = 1;
+        }
         self.generation
     }
 

@@ -28,6 +28,8 @@ pub enum ExportError {
     Invalid(String),
     #[error("unsupported: {0}")]
     Unsupported(String),
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
 impl ExportError {
@@ -35,6 +37,7 @@ impl ExportError {
         match self {
             Self::Invalid(s) => Self::Invalid(format!("{unit} {}: {s}", n + 1)),
             Self::Unsupported(s) => Self::Unsupported(format!("{unit} {}: {s}", n + 1)),
+            Self::Internal(s) => Self::Internal(format!("{unit} {}: {s}", n + 1)),
         }
     }
 }
@@ -56,6 +59,7 @@ impl From<Error> for ExportError {
         match e {
             Error::Rejected(s) => Self::Invalid(s),
             Error::Unsupported(s) => Self::Unsupported(s),
+            Error::Internal(s) => Self::Internal(s),
             e => Self::Unsupported(e.to_string()),
         }
     }
@@ -166,7 +170,7 @@ impl From<ExportError> for Report {
         let reason = e.to_string();
         match e {
             ExportError::Invalid(_) => Self::Rejected { reason },
-            ExportError::Unsupported(_) => Self::Unsupported { reason },
+            ExportError::Unsupported(_) | ExportError::Internal(_) => Self::Unsupported { reason },
         }
     }
 }

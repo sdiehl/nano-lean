@@ -1,0 +1,2 @@
+inductive Eq Eq.refl Eq.rec
+error: nested inductive parameters contain constructor-local variables

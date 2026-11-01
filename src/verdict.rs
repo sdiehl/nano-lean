@@ -82,6 +82,7 @@ fn reference(source: &str) -> Verdict {
         Ok(_) => Verdict::Accepted,
         Err(ExportError::Invalid(s)) => Verdict::Rejected(s),
         Err(ExportError::Unsupported(s)) => Verdict::Unsupported(s),
+        Err(ExportError::Internal(s)) => Verdict::Internal(s),
     }
 }
 
@@ -145,6 +146,10 @@ fn walk(
         }
         Err(ExportError::Unsupported(s)) => {
             visit(Verdict::Unsupported(s));
+            return;
+        }
+        Err(ExportError::Internal(s)) => {
+            visit(Verdict::Internal(s));
             return;
         }
     };

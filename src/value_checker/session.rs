@@ -58,7 +58,11 @@ pub fn check<'a>(
     result.map(|()| false)
 }
 
+/// Fresh tables restart local ids long before they could wrap.
+const LOCAL_RESTART: u32 = 1 << 31;
+
 struct State {
+    epoch: u64,
     last: u32,
     next_local: u32,
     ctx: Ctx<'static, 'static>,
@@ -127,11 +131,19 @@ impl<'a> Session<'a> {
             }
             return r.map(|()| false);
         }
-        let state = self.state.take().filter(|s| s.last < idx);
+        let epoch = self.arena.epoch();
+        let state = self
+            .state
+            .take()
+            .filter(|s| s.last < idx && s.next_local < LOCAL_RESTART);
+        assert!(
+            state.as_ref().is_none_or(|s| s.epoch == epoch),
+            "state outlived its arena"
+        );
         let arena: &Arena = &self.arena;
         let mut vc = Vc::new(store, arena, limits);
         if let Some(s) = state {
-            // SAFETY: `s` came from this session's arena, untouched since.
+            // SAFETY: the epoch check above ties `s` to this arena, unreset since.
             unsafe {
                 vc.t.absorb(transmute::<Tables<'static>, Tables<'_>>(s.t));
                 vc.ctx = transmute::<Ctx<'static, 'static>, Ctx<'_, '_>>(s.ctx);
@@ -156,6 +168,7 @@ impl<'a> Session<'a> {
             // SAFETY: the state only lives inside this session, next to its arena.
             self.state = Some(unsafe {
                 State {
+                    epoch,
                     last: idx,
                     next_local: vc.next_local,
                     ctx: transmute::<Ctx<'_, '_>, Ctx<'static, 'static>>(ctx),

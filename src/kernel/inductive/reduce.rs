@@ -14,12 +14,14 @@ impl Checker<'_> {
             return Ok(None);
         };
         // Ordinary constructor reduction already failed, so only structure eta or K can apply.
-        if !rec.k
-            && !rec.rules.first().is_some_and(|rule| {
-                self.structure(&self.env.constructors[&rule.constructor].inductive)
-                    .is_some()
-            })
-        {
+        let structure = match rec.rules.first() {
+            Some(rule) => {
+                let inductive = &self.env.constructor(&rule.constructor)?.inductive;
+                self.structure(inductive).is_some()
+            }
+            None => false,
+        };
+        if !rec.k && !structure {
             return Ok(None);
         }
         let major_pos = rec.num_params + rec.num_motives + rec.num_minors + rec.num_indices;
@@ -90,7 +92,7 @@ impl Checker<'_> {
         rule: &RecursorRule,
         major: &Expr,
     ) -> Result<Option<(Expr, Vec<Expr>)>> {
-        let info = self.env.constructors[&rule.constructor].clone();
+        let info = self.env.constructor(&rule.constructor)?.clone();
         if self.structure(&info.inductive).is_none() {
             return Ok(None);
         }
@@ -117,7 +119,7 @@ impl Checker<'_> {
         major: &Expr,
         params: &[Expr],
     ) -> Result<Option<(Expr, Vec<Expr>)>> {
-        let info = &self.env.constructors[&rule.constructor];
+        let info = self.env.constructor(&rule.constructor)?;
         let us = info
             .params
             .iter()
@@ -183,7 +185,7 @@ impl Checker<'_> {
             info.constructors.len() == 1 && nargs == info.num_params + info.num_indices,
             "projection requires a single-constructor inductive",
         )?;
-        let ctor = self.env.constructors[&info.constructors[0]].clone();
+        let ctor = self.env.constructor(&info.constructors[0])?.clone();
         demand(index < ctor.num_fields, "projection field out of range")?;
         let subst = self.level_arguments(&ctor.params, levels)?;
         Ok((ctor.num_params, self.substitute_levels(&ctor.ty, &subst)?))
