@@ -22,6 +22,13 @@ pub enum ExportDependency {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    Theorem,
+    Opaque,
+    Definition,
+}
+
 impl Environment {
     fn assume_dependency(&mut self, dependency: ExportDependency) -> Result<()> {
         match dependency {
@@ -41,14 +48,14 @@ impl Environment {
         }
     }
 
-    fn declare_target(&mut self, target: ExportDependency, theorem: bool) -> Result<()> {
+    fn declare_target(&mut self, target: ExportDependency, kind: TargetKind) -> Result<()> {
         match target {
             ExportDependency::Ordinary {
                 name,
                 params,
                 ty,
                 value,
-            } if theorem => self.declare_theorem(
+            } if kind == TargetKind::Theorem => self.declare_theorem(
                 name,
                 params,
                 ty,
@@ -59,7 +66,7 @@ impl Environment {
                 params,
                 ty,
                 value,
-            } => self.declare(name, params, ty, value, true),
+            } => self.declare(name, params, ty, value, kind == TargetKind::Definition),
             other => self.assume_dependency(other),
         }
     }
@@ -85,7 +92,7 @@ fn ordinary_name(dependency: &ExportDependency) -> Option<String> {
 pub fn validate_export_dependencies(
     dependencies: impl IntoIterator<Item = ExportDependency>,
     target: ExportDependency,
-    theorem: bool,
+    kind: TargetKind,
     work: Rc<Cell<u64>>,
 ) -> Result<()> {
     let mut env = Environment::new();
@@ -93,7 +100,7 @@ pub fn validate_export_dependencies(
     for dependency in dependencies {
         env.assume_dependency(dependency)?;
     }
-    env.declare_target(target, theorem)
+    env.declare_target(target, kind)
 }
 
 #[derive(Default)]
@@ -121,14 +128,14 @@ impl ExportSession {
         &mut self,
         dependencies: impl IntoIterator<Item = (u32, ExportDependency)>,
         target: ExportDependency,
-        theorem: bool,
+        kind: TargetKind,
         work: Rc<Cell<u64>>,
     ) -> Result<()> {
         let index = self
             .target
             .ok_or_else(|| Error::Rejected("missing export target".into()))?;
         self.env.export_work = Some(work);
-        let result = self.extend(dependencies, target, theorem, index);
+        let result = self.extend(dependencies, target, kind, index);
         if result.is_err() {
             *self = Self::default();
         }
@@ -139,7 +146,7 @@ impl ExportSession {
         &mut self,
         dependencies: impl IntoIterator<Item = (u32, ExportDependency)>,
         target: ExportDependency,
-        theorem: bool,
+        kind: TargetKind,
         index: u32,
     ) -> Result<()> {
         for (dependency_index, dependency) in dependencies {
@@ -155,7 +162,7 @@ impl ExportSession {
             self.known.insert(dependency_index);
         }
         let name = ordinary_name(&target);
-        self.env.declare_target(target, theorem)?;
+        self.env.declare_target(target, kind)?;
         if let Some(name) = name {
             self.env.set_order(&name, index);
         }
@@ -184,16 +191,43 @@ mod tests {
         let work = Rc::new(Cell::new(10000));
         session.begin(10);
         session
-            .validate([(9, axiom("later"))], axiom("first"), false, work.clone())
+            .validate(
+                [(9, axiom("later"))],
+                axiom("first"),
+                TargetKind::Definition,
+                work.clone(),
+            )
             .unwrap();
         session.begin(20);
         session
-            .validate([(4, axiom("earlier"))], axiom("second"), false, work)
+            .validate(
+                [(4, axiom("earlier"))],
+                axiom("second"),
+                TargetKind::Definition,
+                work,
+            )
             .unwrap();
         assert!(
             session.env.declarations["earlier"].order < session.env.declarations["later"].order
         );
         session.begin(5);
         assert!(!session.contains(9));
+    }
+
+    #[test]
+    fn opaque_targets_stay_opaque_for_later_targets() {
+        let mut session = ExportSession::default();
+        let work = Rc::new(Cell::new(10000));
+        let opaque = ExportDependency::Ordinary {
+            name: "o".into(),
+            params: vec![],
+            ty: Expr::Sort(Level::Nat(1)),
+            value: Some(Expr::Sort(Level::Nat(0))),
+        };
+        session.begin(1);
+        session
+            .validate([], opaque, TargetKind::Opaque, work)
+            .unwrap();
+        assert!(session.env.declarations["o"].value.is_none());
     }
 }

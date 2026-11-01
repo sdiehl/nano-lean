@@ -12,7 +12,7 @@ pub struct Ctx<'t, 'a: 't> {
     pub store: &'a Store<'a>,
     pub arena: &'t Arena,
     pub dag: Dag<'t>,
-    pub(crate) memo: FxHashMap<(ExprPtr<'t>, u32), (u32, ExprPtr<'t>)>,
+    pub(crate) memo: FxHashMap<(ExprPtr<'t>, u64), (u32, ExprPtr<'t>)>,
     pub(crate) generation: u32,
     pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, ExprPtr<'t>), ExprPtr<'t>>,
     pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,

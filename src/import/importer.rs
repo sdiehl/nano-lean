@@ -32,10 +32,12 @@ pub(super) struct Importer<'a> {
 
 const MAX_GAP: usize = 1 << 16;
 
-/// Ids far past the dense end go to `sparse`, so a forged id cannot force a huge allocation.
+/// Empty dense slots stay within `MAX_GAP` or the filled count, so ids that would open more go to
+/// `sparse` and forged ids cannot force an allocation beyond the input's size.
 struct Table<T> {
     dense: Vec<Option<T>>,
     sparse: FxHashMap<u32, T>,
+    holes: usize,
 }
 
 impl<T: Copy> Table<T> {
@@ -43,7 +45,23 @@ impl<T: Copy> Table<T> {
         Self {
             dense,
             sparse: FxHashMap::default(),
+            holes: 0,
         }
+    }
+
+    fn fits(&self, k: usize) -> bool {
+        let open = self.holes + k.saturating_sub(self.dense.len());
+        open <= MAX_GAP.max(self.dense.len() - self.holes)
+    }
+
+    fn place(&mut self, k: usize, x: T) {
+        if self.dense.len() <= k {
+            self.holes += k - self.dense.len();
+            self.dense.resize_with(k + 1, || None);
+        } else {
+            self.holes -= 1;
+        }
+        self.dense[k] = Some(x);
     }
 
     #[inline]
@@ -70,16 +88,13 @@ impl<T: Copy> Table<T> {
             self.dense.push(Some(x));
             return Ok(());
         }
-        if !self.sparse.is_empty() || k >= self.dense.len() + MAX_GAP {
+        if !self.sparse.is_empty() || !self.fits(k) {
             return self.put_sparse(i, x);
         }
-        if self.dense.len() <= k {
-            self.dense.resize_with(k + 1, || None);
-        }
-        if self.dense[k].is_some() {
+        if self.dense.get(k).is_some_and(Option::is_some) {
             return invalid("duplicate index");
         }
-        self.dense[k] = Some(x);
+        self.place(k, x);
         Ok(())
     }
 
@@ -90,13 +105,10 @@ impl<T: Copy> Table<T> {
         if self.sparse.contains_key(&i) || self.dense.get(k).is_some_and(Option::is_some) {
             return invalid("duplicate index");
         }
-        if k >= self.dense.len() + MAX_GAP {
-            self.sparse.insert(i, x);
+        if self.fits(k) {
+            self.place(k, x);
         } else {
-            if self.dense.len() <= k {
-                self.dense.resize_with(k + 1, || None);
-            }
-            self.dense[k] = Some(x);
+            self.sparse.insert(i, x);
         }
         Ok(())
     }
@@ -461,6 +473,7 @@ impl<'a> Importer<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_GAP, Table};
     use crate::import::import_bytes;
     use crate::term::arena::Arena;
 
@@ -474,5 +487,15 @@ mod tests {
         assert!(import_bytes(&Arena::new(), ok.as_bytes()).is_ok());
         let dup = format!("{META}\n{far}\n{far}\n");
         assert!(import_bytes(&Arena::new(), dup.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn stepped_gaps_cannot_grow_the_dense_table() {
+        let mut t = Table::new(Vec::new());
+        for n in 1..4000u32 {
+            t.put(n * (MAX_GAP as u32 - 1), n).unwrap();
+        }
+        assert!(t.dense.len() <= 2 * MAX_GAP);
+        assert_eq!(t.get(3999 * (MAX_GAP as u32 - 1)).unwrap(), 3999);
     }
 }

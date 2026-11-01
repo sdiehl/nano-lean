@@ -1,7 +1,7 @@
 use super::Tc;
 use crate::kernel;
 use crate::kernel::export_validation::{
-    ExportDependency, ExportSession, validate_export_dependencies,
+    ExportDependency, ExportSession, TargetKind, validate_export_dependencies,
 };
 use crate::kernel::{Expr as KernelExpr, Level as KernelLevel};
 use crate::resource::{Budget, stack_exhausted, stack_floor};
@@ -100,9 +100,13 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             adapter.session.begin(idx);
         }
         let dependencies = self.inductive_dependencies(block)?;
-        let theorem = matches!(d, Declar::Thm(..));
+        let kind = match d {
+            Declar::Thm(..) => TargetKind::Theorem,
+            Declar::Opaque(..) => TargetKind::Opaque,
+            _ => TargetKind::Definition,
+        };
         if let Some(adapter) = self.adapter.as_mut() {
-            let result = bridged(adapter, dependencies, idx, theorem, &mut self.steps_left);
+            let result = bridged(adapter, dependencies, idx, kind, &mut self.steps_left);
             return result.map_err(|f| self.failed(f));
         }
         let mut convert = Convert::new();
@@ -119,7 +123,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             .declaration(store, d, true)
             .map_err(|f| self.failed(f))?;
         let result = with_work(&mut self.steps_left, |work| {
-            validate_export_dependencies(prefix, target, theorem, work)
+            validate_export_dependencies(prefix, target, kind, work)
         });
         accept(result).map_err(|f| self.failed(f))
     }
@@ -215,7 +219,7 @@ fn bridged<'a>(
     adapter: &mut Adapter<'a>,
     dependencies: BTreeSet<u32>,
     idx: u32,
-    theorem: bool,
+    kind: TargetKind,
     steps_left: &mut u64,
 ) -> Result<(), Failure> {
     let store = adapter.store;
@@ -229,7 +233,7 @@ fn bridged<'a>(
         .convert
         .declaration(store, store.declars[idx as usize], true)?;
     let result = with_work(steps_left, |work| {
-        adapter.session.validate(prefix, target, theorem, work)
+        adapter.session.validate(prefix, target, kind, work)
     });
     if adapter.convert.expressions.len() > CONVERT_CACHE_LIMIT {
         adapter.convert = Convert::new();

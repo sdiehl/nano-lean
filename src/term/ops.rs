@@ -4,9 +4,9 @@ use super::expr::Expr;
 use super::level::Level;
 use super::ptr::{ExprPtr, LevelPtr, LevelsPtr};
 
-const OP_LIFT: u32 = 1 << 24;
-const OP_INST: u32 = 2 << 24;
-const OP_ABST: u32 = 4 << 24;
+const OP_LIFT: u64 = 1 << 32;
+const OP_INST: u64 = 2 << 32;
+const OP_ABST: u64 = 4 << 32;
 const INST_CACHE_LIMIT: usize = 4096;
 
 impl<'t, 'a: 't> Ctx<'t, 'a> {
@@ -209,7 +209,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
     }
 
     #[inline]
-    fn memo_get(&self, key: (ExprPtr<'t>, u32), g: u32) -> Option<ExprPtr<'t>> {
+    fn memo_get(&self, key: (ExprPtr<'t>, u64), g: u32) -> Option<ExprPtr<'t>> {
         match self.memo.get(&key) {
             Some(&(k, r)) if k == g => Some(r),
             _ => None,
@@ -258,7 +258,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if amount == 0 || e.nlb() <= cutoff {
             return e;
         }
-        let key = (e, OP_LIFT | u32::from(cutoff));
+        let key = (e, OP_LIFT | u64::from(amount) << 16 | u64::from(cutoff));
         if let Some(r) = self.memo_get(key, g) {
             return r;
         }
@@ -313,7 +313,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if e.nlb() <= off {
             return e;
         }
-        let key = (e, OP_INST | u32::from(off));
+        let key = (e, OP_INST | u64::from(off));
         if let Some(r) = self.memo_get(key, g) {
             return r;
         }
@@ -350,7 +350,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if !e.has_local() {
             return e;
         }
-        let key = (e, OP_ABST | u32::from(off));
+        let key = (e, OP_ABST | u64::from(off));
         if let Some(r) = self.memo_get(key, g) {
             return r;
         }
@@ -450,8 +450,7 @@ mod tests {
                 vec![v1],
                 vec![prop, local],
             ] {
-                let generation = ctx.fresh();
-                let expected = ctx.inst_rec(expression, &substitutions, 0, generation);
+                let expected = reference_inst(&mut ctx, expression, &substitutions, 0);
                 assert_eq!(ctx.inst(expression, &substitutions), Some(expected));
                 ctx.inst(expression, &[other_local, prop]);
                 assert_eq!(ctx.inst(expression, &substitutions), Some(expected));
@@ -462,6 +461,56 @@ mod tests {
         let expected_body = ctx.app(v0, v2);
         let expected = ctx.lam(prop, expected_body);
         assert_eq!(ctx.inst1(abstraction, v1), Some(expected));
+    }
+
+    fn reference_lift<'t>(
+        ctx: &mut Ctx<'t, '_>,
+        e: ExprPtr<'t>,
+        cutoff: u16,
+        amount: u16,
+    ) -> ExprPtr<'t> {
+        match *e {
+            Expr::Var { idx, .. } if idx >= cutoff => ctx.var(idx + amount),
+            Expr::Var { .. } => e,
+            _ => ctx.map_children(e, |c, x, d| reference_lift(c, x, cutoff + d, amount)),
+        }
+    }
+
+    fn reference_inst<'t>(
+        ctx: &mut Ctx<'t, '_>,
+        e: ExprPtr<'t>,
+        subs: &[ExprPtr<'t>],
+        off: u16,
+    ) -> ExprPtr<'t> {
+        match *e {
+            Expr::Var { idx, .. } if idx < off => e,
+            Expr::Var { idx, .. } => match subs.len().checked_sub(1 + usize::from(idx - off)) {
+                Some(i) => reference_lift(ctx, subs[i], 0, off),
+                None => ctx.var(idx - subs.len() as u16),
+            },
+            _ => ctx.map_children(e, |c, x, d| reference_inst(c, x, subs, off + d)),
+        }
+    }
+
+    #[test]
+    fn open_substitution_lifts_by_each_binder_depth() {
+        let imported = Arena::new();
+        let store = import_bytes(
+            &imported,
+            include_bytes!("../../tests/fixtures/foundations.ndjson"),
+        )
+        .unwrap();
+        let arena = Arena::new();
+        let mut ctx = Ctx::new(&store, &arena);
+        let prop = ctx.prop();
+        let (v1, v2, v5, v6, v7) = (ctx.var(1), ctx.var(2), ctx.var(5), ctx.var(6), ctx.var(7));
+        let inner = ctx.lam(prop, v2);
+        let body = ctx.app(v1, inner);
+        let e = ctx.lam(prop, body);
+        let inner = ctx.lam(prop, v7);
+        let body = ctx.app(v6, inner);
+        let expected = ctx.lam(prop, body);
+        assert_eq!(ctx.inst(e, &[v5]), Some(expected));
     }
 
     #[test]
