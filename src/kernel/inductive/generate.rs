@@ -1,6 +1,6 @@
 use super::{
     Constructor, InductiveBlock, InductiveType, Local, RecursiveField, Recursor, RecursorRule,
-    apply, demand, is_zero, lambdas, occurs, pis, rec_name, spine, variable,
+    Telescope, apply, demand, is_zero, lambdas, occurs, pis, rec_name, spine, variable,
 };
 use crate::kernel::prelude::*;
 use std::slice;
@@ -256,6 +256,7 @@ impl Family<'_> {
             .collect();
         let names: Vec<_> = self.types.iter().map(|t| rec_name(&t.name)).collect();
         let levels: Vec<_> = elim.params.iter().cloned().map(Level::Param).collect();
+        let mut telescope = Telescope::new(&prefix);
         let mut generated = Vec::new();
         for (owner, t) in self.types.iter().enumerate() {
             let result = apply(
@@ -289,13 +290,13 @@ impl Family<'_> {
                 rules.push(RecursorRule {
                     constructor: shape.constructor.name.clone(),
                     num_fields: shape.fields.len(),
-                    rhs: lambdas(&prefix, lambdas(&shape.fields, rhs)),
+                    rhs: telescope.lambdas(lambdas(&shape.fields, rhs)),
                 });
             }
             generated.push(Recursor {
                 name: names[owner].clone(),
                 params: elim.params.clone(),
-                ty: pis(&prefix, pis(&tail, result)),
+                ty: telescope.pis(pis(&tail, result)),
                 all: all.to_vec(),
                 num_params: self.types[0].num_params,
                 num_indices: t.num_indices,

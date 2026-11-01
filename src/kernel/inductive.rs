@@ -4,6 +4,7 @@ mod generate;
 mod nested;
 mod reduce;
 mod validate;
+use crate::syntax::Binder;
 use nested::NestedExpansion;
 use serde_json::Value;
 
@@ -126,6 +127,99 @@ fn lambdas(locals: &[Local], body: Expr) -> Expr {
         .iter()
         .rev()
         .fold(body, |body, (n, ty)| Expr::lam(n.clone(), ty.clone(), body))
+}
+
+type Closed = (Shared<Expr>, Shared<Expr>);
+
+/// Closes every local of a telescope in one memoized pass, so the domains are shared by every term bound over it.
+pub(super) struct Telescope<'a> {
+    locals: &'a [Local],
+    position: HashMap<usize, usize>,
+    memo: HashMap<(usize, usize, usize), Closed>,
+    domains: Vec<Shared<Expr>>,
+}
+
+impl<'a> Telescope<'a> {
+    pub(super) fn new(locals: &'a [Local]) -> Self {
+        let position = locals
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (n, _))| Some((n.index()?, i)))
+            .collect();
+        let mut t = Self {
+            locals,
+            position,
+            memo: HashMap::default(),
+            domains: Vec::with_capacity(locals.len()),
+        };
+        for (j, (_, ty)) in locals.iter().enumerate() {
+            let domain = t.close(&Shared::new(ty.clone()), j, 0);
+            t.domains.push(domain);
+        }
+        t
+    }
+
+    pub(super) fn lambdas(&mut self, body: Expr) -> Expr {
+        self.wrap(body, Expr::Lam)
+    }
+
+    pub(super) fn pis(&mut self, body: Expr) -> Expr {
+        self.wrap(body, Expr::Pi)
+    }
+
+    fn wrap(&mut self, body: Expr, binder: fn(Shared<Expr>, Binder) -> Expr) -> Expr {
+        let mut out = self.close(&Shared::new(body), self.locals.len(), 0);
+        for (j, (n, _)) in self.locals.iter().enumerate().rev() {
+            out = Shared::new(binder(self.domains[j].clone(), bind(n.clone(), out)));
+        }
+        (*out).clone()
+    }
+
+    fn close(&mut self, e: &Shared<Expr>, k: usize, d: usize) -> Shared<Expr> {
+        let key = (e.as_ptr() as usize, k, d);
+        if let Some((_, out)) = self.memo.get(&key) {
+            return out.clone();
+        }
+        let binder = |b: &Binder, t: &mut Self| {
+            let body = t.close(b.body(), k, d + 1);
+            (!body.ptr_eq(b.body())).then(|| bind(b.pattern().clone(), body))
+        };
+        let out = match &**e {
+            Expr::Var(n) => match n.index().and_then(|i| self.position.get(&i)) {
+                Some(&i) if i < k => Some(Expr::Var(Name::bound(d + k - 1 - i, 0))),
+                _ => None,
+            },
+            Expr::Nat(_) | Expr::Str(_) | Expr::Sort(_) | Expr::Const(..) => None,
+            Expr::App(f, a) => {
+                let (f2, a2) = (self.close(f, k, d), self.close(a, k, d));
+                (!f2.ptr_eq(f) || !a2.ptr_eq(a)).then_some(Expr::App(f2, a2))
+            }
+            Expr::Proj(n, i, x) => {
+                let x2 = self.close(x, k, d);
+                (!x2.ptr_eq(x)).then(|| Expr::Proj(n.clone(), *i, x2))
+            }
+            Expr::Pi(a, b) | Expr::Lam(a, b) => {
+                let a2 = self.close(a, k, d);
+                let b2 = binder(b, self);
+                (!a2.ptr_eq(a) || b2.is_some()).then(|| {
+                    let b2 = b2.unwrap_or_else(|| b.clone());
+                    match &**e {
+                        Expr::Pi(..) => Expr::Pi(a2, b2),
+                        _ => Expr::Lam(a2, b2),
+                    }
+                })
+            }
+            Expr::Let(a, v, b) => {
+                let (a2, v2) = (self.close(a, k, d), self.close(v, k, d));
+                let b2 = binder(b, self);
+                (!a2.ptr_eq(a) || !v2.ptr_eq(v) || b2.is_some())
+                    .then(|| Expr::Let(a2, v2, b2.unwrap_or_else(|| b.clone())))
+            }
+        };
+        let out = out.map_or_else(|| e.clone(), Shared::new);
+        self.memo.insert(key, (e.clone(), out.clone()));
+        out
+    }
 }
 
 fn level_substitution(params: &[String], levels: &[Level]) -> BTreeMap<String, Level> {
