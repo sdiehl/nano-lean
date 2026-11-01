@@ -97,8 +97,10 @@ impl Environment {
                 "incorrect recursor rule metadata",
             )?;
             let rhs = ar.rhs.substitute_levels(&levels)?;
-            let ty = tc.infer(&er.rhs)?;
-            if !rhs.aeq(&er.rhs) {
+            if rhs.aeq(&er.rhs) {
+                tc.well_typed(&er.rhs)?;
+            } else {
+                let ty = tc.infer(&er.rhs)?;
                 tc.check(&rhs, &ty)?;
                 demand(
                     tc.conv(&rhs, &er.rhs)?,

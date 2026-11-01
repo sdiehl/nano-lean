@@ -77,6 +77,12 @@ impl Checker<'_> {
         let ty = s.infer(&e, checking)?;
         s.quote_type(&ty)
     }
+    pub(in crate::kernel) fn semantic_well_typed(&mut self, e: &Expr) -> Result<()> {
+        let checking = self.checking;
+        let mut s = Session::new(self);
+        let e = s.ev.term(e.clone(), None);
+        s.infer(&e, checking).map(drop)
+    }
     pub(in crate::kernel) fn semantic_sort(&mut self, e: &Expr) -> Result<Level> {
         let checking = self.checking;
         let mut s = Session::new(self);

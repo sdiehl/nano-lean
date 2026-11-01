@@ -40,6 +40,12 @@ impl Checker<'_> {
         self.checking = previous;
         result
     }
+    pub(super) fn well_typed(&mut self, e: &Expr) -> Result<()> {
+        if self.semantic {
+            return self.semantic_well_typed(e);
+        }
+        self.infer(e).map(drop)
+    }
     pub(super) fn infer(&mut self, e: &Expr) -> Result<Expr> {
         if self.semantic {
             return self.semantic_infer(e);
