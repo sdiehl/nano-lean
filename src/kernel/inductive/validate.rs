@@ -83,8 +83,10 @@ impl Environment {
         let mut tc = self.checker(&e.params);
         let ty = a.ty.substitute_levels(&levels)?;
         tc.sort(&e.ty)?;
-        tc.sort(&ty)?;
-        demand(tc.conv(&ty, &e.ty)?, "incorrect recursor type")?;
+        if !ty.aeq(&e.ty) {
+            tc.sort(&ty)?;
+            demand(tc.conv(&ty, &e.ty)?, "incorrect recursor type")?;
+        }
         demand(
             a.rules.len() == e.rules.len(),
             "incorrect recursor rule count",
@@ -96,11 +98,13 @@ impl Environment {
             )?;
             let rhs = ar.rhs.substitute_levels(&levels)?;
             let ty = tc.infer(&er.rhs)?;
-            tc.check(&rhs, &ty)?;
-            demand(
-                tc.conv(&rhs, &er.rhs)?,
-                "incorrect recursor computation rule",
-            )?;
+            if !rhs.aeq(&er.rhs) {
+                tc.check(&rhs, &ty)?;
+                demand(
+                    tc.conv(&rhs, &er.rhs)?,
+                    "incorrect recursor computation rule",
+                )?;
+            }
         }
         Ok(())
     }
