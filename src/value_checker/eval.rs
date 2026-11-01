@@ -79,6 +79,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         } {
             Ok(&v) => {
                 stat!(self, memo_hits);
+                #[cfg(feature = "memocheck")]
+                self.audit_value("evaluation", v, |c| {
+                    c.audit_bypass();
+                    c.eval_miss(env, sub, e, closed, 0)
+                });
                 #[cfg(feature = "vstats")]
                 {
                     match *e {
@@ -110,6 +115,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         closed: bool,
         h: u64,
     ) -> R<V<'t>> {
+        let audited = self.bypassed();
+        #[cfg(feature = "memocheck")]
+        self.audit_entered();
         self.guard()?;
         stat!(self, evals);
         #[cfg(feature = "vstats")]
@@ -201,7 +209,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Expr::Local { .. } => reject!(self, "unexpected local in syntax"),
         };
         // Evaluation never revisits its own key, so the probe's hash still fits.
-        if closed {
+        if audited {
+        } else if closed {
             self.t.eval_closed.insert_new(h, (e, sub), v);
         } else {
             self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);

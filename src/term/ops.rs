@@ -27,9 +27,21 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             return l;
         }
         if let Some(&r) = self.simp_cache.get(&l) {
+            #[cfg(feature = "memocheck")]
+            assert!(
+                self.simplify_step(l) == r,
+                "memocheck: a level simplification hit disagrees"
+            );
             return r;
         }
-        let r = match *l {
+        let r = self.simplify_step(l);
+        self.simp_cache.insert(l, r);
+        r
+    }
+
+    #[inline(always)]
+    fn simplify_step(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
+        match *l {
             Level::Zero | Level::Param(..) => l,
             Level::Succ(a, _) => {
                 let a = self.simplify(a);
@@ -53,9 +65,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                     }
                 }
             }
-        };
-        self.simp_cache.insert(l, r);
-        r
+        }
     }
 
     pub fn subst_level(
@@ -293,6 +303,15 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
         if let Some(key) = key
             && let Some(&result) = self.inst_cache.get(&key)
         {
+            #[cfg(feature = "memocheck")]
+            {
+                let g = self.fresh();
+                let r = self.inst_rec(e, subs, 0, g);
+                assert!(
+                    !std::mem::take(&mut self.overflow) && r == result,
+                    "memocheck: an instantiation hit disagrees"
+                );
+            }
             return Some(result);
         }
         let g = self.fresh();
@@ -385,9 +404,21 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             return e;
         }
         if let Some(&r) = self.subst_cache.get(&(e, ks, vs)) {
+            #[cfg(feature = "memocheck")]
+            assert!(
+                self.subst_step(e, ks, vs) == r,
+                "memocheck: a level substitution hit disagrees"
+            );
             return r;
         }
-        let r = match *e {
+        let r = self.subst_step(e, ks, vs);
+        self.subst_cache.insert((e, ks, vs), r);
+        r
+    }
+
+    #[inline(always)]
+    fn subst_step(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
+        match *e {
             Expr::Sort { level, .. } => {
                 let l = self.subst_level(level, ks, vs);
                 self.sort(l)
@@ -397,9 +428,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
                 self.konst(name, ls)
             }
             _ => self.map_children(e, |c, x, _| c.subst_expr_levels(x, ks, vs)),
-        };
-        self.subst_cache.insert((e, ks, vs), r);
-        r
+        }
     }
 
     pub fn unfold_apps(&self, mut e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {

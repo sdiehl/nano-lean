@@ -71,11 +71,22 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             relevant.push(env[j]);
         }
         let key = (e, relevant);
-        if let Some(&ty) = self.open_infer_cache[0].get(&key) {
+        let hit = match self.open_infer_cache[0].get(&key) {
+            None if only => self.open_infer_cache[1].get(&key),
+            r => r,
+        };
+        if !self.bypassed()
+            && let Some(&ty) = hit
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_term("contextual type", ty, |c| {
+                c.infer_contextual(e, &mut env.clone(), only)
+            });
             return Ok(ty);
         }
-        if only && let Some(&ty) = self.open_infer_cache[1].get(&key) {
-            return Ok(ty);
+        #[cfg(feature = "memocheck")]
+        {
+            self.audit.bypass = false;
         }
         let result = match *e {
             Expr::Var { idx, .. } => self.infer(env[env.len() - 1 - usize::from(idx)], only)?,

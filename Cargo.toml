@@ -10,6 +10,7 @@ license = "MIT"
 profile = []
 vstats = []
 derivecheck = []
+memocheck = []
 
 [dependencies]
 unbound = "0.4.0"

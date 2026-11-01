@@ -26,6 +26,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     pub fn def_eq(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
         self.tick()?;
         if t == s || self.eq_cache.contains(&(t, s)) {
+            #[cfg(feature = "memocheck")]
+            if t != s {
+                self.audit("equality", |c| c.def_eq_core(t, s));
+            }
             return Ok(true);
         }
         let r = self.def_eq_core(t, s)?;

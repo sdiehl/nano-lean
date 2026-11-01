@@ -191,7 +191,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         e: ExprPtr<'t>,
         only: bool,
     ) -> R<V<'t>> {
-        self.infer_fast(env, sub, e, only)
+        let t = self.infer_fast(env, sub, e, only)?;
+        #[cfg(feature = "memocheck")]
+        self.audit_value("type", t, |c| {
+            c.audit_bypass();
+            c.infer_slow(env, sub, e, only)
+        });
+        Ok(t)
     }
 
     /// Hits return from a frameless probe. Whatever calls out happens in `infer_slow`.
@@ -240,7 +246,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let raw = (e, sub, env.key());
         let mark = self.scoped;
         if closed {
-            if let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub))
+            if !self.bypassed()
+                && let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub))
                 && self.within(s)
             {
                 stat!(self, closed_hit);
@@ -250,7 +257,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 return Ok(t);
             }
             stat!(self, closed_miss);
-            if only && let Some(&(t, _)) = self.t.infer_closed[1].get(&(e, sub)) {
+            if only
+                && !self.bypassed()
+                && let Some(&(t, _)) = self.t.infer_closed[1].get(&(e, sub))
+            {
                 return Ok(t);
             }
         }
@@ -261,7 +271,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         } else {
             env
         };
-        if !closed && env.key() != raw.2 {
+        if !closed && env.key() != raw.2 && !self.bypassed() {
             let k = (e, sub, env.key());
             let hit = match self.t.infer_open[0].get(&k) {
                 Some(&t) => {
@@ -276,6 +286,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 return Ok(t);
             }
         }
+        #[cfg(feature = "memocheck")]
+        self.audit_entered();
         let t = match *e {
             Expr::Var { idx, .. } => {
                 let Some(v) = env.get(idx) else {

@@ -4,6 +4,8 @@ mod derive;
 mod eval;
 mod infer;
 mod intern;
+#[cfg(feature = "memocheck")]
+mod memocheck;
 mod session;
 mod stats;
 mod tables;
@@ -71,6 +73,8 @@ struct Vc<'t, 'a: 't> {
     derivations: u32,
     /// Tags the memos this checker writes on values, so older ones read as absent.
     epoch: u32,
+    #[cfg(feature = "memocheck")]
+    audit: memocheck::Audit,
     #[cfg(feature = "vstats")]
     pub stats: Stats,
     #[cfg(feature = "vstats")]
@@ -119,11 +123,22 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 .fetch_update(Relaxed, Relaxed, |e| e.checked_add(1))
                 .expect("value memo epochs exhausted")
                 + 1,
+            #[cfg(feature = "memocheck")]
+            audit: Default::default(),
             #[cfg(feature = "vstats")]
             stats: Stats::default(),
             #[cfg(feature = "vstats")]
             unfolded: Default::default(),
         }
+    }
+
+    /// True only for the lookup a memocheck audit is recomputing.
+    #[inline(always)]
+    fn bypassed(&self) -> bool {
+        #[cfg(feature = "memocheck")]
+        return self.audit.bypass;
+        #[cfg(not(feature = "memocheck"))]
+        false
     }
 
     #[inline(always)]

@@ -21,8 +21,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             }
             return Ok(e);
         }
-        if let Some(&r) = self.whnf_core_cache.get(&e) {
+        if !self.bypassed()
+            && let Some(&r) = self.whnf_core_cache.get(&e)
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_term("whnf_core", r, |c| c.whnf_core(e));
             return Ok(r);
+        }
+        #[cfg(feature = "memocheck")]
+        {
+            self.audit.bypass = false;
         }
         let r = match *e {
             Expr::Let { .. } => {
@@ -136,15 +144,25 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         {
             return Ok(e);
         }
-        if let Some(&r) = self.whnf_cache.get(&e) {
+        if !self.bypassed()
+            && let Some(&r) = self.whnf_cache.get(&e)
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_term("whnf", r, |c| c.whnf(e));
             return Ok(r);
         }
         let mut t = e;
         let mut path = Vec::new();
         let r = loop {
             self.tick()?;
-            if let Some(&r) = self.whnf_cache.get(&t) {
+            if !self.bypassed()
+                && let Some(&r) = self.whnf_cache.get(&t)
+            {
                 break r;
+            }
+            #[cfg(feature = "memocheck")]
+            {
+                self.audit.bypass = false;
             }
             path.push(t);
             let t1 = self.whnf_core(t)?;
@@ -171,6 +189,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     pub(crate) fn unfold(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         if let Some(&result) = self.unfold_cache.get(&e) {
+            #[cfg(feature = "memocheck")]
+            assert!(
+                self.unfold_uncached(e) == result,
+                "memocheck: a term unfolding hit disagrees"
+            );
             return result;
         }
         let result = self.unfold_uncached(e);

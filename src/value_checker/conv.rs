@@ -39,6 +39,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, deq_calls);
         if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
             stat!(self, deq_ptr_eq);
+            #[cfg(feature = "memocheck")]
+            if !ptr::eq(t, s) {
+                self.audit("equality", |c| c.def_eq_core(t, s));
+            }
             return Ok(true);
         }
         self.def_eq_slow(t, s)
@@ -54,6 +58,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         };
         if self.t.neq_cache.contains(&k) {
             stat!(self, neq_hit);
+            #[cfg(feature = "memocheck")]
+            self.audit("inequality", |c| Ok(!c.def_eq_core(t, s)?));
             return Ok(false);
         }
         let mut fuel = SAME_FUEL;

@@ -2,6 +2,8 @@ mod contextual;
 mod defeq;
 pub(crate) mod env;
 mod inductive;
+#[cfg(feature = "memocheck")]
+mod memocheck;
 pub(crate) mod nat;
 mod native_inductive;
 pub use inductive::Adapter;
@@ -117,6 +119,8 @@ pub struct Tc<'t, 'a: 't> {
     limits: Limits,
     steps_left: u64,
     fail: Option<Failure>,
+    #[cfg(feature = "memocheck")]
+    audit: memocheck::Audit,
     #[cfg(test)]
     probe_exhaustions: usize,
     open_infer_cache: [FxHashMap<ContextKey<'t>, ExprPtr<'t>>; 2],
@@ -154,6 +158,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             limits: Limits::default(),
             steps_left: Limits::default().steps,
             fail: None,
+            #[cfg(feature = "memocheck")]
+            audit: Default::default(),
             #[cfg(test)]
             probe_exhaustions: 0,
             open_infer_cache: Default::default(),
@@ -226,6 +232,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             limits,
             steps_left,
             fail: _,
+            #[cfg(feature = "memocheck")]
+                audit: _,
             #[cfg(test)]
                 probe_exhaustions: _,
             open_infer_cache,
@@ -254,6 +262,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         conversion_depth.set(0);
         conversion_locals.clear();
         *steps_left = limits.steps;
+    }
+
+    /// True only for the lookup a memocheck audit is recomputing.
+    #[inline(always)]
+    fn bypassed(&self) -> bool {
+        #[cfg(feature = "memocheck")]
+        return self.audit.bypass;
+        #[cfg(not(feature = "memocheck"))]
+        false
     }
 
     fn check_in(&mut self, idx: u32) -> R<()> {
@@ -398,11 +415,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     pub fn infer(&mut self, e: ExprPtr<'t>, only: bool) -> R<ExprPtr<'t>> {
         self.tick()?;
-        if let Some(&r) = self.infer_cache[0].get(&e) {
+        let hit = match self.infer_cache[0].get(&e) {
+            None if only => self.infer_cache[1].get(&e),
+            r => r,
+        };
+        if !self.bypassed()
+            && let Some(&r) = hit
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_term("type", r, |c| c.infer(e, only));
             return Ok(r);
         }
-        if only && let Some(&r) = self.infer_cache[1].get(&e) {
-            return Ok(r);
+        #[cfg(feature = "memocheck")]
+        {
+            self.audit.bypass = false;
         }
         let r = match *e {
             Expr::Var { .. } => reject!(self, "unexpected bound variable"),

@@ -1,11 +1,14 @@
 use clap::Parser;
 use nano_lean::checker::Limits;
 use nano_lean::mutate::{self, Expect, Operator, Rng};
+use nano_lean::verdict::Verdicts;
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
-    process::ExitCode,
+    path::{Path, PathBuf},
+    process::{Command, ExitCode, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -26,8 +29,92 @@ struct Options {
     /// Shrink each finding and write it here as a standalone export
     #[arg(long, value_name = "DIR")]
     out: Option<PathBuf>,
+    /// Also compare against an external kernel that exits 0 to accept and 1 to reject
+    #[arg(long, value_name = "PROGRAM")]
+    oracle: Option<PathBuf>,
     #[arg(value_name = "FILE.ndjson")]
     path: PathBuf,
+}
+
+struct Oracle {
+    program: PathBuf,
+    file: PathBuf,
+    timeout: Duration,
+}
+
+impl Oracle {
+    /// Some(true) on accept, Some(false) on reject, None on anything else.
+    fn run(&self, lines: &[Value]) -> Option<bool> {
+        fs::write(&self.file, mutate::render(lines)).ok()?;
+        let mut child = Command::new(&self.program)
+            .arg(&self.file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().ok()? {
+                return match status.code() {
+                    Some(0) => Some(true),
+                    Some(1) => Some(false),
+                    _ => None,
+                };
+            }
+            if started.elapsed() > self.timeout {
+                child.kill().ok();
+                child.wait().ok();
+                return None;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Lean accepts unsafe definitions and recomputes inductive metadata, which nl rejects
+    /// by policy, so those operators only count when Lean rejects.
+    fn disagrees(&self, op: Operator, lines: &[Value], v: &Verdicts) -> bool {
+        let all = v.all();
+        let policy = matches!(
+            op,
+            Operator::Unsafe | Operator::InductiveCount | Operator::InductiveFlag
+        );
+        match self.run(lines) {
+            Some(true) => !policy && all.iter().any(|(_, v)| v.rejected()),
+            Some(false) => all.iter().any(|(_, v)| v.accepted()),
+            None => false,
+        }
+    }
+}
+
+const LEAN_DISAGREES: &str = "the oracle disagrees";
+
+fn judge(
+    oracle: Option<&Oracle>,
+    op: Operator,
+    expect: Expect,
+    baseline: &Verdicts,
+    mutant: &[Value],
+    v: &Verdicts,
+) -> Option<&'static str> {
+    mutate::finding(expect, baseline, v).or_else(|| {
+        oracle
+            .is_some_and(|o| o.disagrees(op, mutant, v))
+            .then_some(LEAN_DISAGREES)
+    })
+}
+
+fn oracle_for(program: Option<&Path>, lines: &[Value], timeout: Duration) -> Option<Oracle> {
+    let o = Oracle {
+        program: program?.to_path_buf(),
+        file: std::env::temp_dir().join(format!("nl-mutate-{}.ndjson", std::process::id())),
+        timeout,
+    };
+    if o.run(lines) == Some(true) {
+        Some(o)
+    } else {
+        println!("the oracle does not accept the baseline, so it is not consulted");
+        None
+    }
 }
 
 const AFTER_HELP: &str =
@@ -55,6 +142,8 @@ fn main() -> ExitCode {
         eprint!("baseline disagrees\n{baseline}");
         return ExitCode::FAILURE;
     }
+    let oracle = oracle_for(o.oracle.as_deref(), &lines, budget * 10);
+    let oracle = oracle.as_ref();
     let stem = o
         .path
         .file_stem()
@@ -76,7 +165,7 @@ fn main() -> ExitCode {
                 .entry((op.name(), mutate::signature(&verdicts)))
                 .or_default() += 1;
             let slow = m.expect == Expect::Same && started.elapsed() > budget;
-            let Some(why) = mutate::finding(m.expect, &baseline, &verdicts)
+            let Some(why) = judge(oracle, op, m.expect, &baseline, &mutant, &verdicts)
                 .or(slow.then_some("performance edit exceeded time budget"))
             else {
                 if mutate::declined(&verdicts) {
@@ -95,11 +184,14 @@ fn main() -> ExitCode {
                 let valid = mutate::signature(&baseline);
                 let (base, pins) = mutate::shrink(lines.clone(), m.pins(), |c, pins| {
                     let b = mutate::check(c, limits);
-                    mutate::signature(&b) == valid && {
-                        let v = mutate::check(&m.at(pins).apply(c), limits);
-                        mutate::finding(m.expect, &b, &v) == Some(why)
-                            && mutate::signature(&v) == wanted
-                    }
+                    mutate::signature(&b) == valid
+                        && oracle.is_none_or(|o| o.run(c) == Some(true))
+                        && {
+                            let small = m.at(pins).apply(c);
+                            let v = mutate::check(&small, limits);
+                            judge(oracle, op, m.expect, &b, &small, &v) == Some(why)
+                                && mutate::signature(&v) == wanted
+                        }
                 });
                 let small = m.at(&pins).apply(&base);
                 let file = dir.join(format!("{stem}-{op}-{findings}.ndjson"));
@@ -115,6 +207,9 @@ fn main() -> ExitCode {
     }
     for ((op, signature), n) in tally {
         println!("{op:>16} {signature} {n}");
+    }
+    if let Some(o) = oracle {
+        fs::remove_file(&o.file).ok();
     }
     println!("{tried} mutants, {findings} findings, {declined} declined");
     ExitCode::from(u8::from(findings > 0))

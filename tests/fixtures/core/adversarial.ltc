@@ -1,4 +1,4 @@
--- Shapes behind sokonanoda's soundness fixes. Every bad_ declaration is invalid.
+-- Known soundness traps. Every bad_ declaration is invalid.
 inductive Nat : Type
   | Nat.zero : Nat
   | Nat.succ : Nat -> Nat

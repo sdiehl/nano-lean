@@ -29,6 +29,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - run: cargo test --release --locked --test verdicts --test mutate --test cli
       - run: cargo test --release --locked --features derivecheck --test verdicts --test mutate
+      - run: cargo clippy --locked --all-targets --features memocheck -- -D warnings
+      - run: cargo test --release --locked --features memocheck --all-targets
       - name: Mutation sweep
         run: |
           cargo build --release --locked --bin nl-mutate
@@ -42,4 +44,45 @@ jobs:
         if: failure()
         with:
           name: mutants
+          path: mutants
+
+  oracle:
+    runs-on: ubuntu-latest
+    env:
+      ARENA_REV: 09206c816756d9ce39b5098cf6be06b66dac4f7f
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            .ci/arena/checkers/official/.lake
+          key: lean-oracle-${{ runner.os }}-${{ env.ARENA_REV }}
+      - name: Build the official Lean kernel
+        run: |
+          curl --fail --location --retry 3 -o elan-init.sh \
+            https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh
+          bash elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          git init .ci/arena
+          git -C .ci/arena remote add origin https://github.com/leanprover/lean-kernel-arena.git
+          git -C .ci/arena fetch --depth=1 origin "$ARENA_REV"
+          git -C .ci/arena checkout --detach FETCH_HEAD
+          cd .ci/arena/checkers/official
+          echo leanprover/lean4:v4.34.1 > lean-toolchain
+          "$HOME/.elan/bin/lake" build
+      - name: Mutation sweep against Lean
+        run: |
+          cargo build --release --locked --bin nl-mutate
+          for f in tests/fixtures/*.ndjson; do
+            [[ $f == */forged-nat-add.ndjson ]] && continue
+            echo "== $f"
+            ./target/release/nl-mutate --seed 2 --per-op 200 --out mutants \
+              --oracle .ci/arena/checkers/official/.lake/build/bin/kernel "$f"
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: oracle-mutants
           path: mutants

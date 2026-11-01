@@ -31,9 +31,18 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if matches!(h, Head::Local(_, _, None)) {
             return Ok(v);
         }
-        if let Some(r) = self.memo(v).and_then(|m| m.whnf_core.get()) {
+        if !self.bypassed()
+            && let Some(r) = self.memo(v).and_then(|m| m.whnf_core.get())
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_value("whnf_core", r, |c| {
+                c.audit_bypass();
+                c.whnf_core(v)
+            });
             return Ok(r);
         }
+        #[cfg(feature = "memocheck")]
+        self.audit_entered();
         self.tick()?;
         self.guard()?;
         let r = match h {
@@ -68,7 +77,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             | K::Str(_) => return Ok(v),
             _ => {}
         }
-        if let Some(r) = self.memo(v).and_then(|m| m.whnf.get()) {
+        if !self.bypassed()
+            && let Some(r) = self.memo(v).and_then(|m| m.whnf.get())
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit_value("whnf", r, |c| {
+                c.audit_bypass();
+                c.whnf(v)
+            });
             return Ok(r);
         }
         stat!(self, whnfs);
@@ -76,9 +92,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let mut path = SmallVec::<[V<'t>; 8]>::new();
         let r = loop {
             self.tick()?;
-            if let Some(r) = self.memo(t).and_then(|m| m.whnf.get()) {
+            if !self.bypassed()
+                && let Some(r) = self.memo(t).and_then(|m| m.whnf.get())
+            {
                 break r;
             }
+            #[cfg(feature = "memocheck")]
+            self.audit_entered();
             path.push(t);
             let t1 = self.whnf_core(t)?;
             if let Some(n) = self.reduce_nat(t1)? {
@@ -111,9 +131,22 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// still sees the same-head states it compares by arguments, and fired results stay out of
     /// the cache for the same reason.
     pub(crate) fn unfold(&mut self, v: V<'t>, rules: bool) -> R<Option<V<'t>>> {
-        if let Some(r) = self.memo(v).and_then(|m| m.unfold.get()) {
+        if !self.bypassed()
+            && let Some(r) = self.memo(v).and_then(|m| m.unfold.get())
+        {
+            #[cfg(feature = "memocheck")]
+            self.audit("unfolding", |c| {
+                c.audit_bypass();
+                Ok(match (r, c.unfold(v, rules)?) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => std::ptr::eq(a, b) || c.def_eq(a, b)?,
+                    _ => false,
+                })
+            });
             return Ok(r);
         }
+        #[cfg(feature = "memocheck")]
+        self.audit_entered();
         let (r, fired) = self.unfold_uncached(v, rules)?;
         if !fired {
             self.memo_of(v).unfold.set(Some(r));

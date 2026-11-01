@@ -338,14 +338,14 @@ mod tests {
 
     #[test]
     fn chunked_scan_matches_sequential_reader() {
-        let ladder = include_bytes!("../../benches/fixtures/let-ladder.ndjson");
-        agree(ladder, &[4096, 65536]);
-        let church = include_bytes!("../../benches/fixtures/church-numerals.ndjson");
-        agree(church, &[1, 7, 100, 1 << 20]);
-        let mut cut = church.to_vec();
+        let large = include_bytes!("../../tests/fixtures/let/nat-let-fold.ndjson");
+        agree(large, &[4096, 65536]);
+        let small = include_bytes!("../../tests/fixtures/neutral.ndjson");
+        agree(small, &[1, 7, 100, 1 << 20]);
+        let mut cut = small.to_vec();
         let mid = cut.len() / 2;
         cut[mid..].iter_mut().take(40).for_each(|b| *b = b'x');
         agree(&cut, &[7, 100]);
-        agree(&church[..church.len() - 1], &[13]);
+        agree(&small[..small.len() - 1], &[13]);
     }
 }
