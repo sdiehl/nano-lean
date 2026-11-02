@@ -1,5 +1,5 @@
 use super::intern::Ptrs;
-use super::tables::{Mode, fx};
+use super::tables::{Mode, fx, fx_at};
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
 use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
@@ -11,11 +11,12 @@ use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::slice::Iter;
 
 /// Arguments an application spine holds before evaluation spills to the heap.
-const SPINE: usize = 8;
+pub(super) const SPINE: usize = 8;
 
 const SHALLOW: u32 = 8;
 const EXACT: usize = 256;
@@ -29,7 +30,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         {
             self.stats.push_open_req += u64::from(open);
         }
-        let h = match self.t.envs[usize::from(open)].probe(&k) {
+        let h = match self.t.envs[usize::from(open)].probe_hashed(fx_at(self.fxk, &k), &k) {
             Ok(&e) => return e,
             Err(h) => h,
         };
@@ -72,17 +73,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     fn eval_compound(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
         let closed = e.closed();
         let env = if closed { Env::EMPTY } else { env };
+        // The open key extends the closed one, so both hashes share one multiply chain.
+        let hp = fx_at(self.fxk, &(e, sub));
         let h = match if closed {
-            self.t.eval_closed.probe(&(e, sub))
+            self.t.eval_closed.probe_hashed(hp, &(e, sub))
         } else {
-            self.t.eval_memo.probe(&(e, sub, env.key()))
+            let k = (e, sub, env.key());
+            self.t.eval_memo.probe_hashed(fx_at(self.fxk, &k), &k)
         } {
             Ok(&v) => {
                 stat!(self, memo_hits);
                 #[cfg(feature = "memocheck")]
                 self.audit_value("evaluation", v, |c| {
                     c.audit_bypass();
-                    c.eval_miss(env, sub, e, closed, 0)
+                    c.eval_miss(env, sub, e, closed, 0, 0)
                 });
                 #[cfg(feature = "vstats")]
                 {
@@ -103,7 +107,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             Err(h) => h,
         };
-        self.eval_miss(env, sub, e, closed, h)
+        self.eval_miss(env, sub, e, closed, h, hp)
     }
 
     #[inline(never)]
@@ -114,6 +118,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         e: ExprPtr<'t>,
         closed: bool,
         h: u64,
+        hp: u64,
     ) -> R<V<'t>> {
         let audited = self.bypassed();
         #[cfg(feature = "memocheck")]
@@ -129,11 +134,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             _ => self.stats.ev_other += 1,
         }
         self.tick()?;
-        let proj =
-            !closed && !audited && matches!(*e, Expr::App { .. }) && e.sup().count_ones() >= 2;
-        if proj && let Some(v) = self.eval_projected(env, sub, e) {
-            self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
-            return Ok(v);
+        let proj = !closed && !audited && matches!(*e, Expr::App { .. }) && e.sup() != 0;
+        if proj {
+            stat!(self, eproj_probe);
+            if let Some(&(o, v)) = self.t.eval_proj.find(hp, &(e, sub))
+                && self.projects(o, env, e)
+            {
+                self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
+                return Ok(v);
+            }
         }
         let v = match *e {
             Expr::Var { idx, .. } => match env.get(idx) {
@@ -149,23 +158,26 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 self.mk(K::Neu(Head::Const(name, ls), &[]), false)
             }
             Expr::App { .. } => 'app: {
-                let mut args = [e; SPINE];
+                let mut args = [MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
                 let mut n = 0;
                 let mut f = e;
                 while let Expr::App { fun, arg, .. } = *f {
                     if n == SPINE {
                         break 'app self.eval_app_wide(env, sub, e)?;
                     }
-                    args[n] = arg;
+                    args[n].write(arg);
                     n += 1;
                     f = fun;
                 }
                 let head = self.eval_head(env, sub, f)?;
-                let mut vs = [self.dummy; SPINE];
-                for (slot, &a) in vs[..n].iter_mut().zip(args[..n].iter().rev()) {
-                    *slot = self.eval(env, sub, a)?;
+                let mut vs = [MaybeUninit::<V<'t>>::uninit(); SPINE];
+                for (slot, a) in vs[..n].iter_mut().zip(args[..n].iter().rev()) {
+                    // SAFETY: the walk above wrote the first `n` arguments.
+                    slot.write(self.eval(env, sub, unsafe { a.assume_init() })?);
                 }
-                self.eval_spine(head, &vs[..n])?
+                // SAFETY: the loop above wrote the first `n` values.
+                let vs = unsafe { &*(ptr::from_ref(&vs[..n]) as *const [V<'t>]) };
+                self.eval_spine(head, vs)?
             }
             Expr::Lam { ty, body, .. } => {
                 let env = self.trim(env, e)?;
@@ -221,26 +233,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         } else {
             self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
             if proj {
-                self.t.eval_proj.insert((e, sub), (env, v));
+                self.t.eval_proj.insert_new(hp, (e, sub), (env, v));
             }
         }
         Ok(v)
     }
 
-    /// An earlier value whose environment agrees with this one on every slot `e` reads.
+    /// Whether an earlier environment `o` agrees with this one on every slot `e` reads.
     #[inline(never)]
-    fn eval_projected(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> Option<V<'t>> {
-        stat!(self, eproj_probe);
-        let sl = self.slots(e)?;
-        let &(o, v) = self.t.eval_proj.probe(&(e, sub)).ok()?;
-        for j in sl {
-            match (o.get(j), env.get(j)) {
-                (Some(a), Some(b)) if key(a) == key(b) => {}
-                _ => return None,
-            }
+    fn projects(&mut self, o: Env<'t>, env: Env<'t>, e: ExprPtr<'t>) -> bool {
+        if !self.slots(e).is_some_and(|sl| agree(o, env, sl)) {
+            return false;
         }
         stat!(self, eproj_hit);
-        Some(v)
+        true
     }
 
     /// Under the identity substitution a constant head is its own neutral.
@@ -261,10 +267,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     fn eval_spine(&mut self, head: Result<V<'t>, Head<'t>>, vs: &[V<'t>]) -> R<V<'t>> {
         match head {
             Ok(fv) => self.apply(fv, vs),
-            Err(h) => {
-                let open = vs.iter().any(|a| a.open);
-                Ok(self.neu(h, &[], vs, open))
-            }
+            Err(h) => Ok(self.neu(h, &[], vs)),
         }
     }
 
@@ -356,12 +359,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 };
                 match head {
                     Ok(_) if vs.iter().zip(args).all(|(a, b)| ptr::eq(*a, *b)) => t,
-                    Ok(h) => {
-                        let open = matches!(h, Head::Local(..))
-                            || matches!(h, Head::Proj(_, _, s) if s.open)
-                            || vs.iter().any(|a| a.open);
-                        self.neu(h, &[], &vs, open)
-                    }
+                    Ok(h) => self.neu(h, &[], &vs),
                     Err(f) => self.apply(f, &vs)?,
                 }
             }
@@ -442,12 +440,15 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Slots::Mask(m) => m,
             Slots::Wide(_) => 0,
         };
-        if mask != 0
-            && let Ok(&r) = self.t.prunes.probe(&(env.key(), mask))
-        {
-            return Ok(r);
+        let mut h = 0;
+        if mask != 0 {
+            match self.t.prunes.probe(&(env.key(), mask)) {
+                Ok(&r) => return Ok(r),
+                Err(g) => h = g,
+            }
         }
         let mut buf = SmallVec::<[V<'t>; 32]>::from_elem(self.dummy, n);
+        let mut open = false;
         let mut it = sup.peekable();
         let mut e = env;
         let mut at = 0u16;
@@ -457,6 +458,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 View::Node(node) => {
                     if j == at {
                         buf[usize::from(j)] = node.head;
+                        open |= node.head.open;
                         it.next();
                     }
                     e = node.tail;
@@ -465,7 +467,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 View::Frame(f) => {
                     for j in it.by_ref() {
                         match f.vals.get(usize::from(j - at)) {
-                            Some(&v) => buf[usize::from(j)] = v,
+                            Some(&v) => {
+                                buf[usize::from(j)] = v;
+                                open |= v.open;
+                            }
                             None => reject!(self, "unexpected bound variable"),
                         }
                     }
@@ -473,9 +478,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
         }
         ensure!(self, it.peek().is_none(), "unexpected bound variable");
-        let r = self.frame(&buf);
+        let r = self.frame_in(&buf, open);
         if mask != 0 {
-            self.t.prunes.insert((env.key(), mask), r);
+            self.t.prunes.insert_new(h, (env.key(), mask), r);
         }
         Ok(r)
     }
@@ -497,17 +502,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn frame(&mut self, vals: &[V<'t>]) -> Env<'t> {
+        self.frame_in(vals, vals.iter().any(|v| v.open))
+    }
+
+    fn frame_in(&mut self, vals: &[V<'t>], open: bool) -> Env<'t> {
         stat!(self, frame_req);
-        let open = vals.iter().any(|v| v.open);
         let o = usize::from(open);
-        if let Some(&f) = self.t.frames[o].get(Ptrs::new(vals)) {
-            return f;
-        }
+        let h = match self.t.frames[o].probe_by(Ptrs::new(vals)) {
+            Ok(&f) => return f,
+            Err(h) => h,
+        };
         stat!(self, frame_new);
         bytes!(self, b_frame, size_of::<EnvObj>() + size_of_val(vals));
         let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
         let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame { vals, open })));
-        self.t.frames[o].insert(Ptrs::new(vals), f);
+        self.t.frames[o].insert_new(h, Ptrs::new(vals), f);
         f
     }
 
@@ -587,8 +596,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                             self.stats.spine_empty_prefix += 1;
                         }
                     }
-                    let open = f.open || rest.iter().any(|a| a.open);
-                    return Ok(self.neu(h, sp, rest, open));
+                    return Ok(self.neu(h, sp, rest));
                 }
                 _ => reject!(self, "expected a function"),
             }
@@ -665,6 +673,41 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let v = self.eval_at(d.uparams(), ls, d.ty())?;
         self.t.const_ty.insert((n, ls), v);
         Ok(v)
+    }
+}
+
+/// Whether `a` and `b` hold one value at every slot of `sl`, walking each once. Past a suffix
+/// they share, every later slot agrees once the last is in range.
+#[inline]
+pub(crate) fn agree(mut a: Env<'_>, mut b: Env<'_>, sl: Slots<'_>) -> bool {
+    let Some((max, _)) = sl.bounds() else {
+        return true;
+    };
+    let (mut i, mut k) = (0u16, 0u16);
+    for j in sl {
+        if i == k && a.key() == b.key() {
+            return usize::from(max - i) < a.size();
+        }
+        match (seek(&mut a, &mut i, j), seek(&mut b, &mut k, j)) {
+            (Some(x), Some(y)) if key(x) == key(y) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[inline(always)]
+fn seek<'t>(e: &mut Env<'t>, at: &mut u16, j: u16) -> Option<V<'t>> {
+    loop {
+        match e.view() {
+            View::Nil => return None,
+            View::Node(n) if *at == j => return Some(n.head),
+            View::Node(n) => {
+                *e = n.tail;
+                *at += 1;
+            }
+            View::Frame(f) => return f.vals.get(usize::from(j - *at)).copied(),
+        }
     }
 }
 

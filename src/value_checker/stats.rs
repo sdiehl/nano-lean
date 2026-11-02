@@ -137,7 +137,9 @@ stats!(
     b_frame,
     b_lazy,
     b_nat,
-    b_sup
+    b_sup,
+    inst_hit,
+    inst_miss
 );
 
 #[cfg(feature = "vstats")]

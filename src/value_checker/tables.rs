@@ -8,7 +8,7 @@ use num_bigint::BigUint;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::hash::{BuildHasher, Hash};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::{replace, swap, take, transmute};
 use std::ops::{Deref, Index, IndexMut};
 use std::ptr;
@@ -126,9 +126,10 @@ pub(super) struct Tables<'t> {
     /// that compare them by pointer.
     pub(super) hc: [Set<'t, Val<'t>>; 2],
     /// Neutrals with their hashes, so a rehash never walks a spine.
-    pub(super) neus: [HashTable<(u64, V<'t>)>; 2],
-    pub(super) neu_log: Vec<(u64, V<'t>)>,
+    pub(super) neus: HashTable<(u64, V<'t>)>,
     pub(super) envs: [Lossy<(usize, usize), Env<'t>, 16>; 2],
+    /// Codomains by the Pi value and argument they instantiate.
+    pub(super) insts: Lossy<(usize, usize), V<'t>, 16>,
     /// Trimmed environments by source and support mask.
     pub(super) prunes: Lossy<(usize, u32), Env<'t>, 12>,
     pub(super) frames: [Logged<&'t Ptrs<'t>, Env<'t>>; 2],
@@ -157,7 +158,6 @@ impl<'t> Tables<'t> {
     fn swap_scoped(&mut self, d: &mut Tables<'t>) {
         let Tables {
             fail_cache,
-            neu_log,
             lazies,
             conv_locals: _,
             eval_memo: _,
@@ -177,12 +177,12 @@ impl<'t> Tables<'t> {
             hc: _,
             neus: _,
             envs: _,
+            insts: _,
             prunes: _,
             frames: _,
             nats: _,
         } = self;
         swap(fail_cache, &mut d.fail_cache);
-        swap(neu_log, &mut d.neu_log);
         swap(lazies, &mut d.lazies);
     }
 }
@@ -222,8 +222,8 @@ impl Tables<'_> {
             neq_cache,
             hc,
             neus,
-            neu_log,
             envs,
+            insts,
             prunes,
             frames,
             lazies,
@@ -250,24 +250,15 @@ impl Tables<'_> {
         hc.iter_mut().for_each(|l| l.empty(keep));
         envs.iter_mut().for_each(|l| l.empty(keep));
         prunes.empty(keep);
+        insts.empty(keep);
         infer_proj.empty(keep);
         eval_proj.empty(keep);
         frames.iter_mut().for_each(|l| l.empty(keep));
         lazies.iter_mut().for_each(|l| l.empty(keep));
-        if neus[1].len() <= neu_log.len() {
-            for (h, v) in neu_log.drain(..) {
-                if let Ok(e) = neus[1].find_entry(h, |&(_, x)| ptr::eq(x, v)) {
-                    e.remove();
-                }
-            }
-        }
-        neu_log.clear();
-        for n in neus {
-            if n.len() > keep {
-                *n = Default::default();
-            } else if !n.is_empty() {
-                n.clear();
-            }
+        if neus.len() > keep {
+            *neus = Default::default();
+        } else if !neus.is_empty() {
+            neus.clear();
         }
         // SAFETY: the exhaustive destructure above empties every table, so no `'t` reference survives.
         Spare(unsafe { transmute::<Tables<'_>, Tables<'static>>(self) })
@@ -294,6 +285,44 @@ pub(super) fn fx<K: Hash + ?Sized>(k: &K) -> u64 {
     FxBuildHasher.hash_one(k)
 }
 
+/// The multiplier of `fx`, kept in a field by hot callers since loading it is one instruction
+/// and building it is four.
+pub(super) const FX_K: u64 = 0xf1357aea2e62a9c5;
+
+/// Equals `fx` when `k` is `FX_K`, for keys made of words.
+#[inline(always)]
+pub(super) fn fx_at<K: Hash + ?Sized>(k: u64, key: &K) -> u64 {
+    let mut s = FxAt { h: 0, k };
+    key.hash(&mut s);
+    s.finish()
+}
+
+struct FxAt {
+    h: u64,
+    k: u64,
+}
+
+impl Hasher for FxAt {
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!("fx_at hashes words only")
+    }
+
+    #[inline(always)]
+    fn write_u64(&mut self, w: u64) {
+        self.h = self.h.wrapping_add(w).wrapping_mul(self.k);
+    }
+
+    #[inline(always)]
+    fn write_usize(&mut self, w: usize) {
+        self.write_u64(w as u64);
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        self.h.rotate_left(26)
+    }
+}
+
 /// `probe` returns the hash that `insert_new` reuses for an absent key.
 pub(super) struct Memo<K, V>(HashTable<(K, V)>);
 
@@ -314,13 +343,27 @@ impl<K: Eq + Hash, V> Memo<K, V> {
     }
 
     #[inline]
+    pub(super) fn probe_by<Q>(&self, q: &Q) -> Result<&V, u64>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let h = fx(q);
+        self.0
+            .find(h, |(x, _)| x.borrow() == q)
+            .map(|(_, v)| v)
+            .ok_or(h)
+    }
+
+    #[inline]
     pub(super) fn contains_key(&self, k: &K) -> bool {
         self.get(k).is_some()
     }
 
+    /// `h` must be `fx(k)`.
     #[inline]
-    pub(super) fn probe(&self, k: &K) -> Result<&V, u64> {
-        let h = fx(k);
+    pub(super) fn probe_hashed(&self, h: u64, k: &K) -> Result<&V, u64> {
+        debug_assert_eq!(h, fx(k));
         self.0.find(h, |(x, _)| x == k).map(|(_, v)| v).ok_or(h)
     }
 
@@ -395,6 +438,14 @@ impl<K: Copy + Eq + Hash, V> Logged<K, V> {
         old
     }
 
+    #[inline]
+    pub(super) fn insert_new(&mut self, h: u64, k: K, v: V) {
+        self.map.insert_new(h, k, v);
+        if self.log.len() < LOG {
+            self.log.push(k);
+        }
+    }
+
     fn empty(&mut self, keep: usize) {
         if self.map.len() <= self.log.len() {
             for k in &self.log {
@@ -442,8 +493,9 @@ impl<K: Copy + Eq + Hash, V: Copy, const BITS: u32> Lossy<K, V, BITS> {
         h as usize & (self.slots.len() - 1)
     }
 
+    /// `h` must be `fx` of the key.
     #[inline]
-    fn find<Q>(&self, h: u64, q: &Q) -> Option<&V>
+    pub(super) fn find<Q>(&self, h: u64, q: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -459,12 +511,19 @@ impl<K: Copy + Eq + Hash, V: Copy, const BITS: u32> Lossy<K, V, BITS> {
 
     #[inline]
     pub(super) fn probe(&self, k: &K) -> Result<&V, u64> {
-        let h = fx(k);
+        self.probe_hashed(fx(k), k)
+    }
+
+    /// `h` must be `fx(k)`.
+    #[inline]
+    pub(super) fn probe_hashed(&self, h: u64, k: &K) -> Result<&V, u64> {
+        debug_assert_eq!(h, fx(k));
         self.find(h, k).ok_or(h)
     }
 
     #[inline]
     pub(super) fn insert_new(&mut self, h: u64, k: K, v: V) {
+        debug_assert_eq!(h, fx(&k));
         if self.live >= self.grow_at {
             self.grow();
         }
@@ -665,7 +724,7 @@ impl Tables<'_> {
                 vec![$({ let (l, b) = $f.footprint(); ($n, l, b) }),*]
             };
         }
-        let mut v = rows!(
+        let v = rows!(
             "conv_locals" self.conv_locals,
             "eval_memo" self.eval_memo,
             "eval_closed" self.eval_closed,
@@ -683,8 +742,7 @@ impl Tables<'_> {
             "neq_cache" self.neq_cache,
             "hc_closed" self.hc[0],
             "hc_open" self.hc[1],
-            "neus_closed" self.neus[0],
-            "neus_open" self.neus[1],
+            "neus" self.neus,
             "envs_closed" self.envs[0],
             "envs_open" self.envs[1],
             "prunes" self.prunes,
@@ -694,11 +752,6 @@ impl Tables<'_> {
             "lazies_open" self.lazies[1],
             "nats" self.nats,
         );
-        v.push((
-            "neu_log",
-            self.neu_log.len(),
-            self.neu_log.capacity() * size_of::<(u64, V<'_>)>(),
-        ));
         v
     }
 }

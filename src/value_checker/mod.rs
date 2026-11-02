@@ -64,6 +64,7 @@ struct Vc<'t, 'a: 't> {
     included: SmallVec<[(LevelsPtr<'t>, bool); 4]>,
     id: Sub<'t>,
     dummy: V<'t>,
+    fxk: u64,
     t: Tables<'t>,
     base: usize,
     floor: usize,
@@ -108,6 +109,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             included: SmallVec::new(),
             id: Sub { ks: e, vs: e },
             dummy,
+            fxk: tables::FX_K,
             t: POOL
                 .with(|p| p.borrow_mut().take())
                 .map_or_else(Default::default, tables::Spare::revive),

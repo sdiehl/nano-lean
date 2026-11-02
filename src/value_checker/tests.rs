@@ -156,3 +156,16 @@ fn deep_term_declines_instead_of_overflowing() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn fx_at_matches_fx() {
+    use tables::{FX_K, fx, fx_at};
+    for k in [
+        (0u64, 0u64, 0u64, 0usize),
+        (1, 2, 3, 4),
+        (u64::MAX, 1 << 48, 7, usize::MAX),
+    ] {
+        assert_eq!(fx_at(FX_K, &k), fx(&k));
+        assert_eq!(fx_at(FX_K, &(k.0, k.1)), fx(&(k.0, k.1)));
+    }
+}

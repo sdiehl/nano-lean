@@ -1,4 +1,4 @@
-use super::tables::{LOG, fx};
+use super::tables::fx;
 use super::value::{Clo, Head, K, Lazy, Sub, V, Val, key};
 use super::{Vc, bytes, stat};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
@@ -128,7 +128,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         v
     }
 
-    pub(crate) fn neu(&mut self, h: Head<'t>, sp: &[V<'t>], rest: &[V<'t>], open: bool) -> V<'t> {
+    /// One table for open and closed neutrals, since the key decides openness.
+    pub(crate) fn neu(&mut self, h: Head<'t>, sp: &[V<'t>], rest: &[V<'t>]) -> V<'t> {
         stat!(self, spine_req);
         let n = sp.len() + rest.len();
         let hash = neu_hash(h, n, sp.iter().chain(rest));
@@ -138,30 +139,26 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 && matches!(v.k, K::Neu(g, a) if a.len() == n && head_eq(g, h)
                 && Ptrs::new(&a[..m]) == Ptrs::new(sp) && Ptrs::new(&a[m..]) == Ptrs::new(rest))
         };
-        let o = usize::from(open);
-        if let Some(&(_, v)) = self.t.neus[o].find(hash, same) {
+        if let Some(&(_, v)) = self.t.neus.find(hash, same) {
             #[cfg(feature = "vstats")]
-            if open {
+            if v.open {
                 self.stats.neu_open_hit += 1;
             } else {
                 self.stats.neu_closed_hit += 1;
             }
             return v;
         }
-        self.neu_new(h, sp, rest, open, hash)
+        self.neu_new(h, sp, rest, hash)
     }
 
     #[inline(never)]
-    fn neu_new(
-        &mut self,
-        h: Head<'t>,
-        sp: &[V<'t>],
-        rest: &[V<'t>],
-        open: bool,
-        hash: u64,
-    ) -> V<'t> {
+    fn neu_new(&mut self, h: Head<'t>, sp: &[V<'t>], rest: &[V<'t>], hash: u64) -> V<'t> {
         let n = sp.len() + rest.len();
-        let o = usize::from(open);
+        let open = match h {
+            Head::Local(..) => true,
+            Head::Const(..) => false,
+            Head::Proj(_, _, x) => x.open,
+        } || sp.iter().chain(rest).any(|a| a.open);
         #[cfg(feature = "vstats")]
         if open {
             self.stats.neu_open_miss += 1;
@@ -185,10 +182,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         bytes!(self, b_val, size_of::<Val>());
         bytes!(self, b_spine, size_of_val(all));
         let v = self.ctx.arena.alloc(Val::new(K::Neu(h, all), open));
-        if open && self.t.neu_log.len() < LOG {
-            self.t.neu_log.push((hash, v));
-        }
-        self.t.neus[o].insert_unique(hash, (hash, v), |&(g, _)| g);
+        self.t.neus.insert_unique(hash, (hash, v), |&(g, _)| g);
         v
     }
 }

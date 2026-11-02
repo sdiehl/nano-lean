@@ -1,3 +1,4 @@
+use super::eval::{SPINE, agree};
 use super::tables::{Inferred, Mode, Scoped};
 use super::value::{Clo, Env, Head, K, Sub, V, key};
 use super::{R, Vc, stat};
@@ -5,7 +6,8 @@ use crate::checker::env::Decls;
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
-use smallvec::SmallVec;
+use std::mem::MaybeUninit;
+use std::ptr;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn ensure_sort(&mut self, t: V<'t>) -> R<LevelPtr<'t>> {
@@ -246,6 +248,85 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.infer_slow(env, sub, e, mode)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn infer_app_wide(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        e: ExprPtr<'t>,
+        mode: Mode,
+    ) -> R<V<'t>> {
+        let mut args = Vec::new();
+        let mut f = e;
+        while let Expr::App { fun, arg, .. } = *f {
+            args.push(arg);
+            f = fun;
+        }
+        self.infer_spine(env, sub, f, &args, mode)
+    }
+
+    /// `args` runs from the outermost argument in.
+    #[inline(always)]
+    fn infer_spine(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        f: ExprPtr<'t>,
+        args: &[ExprPtr<'t>],
+        mode: Mode,
+    ) -> R<V<'t>> {
+        let (mut ft, rest) = match *f {
+            Expr::Lam { ty, body, .. } if mode == Mode::Check => {
+                let (&a, rest) = args.split_last().expect("an application has an argument");
+                (self.infer_redex(env, sub, ty, body, a)?, rest)
+            }
+            _ => (self.infer(env, sub, f, mode)?, args),
+        };
+        for &a in rest.iter().rev() {
+            self.tick()?;
+            let p = match ft.k {
+                K::Pi(..) => ft,
+                _ => self.whnf(ft)?,
+            };
+            let K::Pi(d, c) = p.k else {
+                reject!(self, "expected a function type")
+            };
+            if mode == Mode::Check {
+                let at = self.infer(env, sub, a, Mode::Check)?;
+                ensure!(self, self.def_eq(at, d)?, "application type mismatch");
+            }
+            let x = if self.uses_arg(c) {
+                self.eval(env, sub, a)?
+            } else {
+                self.dummy
+            };
+            ft = if c.typed {
+                self.inst(c, x)?
+            } else {
+                let k = (key(p), key(x));
+                match self.t.insts.probe(&k) {
+                    Ok(&v) => {
+                        stat!(self, inst_hit);
+                        #[cfg(feature = "memocheck")]
+                        self.audit_value("instantiation", v, |vc| {
+                            vc.audit_bypass();
+                            vc.inst(c, x)
+                        });
+                        v
+                    }
+                    Err(h) => {
+                        stat!(self, inst_miss);
+                        let v = self.inst(c, x)?;
+                        self.t.insts.insert_new(h, k, v);
+                        v
+                    }
+                }
+            };
+        }
+        Ok(ft)
+    }
+
     #[inline(never)]
     fn infer_slow(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, mode: Mode) -> R<V<'t>> {
         self.tick()?;
@@ -328,35 +409,21 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 let ls = self.ctx.subst_levels(levels, sub.ks, sub.vs);
                 self.const_type(name, ls)?
             }
-            Expr::App { .. } => {
-                let mut args = SmallVec::<[ExprPtr<'t>; 8]>::new();
+            Expr::App { .. } => 'app: {
+                let mut args = [MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
+                let mut n = 0;
                 let mut f = e;
                 while let Expr::App { fun, arg, .. } = *f {
-                    args.push(arg);
+                    if n == SPINE {
+                        break 'app self.infer_app_wide(env, sub, e, mode)?;
+                    }
+                    args[n].write(arg);
+                    n += 1;
                     f = fun;
                 }
-                let (mut ft, rest) = match *f {
-                    Expr::Lam { ty, body, .. } if mode == Mode::Check => {
-                        let a = args.pop().expect("an application has an argument");
-                        (self.infer_redex(env, sub, ty, body, a)?, args)
-                    }
-                    _ => (self.infer(env, sub, f, mode)?, args),
-                };
-                for &a in rest.iter().rev() {
-                    self.tick()?;
-                    let (d, c) = self.ensure_pi(ft)?;
-                    if mode == Mode::Check {
-                        let at = self.infer(env, sub, a, Mode::Check)?;
-                        ensure!(self, self.def_eq(at, d)?, "application type mismatch");
-                    }
-                    let x = if self.uses_arg(c) {
-                        self.eval(env, sub, a)?
-                    } else {
-                        self.dummy
-                    };
-                    ft = self.inst(c, x)?;
-                }
-                ft
+                // SAFETY: the walk above wrote the first `n` arguments.
+                let args = unsafe { &*(ptr::from_ref(&args[..n]) as *const [ExprPtr<'t>]) };
+                self.infer_spine(env, sub, f, args, mode)?
             }
             Expr::Lam { ty, body, .. } => {
                 let dom = self.eval(env, sub, ty)?;
@@ -462,7 +529,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         mode: Mode,
     ) -> Option<Scoped<'t>> {
         stat!(self, proj_probe);
-        let sl = self.slots(e)?;
         let &Inferred {
             env: o,
             ty,
@@ -471,11 +537,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if m == Mode::Only && mode == Mode::Check {
             return None;
         }
-        for j in sl {
-            match (o.get(j), env.get(j)) {
-                (Some(a), Some(b)) if key(a) == key(b) => {}
-                _ => return None,
-            }
+        let sl = self.slots(e)?;
+        if !agree(o, env, sl) {
+            return None;
         }
         if !self.admit(ty) {
             return None;
