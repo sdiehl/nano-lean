@@ -6,6 +6,8 @@
 
 A minimalist (but complete) parallel Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
 
+We built it on NbE (normalization by evaluation), in the Berger and Schwichtenberg tradition which is why it's so fast, because beta reduction is just an environment push and every value remembers its own normal form.
+
 The package providers four binaries:
 
 - [`nl-fast`](src/bin/nl-fast.rs): the main fast typechecker
