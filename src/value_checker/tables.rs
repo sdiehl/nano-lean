@@ -10,7 +10,7 @@ use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::hash::{BuildHasher, Hash};
 use std::mem::{replace, swap, take, transmute};
-use std::ops::Deref;
+use std::ops::{Deref, Index, IndexMut};
 use std::ptr;
 use std::rc::Rc;
 
@@ -58,11 +58,46 @@ impl Derived<'_> {
     }
 }
 
-/// A checked type with the parameter list it relied on.
-type Scoped<'t> = (V<'t>, LevelsPtr<'t>);
+/// Whether an inference also checks the term or only computes its type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    Check,
+    Only,
+}
 
-/// An open result with its environment and whether it was inferred without checking.
-type Inferred<'t> = (Env<'t>, Scoped<'t>, bool);
+/// One table per inference mode, since an unchecked type never answers a checked query.
+#[derive(Default)]
+pub(super) struct ByMode<T>([T; 2]);
+
+impl<T> Index<Mode> for ByMode<T> {
+    type Output = T;
+    #[inline(always)]
+    fn index(&self, m: Mode) -> &T {
+        &self.0[m as usize]
+    }
+}
+
+impl<T> IndexMut<Mode> for ByMode<T> {
+    #[inline(always)]
+    fn index_mut(&mut self, m: Mode) -> &mut T {
+        &mut self.0[m as usize]
+    }
+}
+
+/// A type with the universe parameters it relied on, empty when it relied on none.
+#[derive(Clone, Copy)]
+pub(super) struct Scoped<'t> {
+    pub(super) ty: V<'t>,
+    pub(super) uparams: LevelsPtr<'t>,
+}
+
+/// An open application's type with the environment it was inferred in.
+#[derive(Clone, Copy)]
+pub(super) struct Inferred<'t> {
+    pub(super) env: Env<'t>,
+    pub(super) ty: Scoped<'t>,
+    pub(super) mode: Mode,
+}
 
 #[derive(Default)]
 pub(super) struct Tables<'t> {
@@ -75,18 +110,20 @@ pub(super) struct Tables<'t> {
     pub(super) rules: FxHashMap<(NamePtr<'t>, usize, LevelsPtr<'t>), V<'t>>,
     pub(super) support: FxHashMap<ExprPtr<'t>, Option<&'t [u16]>>,
     pub(super) arg_support: FxHashMap<(NamePtr<'t>, usize), Rc<[bool]>>,
-    /// Results valid under any parameter list including the one they relied on.
-    pub(super) infer_closed: [FxHashMap<(ExprPtr<'t>, Sub<'t>), Scoped<'t>>; 2],
-    pub(super) infer_open: [Logged<(ExprPtr<'t>, Sub<'t>, usize), Scoped<'t>>; 2],
-    /// Open applications by the environments they were inferred in, matched on their support.
+    /// Valid under any parameter list that includes the one recorded.
+    pub(super) infer_closed: ByMode<FxHashMap<(ExprPtr<'t>, Sub<'t>), Scoped<'t>>>,
+    /// Keyed by environment identity, so a hit needs no comparison of slots.
+    pub(super) infer_open: ByMode<Logged<(ExprPtr<'t>, Sub<'t>, usize), Scoped<'t>>>,
     /// Open applications by the environment they were evaluated in, matched on their support.
     pub(super) eval_proj: Lossy<(ExprPtr<'t>, Sub<'t>), (Env<'t>, V<'t>), 14>,
+    /// Open applications by the environment they were inferred in, matched on their support.
     pub(super) infer_proj: Lossy<(ExprPtr<'t>, Sub<'t>), Inferred<'t>, 14>,
     pub(super) eq_cache: LoggedSet<(usize, usize)>,
     pub(super) fail_cache: LoggedSet<(usize, usize)>,
     /// Pairs decided unequal, smaller key first.
     pub(super) neq_cache: LoggedSet<(usize, usize)>,
-    /// Closed values (index 0) persist so durable caches stay pointer-comparable.
+    /// Interned values, closed at index 0 and open at 1. Both persist with the durable caches
+    /// that compare them by pointer.
     pub(super) hc: [Set<'t, Val<'t>>; 2],
     /// Neutrals with their hashes, so a rehash never walks a spine.
     pub(super) neus: [HashTable<(u64, V<'t>)>; 2],
@@ -100,11 +137,11 @@ pub(super) struct Tables<'t> {
 }
 
 impl<'t> Tables<'t> {
-    /// Everything outlives the declaration except budget-bound failures, the clearing log, and
-    /// lazies, measured not to pay for their retention. Checked inference results carry the
-    /// parameter list they relied on. Sound because the core reads only the store below its limit, a session moves
-    /// only to a later declaration, and any failure or fallback discards it. Negatives persist
-    /// only as established inequality, never as an exhausted budget, which `fail_cache` holds.
+    /// Everything outlives the declaration except budget-bound failures, the clearing log and
+    /// lazies, which were measured not to pay for retention. Sound because the core reads only
+    /// the store below its limit, a session moves only to a later declaration, and any failure
+    /// or fallback discards it. Checked types carry the parameters they relied on. Negatives
+    /// persist only as established inequality, never as an exhausted budget.
     pub(super) fn durable(&mut self) -> Tables<'t> {
         let mut d = take(self);
         self.swap_scoped(&mut d);
@@ -116,19 +153,46 @@ impl<'t> Tables<'t> {
         *self = d;
     }
 
+    /// Exhaustive, so a new table has to pick a lifetime here.
     fn swap_scoped(&mut self, d: &mut Tables<'t>) {
-        swap(&mut self.fail_cache, &mut d.fail_cache);
-        swap(&mut self.neu_log, &mut d.neu_log);
-        swap(&mut self.lazies, &mut d.lazies);
+        let Tables {
+            fail_cache,
+            neu_log,
+            lazies,
+            conv_locals: _,
+            eval_memo: _,
+            eval_closed: _,
+            delta: _,
+            derived: _,
+            const_ty: _,
+            rules: _,
+            support: _,
+            arg_support: _,
+            infer_closed: _,
+            infer_open: _,
+            eval_proj: _,
+            infer_proj: _,
+            eq_cache: _,
+            neq_cache: _,
+            hc: _,
+            neus: _,
+            envs: _,
+            prunes: _,
+            frames: _,
+            nats: _,
+        } = self;
+        swap(fail_cache, &mut d.fail_cache);
+        swap(neu_log, &mut d.neu_log);
+        swap(lazies, &mut d.lazies);
     }
 }
 
 impl Tables<'_> {
-    pub(super) fn recycle(self) -> Tables<'static> {
+    pub(super) fn recycle(self) -> Spare {
         self.recycle_below(RECYCLE_KEEP)
     }
 
-    pub(super) fn recycle_below(mut self, keep: usize) -> Tables<'static> {
+    pub(super) fn recycle_below(mut self, keep: usize) -> Spare {
         macro_rules! reuse {
             ($($m:expr),*) => {$(
                 if $m.len() > keep {
@@ -174,15 +238,15 @@ impl Tables<'_> {
             support,
             arg_support,
             nats,
-            infer_closed[0],
-            infer_closed[1]
+            infer_closed.0[0],
+            infer_closed.0[1]
         );
         for l in [eq_cache, fail_cache, neq_cache] {
             l.empty(keep);
         }
         conv_locals.empty(keep);
         eval_memo.empty(keep);
-        infer_open.iter_mut().for_each(|l| l.empty(keep));
+        infer_open.0.iter_mut().for_each(|l| l.empty(keep));
         hc.iter_mut().for_each(|l| l.empty(keep));
         envs.iter_mut().for_each(|l| l.empty(keep));
         prunes.empty(keep);
@@ -206,7 +270,17 @@ impl Tables<'_> {
             }
         }
         // SAFETY: the exhaustive destructure above empties every table, so no `'t` reference survives.
-        unsafe { transmute::<Tables<'_>, Tables<'static>>(self) }
+        Spare(unsafe { transmute::<Tables<'_>, Tables<'static>>(self) })
+    }
+}
+
+/// Emptied tables, which hold no arena reference and so fit any lifetime.
+pub(super) struct Spare(Tables<'static>);
+
+impl Spare {
+    pub(super) fn revive<'t>(self) -> Tables<'t> {
+        // SAFETY: only `recycle_below` builds a `Spare`, and it empties every table.
+        unsafe { transmute::<Tables<'static>, Tables<'t>>(self.0) }
     }
 }
 
@@ -521,7 +595,7 @@ impl LoggedSet<(usize, usize)> {
 }
 
 thread_local! {
-    pub(super) static POOL: RefCell<Option<Tables<'static>>> = const { RefCell::new(None) };
+    pub(super) static POOL: RefCell<Option<Spare>> = const { RefCell::new(None) };
 }
 
 #[cfg(feature = "vstats")]
@@ -600,10 +674,10 @@ impl Tables<'_> {
             "rules" self.rules,
             "support" self.support,
             "arg_support" self.arg_support,
-            "infer_closed0" self.infer_closed[0],
-            "infer_closed1" self.infer_closed[1],
-            "infer_open0" self.infer_open[0],
-            "infer_open1" self.infer_open[1],
+            "infer_closed0" self.infer_closed[Mode::Check],
+            "infer_closed1" self.infer_closed[Mode::Only],
+            "infer_open0" self.infer_open[Mode::Check],
+            "infer_open1" self.infer_open[Mode::Only],
             "eq_cache" self.eq_cache,
             "fail_cache" self.fail_cache,
             "neq_cache" self.neq_cache,

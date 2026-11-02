@@ -1,7 +1,7 @@
 use super::{Evaluator, OnceCell, Thunk, Value};
 use crate::kernel::prelude::*;
 
-impl<'b, 'a> Evaluator<'b, 'a> {
+impl Evaluator<'_, '_> {
     pub(super) fn quote_value(&mut self, value: &Value) -> Expr {
         let head = self.term(value.head.clone(), value.context.clone());
         let mut result = self.quote(&head, 0);

@@ -30,16 +30,12 @@ fn unsupported<T>(s: impl Into<String>) -> Result<T> {
     Err(ExportError::Unsupported(s.into()))
 }
 
-pub fn import<'a>(arena: &'a Arena, path: impl AsRef<Path>) -> Result<Store<'a>> {
+pub fn import(arena: &Arena, path: impl AsRef<Path>) -> Result<Store<'_>> {
     import_with(arena, path, 1)
 }
 
 /// Like `import`, but an ndjson file is scanned by `threads - 1` helpers while this thread builds.
-pub fn import_with<'a>(
-    arena: &'a Arena,
-    path: impl AsRef<Path>,
-    threads: usize,
-) -> Result<Store<'a>> {
+pub fn import_with(arena: &Arena, path: impl AsRef<Path>, threads: usize) -> Result<Store<'_>> {
     let file = File::open(path)?;
     let len = file.metadata()?.len() as usize;
     if let Some(map) = blean::map(&file)? {
@@ -179,7 +175,7 @@ fn import_lines<'a>(
 
 const CHUNK: usize = 16 << 20;
 
-pub fn import_reader<'a>(arena: &'a Arena, mut r: impl Read, len: usize) -> Result<Store<'a>> {
+pub fn import_reader(arena: &Arena, mut r: impl Read, len: usize) -> Result<Store<'_>> {
     let mut im = Importer::new(arena, len);
     let mut buf = vec![0u8; CHUNK];
     let (mut filled, mut n) = (0, 0);

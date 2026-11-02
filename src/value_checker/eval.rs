@@ -1,5 +1,5 @@
 use super::intern::Ptrs;
-use super::tables::fx;
+use super::tables::{Mode, fx};
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
 use super::{R, Vc, bytes, stat};
 use crate::checker::env::Decls;
@@ -534,7 +534,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, applies);
         let env = self.push(c.env, x);
         if c.typed {
-            self.infer(env, c.sub, c.body, true)
+            self.infer(env, c.sub, c.body, Mode::Only)
         } else {
             self.eval(env, c.sub, c.body)
         }

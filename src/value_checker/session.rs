@@ -1,8 +1,8 @@
 use super::Vc;
 #[cfg(feature = "vstats")]
 use super::stats::TOTAL;
-use super::tables::Tables;
-use crate::checker::{self, Adapter, Limits};
+use super::tables::{Spare, Tables};
+use crate::checker::{self, Adapter, CheckPath, Limits};
 use crate::resource::Budget;
 use crate::term::arena::Arena;
 use crate::term::ctx::Ctx;
@@ -38,7 +38,7 @@ pub fn check<'a>(
     limits: Limits,
     adapter: Option<&mut Adapter<'a>>,
     native_only: bool,
-) -> Result<bool, Failure> {
+) -> Result<CheckPath, Failure> {
     if bridged(store.declars[idx as usize]) {
         return checker::check_with_adapter(store, arena, idx, limits, adapter, native_only);
     }
@@ -53,14 +53,18 @@ pub fn check<'a>(
     drop(vc);
     if arena_exhausted(&result, native_only) {
         arena.reset();
-        return checker::check_existing_only(store, arena, idx, rest, adapter).map(|()| true);
+        return checker::check_existing_only(store, arena, idx, rest, adapter)
+            .map(|()| CheckPath::Fallback);
     }
-    result.map(|()| false)
+    result.map(|()| CheckPath::Primary)
 }
 
 /// Fresh tables restart local ids long before they could wrap.
 const LOCAL_RESTART: u32 = 1 << 31;
 
+/// A finished checker's durable tables and context with the arena lifetime erased. Sound to
+/// resume while the arena that `epoch` names is unreset, since every reference points into it
+/// or into the store, which outlives the session.
 struct State {
     epoch: u64,
     last: u32,
@@ -70,10 +74,40 @@ struct State {
     t: Tables<'static>,
 }
 
+impl State {
+    fn suspend(vc: &mut Vc<'_, '_>, epoch: u64, last: u32) -> Self {
+        let fresh = Ctx::new(vc.ctx.store, vc.ctx.arena);
+        let ctx = replace(&mut vc.ctx, fresh);
+        let t = vc.t.durable();
+        // SAFETY: erased until `resume` checks the epoch.
+        unsafe {
+            State {
+                epoch,
+                last,
+                memo: vc.epoch,
+                next_local: vc.next_local,
+                ctx: transmute::<Ctx<'_, '_>, Ctx<'static, 'static>>(ctx),
+                t: transmute::<Tables<'_>, Tables<'static>>(t),
+            }
+        }
+    }
+
+    fn resume<'t>(self, vc: &mut Vc<'t, '_>, arena: &'t Arena) {
+        assert!(self.epoch == arena.epoch(), "state outlived its arena");
+        // SAFETY: the epoch ties the state to this arena, unreset since.
+        unsafe {
+            vc.t.absorb(transmute::<Tables<'static>, Tables<'t>>(self.t));
+            vc.ctx = transmute::<Ctx<'static, 'static>, Ctx<'t, '_>>(self.ctx);
+        }
+        vc.next_local = self.next_local;
+        vc.epoch = self.memo;
+    }
+}
+
 /// `state` borrows from `arena`, so it is declared first to drop first.
 pub struct Session<'a> {
     state: Option<State>,
-    spare: Option<Tables<'static>>,
+    spare: Option<Spare>,
     store: &'a Store<'a>,
     arena: Box<Arena>,
 }
@@ -108,9 +142,10 @@ impl<'a> Session<'a> {
         idx: u32,
         rest: Limits,
         adapter: Option<&mut Adapter<'a>>,
-    ) -> Result<bool, Failure> {
+    ) -> Result<CheckPath, Failure> {
         self.reset();
-        checker::check_existing_only(self.store, &mut self.arena, idx, rest, adapter).map(|()| true)
+        checker::check_existing_only(self.store, &mut self.arena, idx, rest, adapter)
+            .map(|()| CheckPath::Fallback)
     }
 
     pub fn check(
@@ -119,7 +154,7 @@ impl<'a> Session<'a> {
         limits: Limits,
         mut adapter: Option<&mut Adapter<'a>>,
         native_only: bool,
-    ) -> Result<bool, Failure> {
+    ) -> Result<CheckPath, Failure> {
         let store = self.store;
         if bridged(store.declars[idx as usize]) {
             let (r, steps) =
@@ -130,30 +165,18 @@ impl<'a> Session<'a> {
             if r.is_err() {
                 self.state = None;
             }
-            return r.map(|()| false);
+            return r.map(|()| CheckPath::Primary);
         }
-        let epoch = self.arena.epoch();
         let state = self
             .state
             .take()
             .filter(|s| s.last < idx && s.next_local < LOCAL_RESTART);
-        assert!(
-            state.as_ref().is_none_or(|s| s.epoch == epoch),
-            "state outlived its arena"
-        );
         let arena: &Arena = &self.arena;
         let mut vc = Vc::new(store, arena, limits);
         if let Some(s) = state {
-            // SAFETY: the epoch check above ties `s` to this arena, unreset since.
-            unsafe {
-                vc.t.absorb(transmute::<Tables<'static>, Tables<'_>>(s.t));
-                vc.ctx = transmute::<Ctx<'static, 'static>, Ctx<'_, '_>>(s.ctx);
-            }
-            vc.next_local = s.next_local;
-            vc.epoch = s.memo;
+            s.resume(&mut vc, arena);
         } else if let Some(t) = self.spare.take() {
-            // SAFETY: spare tables are empty.
-            vc.t.absorb(unsafe { transmute::<Tables<'static>, Tables<'_>>(t) });
+            vc.t.absorb(t.revive());
         }
         let result = vc.check(idx);
         #[cfg(feature = "vstats")]
@@ -165,20 +188,8 @@ impl<'a> Session<'a> {
             .get_or_insert_default()
             .add(&vc.stats);
         if result.is_ok() {
-            let ctx = replace(&mut vc.ctx, Ctx::new(store, arena));
-            let t = vc.t.durable();
-            // SAFETY: the state only lives inside this session, next to its arena.
-            self.state = Some(unsafe {
-                State {
-                    epoch,
-                    last: idx,
-                    memo: vc.epoch,
-                    next_local: vc.next_local,
-                    ctx: transmute::<Ctx<'_, '_>, Ctx<'static, 'static>>(ctx),
-                    t: transmute::<Tables<'_>, Tables<'static>>(t),
-                }
-            });
-            return Ok(false);
+            self.state = Some(State::suspend(&mut vc, arena.epoch(), idx));
+            return Ok(CheckPath::Primary);
         }
         let rest = Limits {
             steps: vc.steps_left,
@@ -188,6 +199,6 @@ impl<'a> Session<'a> {
         if arena_exhausted(&result, native_only) {
             return self.recheck(idx, rest, adapter);
         }
-        result.map(|()| false)
+        result.map(|()| CheckPath::Primary)
     }
 }

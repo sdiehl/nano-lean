@@ -215,8 +215,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 }
 
-fn bridged<'a>(
-    adapter: &mut Adapter<'a>,
+fn bridged(
+    adapter: &mut Adapter<'_>,
     dependencies: BTreeSet<u32>,
     idx: u32,
     kind: TargetKind,
@@ -456,7 +456,7 @@ impl<'a> Convert<'a> {
                 }),
                 Declar::Rec(r) => {
                     let mut rules = Vec::with_capacity(r.rules.len());
-                    for rule in r.rules.iter() {
+                    for rule in r.rules {
                         rules.push(kernel::RecursorRule {
                             constructor: self.name(rule.ctor),
                             num_fields: rule.nfields.into(),

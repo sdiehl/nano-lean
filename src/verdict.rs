@@ -1,4 +1,4 @@
-use crate::checker::{self, Adapter, Limits};
+use crate::checker::{self, Adapter, CheckPath, Limits};
 use crate::export::{ExportError, check_export};
 use crate::import;
 use crate::term::{arena::Arena, intern::Store, outcome::Failure};
@@ -101,7 +101,7 @@ impl Core {
         limits: Limits,
         adapter: &mut Adapter<'a>,
         native_only: bool,
-    ) -> Result<bool, Failure> {
+    ) -> Result<CheckPath, Failure> {
         match self {
             Self::Value => session.check(idx, limits, Some(adapter), native_only),
             Self::Term => checker::check_with_adapter(

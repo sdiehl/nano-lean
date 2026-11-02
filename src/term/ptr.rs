@@ -20,6 +20,7 @@ macro_rules! thin {
             #[inline]
             #[allow(clippy::should_implement_trait)] // Returns the arena lifetime, independent of the handle borrow.
             pub fn as_ref(self) -> &'a $t {
+                // SAFETY: built from a `&'a $t`, and the phantom keeps the borrow alive.
                 unsafe { &*(self.0.get() as *const $t) }
             }
         }
@@ -51,6 +52,13 @@ impl fmt::Display for NamePtr<'_> {
     }
 }
 
+/// The tagged pointers below keep data in the top 16 bits, which holds while user space
+/// addresses fit in 48 bits. That is the default on x86_64 and aarch64 for Linux, macOS and
+/// Windows. Construction panics on a wider address, so a 57 bit process fails loudly instead
+/// of truncating.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("tagged pointers need a 64 bit target with 48 bit user addresses");
+
 const ADDR: u64 = 0x0000_ffff_ffff_ffff;
 const META_SHIFT: u32 = 48;
 
@@ -62,7 +70,7 @@ impl<'a> ExprPtr<'a> {
     #[inline]
     pub fn new(r: &'a Expr<'a>, meta: Meta) -> Self {
         let addr = r as *const Expr<'a> as u64;
-        debug_assert_eq!(addr & !ADDR, 0);
+        assert!(addr & !ADDR == 0, "address wider than 48 bits");
         Self(
             NonZeroU64::new(addr | (u64::from(meta) << META_SHIFT))
                 .expect("references are nonnull"),
@@ -93,6 +101,7 @@ impl<'a> ExprPtr<'a> {
     #[inline]
     #[allow(clippy::should_implement_trait)] // Returns the arena lifetime, independent of the handle borrow.
     pub fn as_ref(self) -> &'a Expr<'a> {
+        // SAFETY: the low 48 bits are the address of the `&'a Expr` this was built from.
         unsafe { &*((self.0.get() & ADDR) as *const Expr<'a>) }
     }
 }
@@ -119,10 +128,9 @@ impl<'a> LevelsPtr<'a> {
     #[inline]
     pub fn new(s: &'a [LevelPtr<'a>]) -> Self {
         assert!(s.len() <= usize::from(u16::MAX), "too many universe levels");
-        Self(
-            s.as_ptr() as u64 | ((s.len() as u64) << META_SHIFT),
-            PhantomData,
-        )
+        let addr = s.as_ptr() as u64;
+        assert!(addr & !ADDR == 0, "address wider than 48 bits");
+        Self(addr | ((s.len() as u64) << META_SHIFT), PhantomData)
     }
 
     #[inline]
@@ -138,6 +146,7 @@ impl<'a> LevelsPtr<'a> {
     #[inline]
     #[allow(clippy::should_implement_trait)] // Returns the arena lifetime, independent of the handle borrow.
     pub fn as_ref(self) -> &'a [LevelPtr<'a>] {
+        // SAFETY: address and length are those of the `&'a` slice this was built from.
         unsafe { std::slice::from_raw_parts((self.0 & ADDR) as *const LevelPtr<'a>, self.len()) }
     }
 }

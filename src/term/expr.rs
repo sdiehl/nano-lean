@@ -312,7 +312,7 @@ pub mod mk {
         )
     }
 
-    pub fn local<'a>(id: u32, ty: ExprPtr<'a>) -> (Expr<'a>, Meta) {
+    pub fn local(id: u32, ty: ExprPtr<'_>) -> (Expr<'_>, Meta) {
         (
             Expr::Local {
                 id,

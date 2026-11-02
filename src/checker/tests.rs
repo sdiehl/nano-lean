@@ -455,7 +455,10 @@ fn arena_fallback_rechecks_the_target_body_and_reports_its_use() {
                 "rejected"
             );
         } else {
-            assert!(result.unwrap_or_else(|e| panic!("{}", e.reason())));
+            assert_eq!(
+                result.unwrap_or_else(|e| panic!("{}", e.reason())),
+                CheckPath::Fallback
+            );
         }
     }
 }

@@ -11,7 +11,7 @@ fn application_key(head: usize, args: &[Thunk], unfold: bool) -> (usize, Vec<usi
     (head, args.iter().map(|a| a.key()).collect(), unfold)
 }
 
-impl<'a> Checker<'a> {
+impl Checker<'_> {
     pub(in crate::kernel) fn whnf_core(&mut self, expr: &Expr, unfold: bool) -> Result<Expr> {
         #[cfg(feature = "profile")]
         let _whnf = crate::profile::span("whnf");
@@ -22,7 +22,7 @@ impl<'a> Checker<'a> {
     }
 }
 
-impl<'b, 'a> Evaluator<'b, 'a> {
+impl Evaluator<'_, '_> {
     pub(super) fn eval(&mut self, term: &Thunk, unfold: bool) -> Result<Value> {
         if let Some(value) = term.normal[usize::from(unfold)].get() {
             return Ok(value.clone());

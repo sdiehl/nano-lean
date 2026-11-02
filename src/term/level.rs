@@ -48,7 +48,7 @@ impl<'a> LevelPtr<'a> {
     }
 }
 
-impl<'a> LevelsPtr<'a> {
+impl LevelsPtr<'_> {
     pub fn distinct_params(self) -> bool {
         self.iter()
             .enumerate()

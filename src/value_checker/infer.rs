@@ -1,3 +1,4 @@
+use super::tables::{Inferred, Mode, Scoped};
 use super::value::{Clo, Env, Head, K, Sub, V, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
@@ -144,12 +145,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         sub: Sub<'t>,
         dom: V<'t>,
         body: ExprPtr<'t>,
-        only: bool,
+        mode: Mode,
     ) -> R<V<'t>> {
         self.restoring_depth(|vc| {
             let x = vc.binder_local(dom);
             let env1 = vc.push(env, x);
-            vc.infer(env1, sub, body, only)
+            vc.infer(env1, sub, body, mode)
         })
     }
 
@@ -163,10 +164,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         body: ExprPtr<'t>,
         a: ExprPtr<'t>,
     ) -> R<V<'t>> {
-        let s = self.infer(env, sub, ty, false)?;
+        let s = self.infer(env, sub, ty, Mode::Check)?;
         self.ensure_sort(s)?;
         let dom = self.eval(env, sub, ty)?;
-        let at = self.infer(env, sub, a, false)?;
+        let at = self.infer(env, sub, a, Mode::Check)?;
         ensure!(self, self.def_eq(at, dom)?, "application type mismatch");
         let v = if !body.closed() && body.sup() & 1 != 0 {
             Some(self.eval(env, sub, a)?)
@@ -176,7 +177,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.restoring_depth(|vc| {
             let x = vc.binder_local(dom);
             let env1 = vc.push(env, x);
-            let t = vc.infer(env1, sub, body, false)?;
+            let t = vc.infer(env1, sub, body, Mode::Check)?;
             match v {
                 Some(v) => vc.zeta(x, v, t),
                 None => Ok(t),
@@ -189,20 +190,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         env: Env<'t>,
         sub: Sub<'t>,
         e: ExprPtr<'t>,
-        only: bool,
+        mode: Mode,
     ) -> R<V<'t>> {
-        let t = self.infer_fast(env, sub, e, only)?;
+        let t = self.infer_fast(env, sub, e, mode)?;
         #[cfg(feature = "memocheck")]
         self.audit_value("type", t, |c| {
             c.audit_bypass();
-            c.infer_slow(env, sub, e, only)
+            c.infer_slow(env, sub, e, mode)
         });
         Ok(t)
     }
 
     /// Hits return from a frameless probe. Whatever calls out happens in `infer_slow`.
     #[inline(always)]
-    fn infer_fast(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
+    fn infer_fast(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, mode: Mode) -> R<V<'t>> {
         self.guard()?;
         if let Expr::Var { idx, .. } = *e {
             let Some(v) = env.get(idx) else {
@@ -214,58 +215,57 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             };
         }
         if e.closed() {
-            if let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub)) {
-                if s.is_empty() {
+            if let Some(&Scoped { ty, uparams }) = self.t.infer_closed[Mode::Check].get(&(e, sub)) {
+                if uparams.is_empty() {
                     stat!(self, closed_hit);
-                    return Ok(t);
+                    return Ok(ty);
                 }
-                if s == self.uparams {
+                if uparams == self.uparams {
                     stat!(self, closed_hit);
                     self.scoped += 1;
-                    return Ok(t);
+                    return Ok(ty);
                 }
             }
         } else {
             let raw = (e, sub, env.key());
-            if let Some(&(t, s)) = self.t.infer_open[0].get(&raw) {
-                if s.is_empty() {
-                    return Ok(t);
+            if let Some(&Scoped { ty, uparams }) = self.t.infer_open[Mode::Check].get(&raw) {
+                if uparams.is_empty() {
+                    return Ok(ty);
                 }
-                if s == self.uparams {
+                if uparams == self.uparams {
                     self.scoped += 1;
-                    return Ok(t);
+                    return Ok(ty);
                 }
             }
-            if only && let Some(&(t, _)) = self.t.infer_open[1].get(&raw) {
-                return Ok(t);
+            if mode == Mode::Only
+                && let Some(h) = self.t.infer_open[Mode::Only].get(&raw)
+            {
+                return Ok(h.ty);
             }
         }
-        self.infer_slow(env, sub, e, only)
+        self.infer_slow(env, sub, e, mode)
     }
 
     #[inline(never)]
-    fn infer_slow(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, only: bool) -> R<V<'t>> {
+    fn infer_slow(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>, mode: Mode) -> R<V<'t>> {
         self.tick()?;
         let closed = e.closed();
         let raw = (e, sub, env.key());
         let mark = self.scoped;
         if closed {
             if !self.bypassed()
-                && let Some(&(t, s)) = self.t.infer_closed[0].get(&(e, sub))
-                && self.within(s)
+                && let Some(&h) = self.t.infer_closed[Mode::Check].get(&(e, sub))
+                && self.admit(h)
             {
                 stat!(self, closed_hit);
-                if !s.is_empty() {
-                    self.scoped += 1;
-                }
-                return Ok(t);
+                return Ok(h.ty);
             }
             stat!(self, closed_miss);
-            if only
+            if mode == Mode::Only
                 && !self.bypassed()
-                && let Some(&(t, _)) = self.t.infer_closed[1].get(&(e, sub))
+                && let Some(h) = self.t.infer_closed[Mode::Only].get(&(e, sub))
             {
-                return Ok(t);
+                return Ok(h.ty);
             }
         }
         let env = if closed {
@@ -277,25 +277,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         };
         if !closed && env.key() != raw.2 && !self.bypassed() {
             let k = (e, sub, env.key());
-            let hit = match self.t.infer_open[0].get(&k).copied() {
-                Some((t, s)) if self.within(s) => {
-                    if !s.is_empty() {
-                        self.scoped += 1;
-                    }
-                    Some((t, s))
-                }
-                _ if only => self.t.infer_open[1].get(&k).copied(),
+            let hit = match self.t.infer_open[Mode::Check].get(&k).copied() {
+                Some(h) if self.admit(h) => Some(h),
+                _ if mode == Mode::Only => self.t.infer_open[Mode::Only].get(&k).copied(),
                 _ => None,
             };
             if let Some(h) = hit {
-                self.t.infer_open[usize::from(only)].insert(raw, h);
-                return Ok(h.0);
+                self.t.infer_open[mode].insert(raw, h);
+                return Ok(h.ty);
             }
         }
         let proj = !closed && matches!(*e, Expr::App { .. }) && !self.bypassed();
-        if proj && let Some(h) = self.infer_projected(env, sub, e, only) {
-            self.t.infer_open[usize::from(only)].insert(raw, h);
-            return Ok(h.0);
+        if proj && let Some(h) = self.infer_projected(env, sub, e, mode) {
+            self.t.infer_open[mode].insert(raw, h);
+            return Ok(h.ty);
         }
         #[cfg(feature = "memocheck")]
         self.audit_entered();
@@ -308,7 +303,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             Expr::Local { .. } => reject!(self, "unexpected local in syntax"),
             Expr::Sort { level, .. } => {
-                if !only {
+                if mode == Mode::Check {
                     self.check_level(level)?;
                 }
                 let l = self.subst_level(sub, level);
@@ -325,7 +320,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     "wrong number of universe levels for {}",
                     name.as_ref()
                 );
-                if !only {
+                if mode == Mode::Check {
                     for &l in levels.as_ref() {
                         self.check_level(l)?;
                     }
@@ -341,17 +336,17 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     f = fun;
                 }
                 let (mut ft, rest) = match *f {
-                    Expr::Lam { ty, body, .. } if !only => {
+                    Expr::Lam { ty, body, .. } if mode == Mode::Check => {
                         let a = args.pop().expect("an application has an argument");
                         (self.infer_redex(env, sub, ty, body, a)?, args)
                     }
-                    _ => (self.infer(env, sub, f, only)?, args),
+                    _ => (self.infer(env, sub, f, mode)?, args),
                 };
                 for &a in rest.iter().rev() {
                     self.tick()?;
                     let (d, c) = self.ensure_pi(ft)?;
-                    if !only {
-                        let at = self.infer(env, sub, a, false)?;
+                    if mode == Mode::Check {
+                        let at = self.infer(env, sub, a, Mode::Check)?;
                         ensure!(self, self.def_eq(at, d)?, "application type mismatch");
                     }
                     let x = if self.uses_arg(c) {
@@ -365,10 +360,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
             Expr::Lam { ty, body, .. } => {
                 let dom = self.eval(env, sub, ty)?;
-                if !only {
-                    let s = self.infer(env, sub, ty, false)?;
+                if mode == Mode::Check {
+                    let s = self.infer(env, sub, ty, Mode::Check)?;
                     self.ensure_sort(s)?;
-                    self.infer_binder(env, sub, dom, body, false)?;
+                    self.infer_binder(env, sub, dom, body, Mode::Check)?;
                 }
                 self.mk(
                     K::Pi(
@@ -384,44 +379,44 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 )
             }
             Expr::Pi { ty, body, .. } => {
-                let s = self.infer(env, sub, ty, only)?;
+                let s = self.infer(env, sub, ty, mode)?;
                 let s1 = self.ensure_sort(s)?;
                 let dom = self.eval(env, sub, ty)?;
-                let s = self.infer_binder(env, sub, dom, body, only)?;
+                let s = self.infer_binder(env, sub, dom, body, mode)?;
                 let s2 = self.ensure_sort(s)?;
                 let l = self.ctx.imax(s1, s2);
                 self.mk(K::Sort(l), false)
             }
-            Expr::Let { data, .. } if only || !self.nat_typed(data.ty) => {
-                if !only {
-                    let s = self.infer(env, sub, data.ty, false)?;
+            Expr::Let { data, .. } if mode == Mode::Only || !self.nat_typed(data.ty) => {
+                if mode == Mode::Check {
+                    let s = self.infer(env, sub, data.ty, Mode::Check)?;
                     self.ensure_sort(s)?;
                     let tv = self.eval(env, sub, data.ty)?;
-                    let at = self.infer(env, sub, data.val, false)?;
+                    let at = self.infer(env, sub, data.val, Mode::Check)?;
                     ensure!(self, self.def_eq(at, tv)?, "let value type mismatch");
                 }
                 let v = self.eval(env, sub, data.val)?;
                 let env1 = self.push(env, v);
-                self.infer(env1, sub, data.body, only)?
+                self.infer(env1, sub, data.body, mode)?
             }
             // A Nat let body sees a local, so closed literal folding never forces the value.
             Expr::Let { data, .. } => {
-                let s = self.infer(env, sub, data.ty, false)?;
+                let s = self.infer(env, sub, data.ty, Mode::Check)?;
                 self.ensure_sort(s)?;
                 let tv = self.eval(env, sub, data.ty)?;
-                let at = self.infer(env, sub, data.val, false)?;
+                let at = self.infer(env, sub, data.val, Mode::Check)?;
                 ensure!(self, self.def_eq(at, tv)?, "let value type mismatch");
                 let v = self.eval(env, sub, data.val)?;
                 let x = self.local(tv, Some(v));
                 let env1 = self.push(env, x);
-                let t = self.infer(env1, sub, data.body, false)?;
+                let t = self.infer(env1, sub, data.body, Mode::Check)?;
                 self.zeta(x, v, t)?
             }
             Expr::Proj {
                 name, idx, e: s, ..
             } => {
-                if !only {
-                    self.infer(env, sub, s, false)?;
+                if mode == Mode::Check {
+                    self.infer(env, sub, s, Mode::Check)?;
                 }
                 let sv = self.eval(env, sub, s)?;
                 let p = self.mk(K::Neu(Head::Proj(name, idx, sv), &[]), sv.open);
@@ -430,21 +425,26 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Expr::NatLit { .. } => self.literal_type(self.names.nat)?,
             Expr::StrLit { .. } => self.literal_type(self.names.string)?,
         };
-        let s = if only || self.scoped == mark {
-            LevelsPtr::new(&[])
-        } else {
-            self.uparams
+        let s = Scoped {
+            ty: t,
+            uparams: if mode == Mode::Only || self.scoped == mark {
+                LevelsPtr::new(&[])
+            } else {
+                self.uparams
+            },
         };
         if closed {
-            self.t.infer_closed[usize::from(only)].insert((e, sub), (t, s));
+            self.t.infer_closed[mode].insert((e, sub), s);
         } else {
-            self.t.infer_open[usize::from(only)].insert((e, sub, env.key()), (t, s));
+            self.t.infer_open[mode].insert((e, sub, env.key()), s);
             if env.key() != raw.2 {
-                self.t.infer_open[usize::from(only)].insert(raw, (t, s));
+                self.t.infer_open[mode].insert(raw, s);
             }
             if proj {
                 stat!(self, proj_put);
-                self.t.infer_proj.insert((e, sub), (env, (t, s), only));
+                self.t
+                    .infer_proj
+                    .insert((e, sub), Inferred { env, ty: s, mode });
             }
         }
         Ok(t)
@@ -459,12 +459,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         env: Env<'t>,
         sub: Sub<'t>,
         e: ExprPtr<'t>,
-        only: bool,
-    ) -> Option<(V<'t>, LevelsPtr<'t>)> {
+        mode: Mode,
+    ) -> Option<Scoped<'t>> {
         stat!(self, proj_probe);
         let sl = self.slots(e)?;
-        let &(o, h, m) = self.t.infer_proj.probe(&(e, sub)).ok()?;
-        if m && !only {
+        let &Inferred {
+            env: o,
+            ty,
+            mode: m,
+        } = self.t.infer_proj.probe(&(e, sub)).ok()?;
+        if m == Mode::Only && mode == Mode::Check {
             return None;
         }
         for j in sl {
@@ -473,14 +477,24 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 _ => return None,
             }
         }
-        if !self.within(h.1) {
+        if !self.admit(ty) {
             return None;
         }
         stat!(self, proj_hit);
-        if !h.1.is_empty() {
+        Some(ty)
+    }
+
+    /// Whether a cached type's parameters are in scope, recording the dependence if it has one.
+    /// The frameless probes in `infer_fast` inline the two cheap cases of this.
+    #[inline(always)]
+    fn admit(&mut self, s: Scoped<'t>) -> bool {
+        if !self.within(s.uparams) {
+            return false;
+        }
+        if !s.uparams.is_empty() {
             self.scoped += 1;
         }
-        Some(h)
+        true
     }
 }
 

@@ -1,3 +1,4 @@
+use super::tables::{Mode, Scoped};
 use super::value::{Env, K, Sub, V};
 use super::{R, Vc};
 use crate::checker::Limits;
@@ -46,7 +47,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn check_type(&mut self, ty: ExprPtr<'t>) -> R<LevelPtr<'t>> {
         let id = self.id;
-        let s = self.infer(Env::EMPTY, id, ty, false)?;
+        let s = self.infer(Env::EMPTY, id, ty, Mode::Check)?;
         self.ensure_sort(s)
     }
 
@@ -54,7 +55,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     fn check_telescope(&mut self, ty: ExprPtr<'t>) -> R<LevelPtr<'t>> {
         if !ty.closed()
             || !matches!(*ty, Expr::Pi { .. })
-            || self.t.infer_closed[0].contains_key(&(ty, self.id))
+            || self.t.infer_closed[Mode::Check].contains_key(&(ty, self.id))
         {
             return self.check_type(ty);
         }
@@ -68,25 +69,25 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let mut sorts = SmallVec::<[LevelPtr<'t>; 8]>::new();
         while let Expr::Pi { ty: b, body, .. } = *e {
             self.tick()?;
-            let s = self.infer(env, id, b, false)?;
+            let s = self.infer(env, id, b, Mode::Check)?;
             sorts.push(self.ensure_sort(s)?);
             let dom = self.eval(env, id, b)?;
             let x = self.binder_local(dom);
             env = self.push(env, x);
             e = body;
         }
-        let s = self.infer(env, id, e, false)?;
+        let s = self.infer(env, id, e, Mode::Check)?;
         let mut l = self.ensure_sort(s)?;
         for &s1 in sorts.iter().rev() {
             l = self.ctx.imax(s1, l);
         }
         let t = self.mk(K::Sort(l), false);
-        let s = if self.scoped == mark {
+        let uparams = if self.scoped == mark {
             LevelsPtr::new(&[])
         } else {
             self.uparams
         };
-        self.t.infer_closed[0].insert((ty, id), (t, s));
+        self.t.infer_closed[Mode::Check].insert((ty, id), Scoped { ty: t, uparams });
         Ok(l)
     }
 
@@ -108,7 +109,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         {
             let dom = self.eval(env, id, a)?;
             if a != b {
-                let s = self.infer(env, id, a, false)?;
+                let s = self.infer(env, id, a, Mode::Check)?;
                 self.ensure_sort(s)?;
                 doms.push((dom, env, b));
             }
@@ -116,7 +117,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             env = self.push(env, x);
             (v, ty) = (body, tb);
         }
-        let vt = self.infer(env, id, v, false)?;
+        let vt = self.infer(env, id, v, Mode::Check)?;
         for (dom, env, b) in doms {
             let d = self.eval(env, id, b)?;
             ensure!(self, self.def_eq(dom, d)?, "declaration type mismatch");
@@ -150,9 +151,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 }
             }
             RecCheck::Rule(rhs, want) => {
-                let wt = self.infer(Env::EMPTY, id, want, false)?;
+                let wt = self.infer(Env::EMPTY, id, want, Mode::Check)?;
                 if rhs != want {
-                    let at = self.infer(Env::EMPTY, id, rhs, false)?;
+                    let at = self.infer(Env::EMPTY, id, rhs, Mode::Check)?;
                     ensure!(
                         self,
                         self.def_eq(at, wt)?,

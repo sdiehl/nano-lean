@@ -291,20 +291,16 @@ fn spawn(
 fn snapshot_from_trace(line: &str) -> Option<Snapshot> {
     let event: Trace = serde_json::from_str(line).ok()?;
     let name = event.name.as_deref()?;
-    let name = serde_json::from_str::<Vec<Value>>(name)
-        .ok()
-        .map(|parts| {
+    let name = serde_json::from_str::<Vec<Value>>(name).ok().map_or_else(
+        || name.to_owned(),
+        |parts| {
             parts
                 .iter()
-                .map(|p| {
-                    p.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| p.to_string())
-                })
+                .map(|p| p.as_str().map_or_else(|| p.to_string(), str::to_owned))
                 .collect::<Vec<_>>()
                 .join(".")
-        })
-        .unwrap_or_else(|| name.to_owned());
+        },
+    );
     Some(Snapshot {
         imported: event.imported as u64,
         assigned: event.assigned_checked as u64,

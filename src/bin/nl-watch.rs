@@ -1,11 +1,11 @@
 use clap::Parser;
-use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
-use nano_lean::fast::{Checks, Config};
+use nano_lean::fast::{self, Checks, Config};
 use nano_lean::import;
 use nano_lean::term::arena::Arena;
 use notify::{Event, RecursiveMode, Watcher};
 use olean_export::Env;
-use std::io::{self, Read, Write};
+use std::collections::VecDeque;
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Child, Command, ExitStatus, Stdio};
@@ -18,7 +18,7 @@ const POLL: Duration = Duration::from_millis(50);
 const DEBOUNCE: Duration = Duration::from_millis(100);
 const GRACE: Duration = Duration::from_secs(3);
 const CACHE: &str = ".lake/nano-lean.accepted";
-const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
+const TAIL: usize = 64 << 10;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -31,7 +31,7 @@ struct Cli {
     /// Root modules to build and check
     #[arg(required = true)]
     modules: Vec<String>,
-    #[arg(short = 'j', long, value_parser = clap::value_parser!(u16).range(1..=nano_lean::fast::MAX_THREADS))]
+    #[arg(short = 'j', long, value_parser = clap::value_parser!(u16).range(1..=fast::MAX_THREADS))]
     threads: Option<u16>,
     /// Shell command run before each check, `lake build MODULES` by default
     #[arg(long, value_name = "CMD")]
@@ -59,19 +59,60 @@ fn relevant(p: &Path) -> bool {
             || matches!(name, "lakefile.toml" | "lake-manifest.json"))
 }
 
+/// Whether a file changed within `POLL`. A dead watcher still waits, so callers cannot spin.
+fn changed(rx: &Receiver<()>) -> bool {
+    match rx.recv_timeout(POLL) {
+        Ok(()) => true,
+        Err(RecvTimeoutError::Timeout) => false,
+        Err(RecvTimeoutError::Disconnected) => {
+            thread::sleep(POLL);
+            false
+        }
+    }
+}
+
+fn interrupted(rx: &Receiver<()>) -> bool {
+    QUIT.load(Relaxed) || changed(rx)
+}
+
+/// The last `cap` bytes of `r`, noting what was dropped and any read error.
+fn tail(mut r: impl Read, cap: usize) -> Vec<u8> {
+    let mut buf = VecDeque::<u8>::new();
+    let mut chunk = [0; 8192];
+    let mut dropped = 0;
+    let err = loop {
+        match r.read(&mut chunk) {
+            Ok(0) => break None,
+            Ok(n) => {
+                buf.extend(&chunk[..n]);
+                let over = buf.len().saturating_sub(cap);
+                buf.drain(..over);
+                dropped += over;
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => break Some(e),
+        }
+    };
+    let mut out = Vec::new();
+    if dropped > 0 {
+        out.extend(format!("[{dropped} earlier bytes dropped]\n").bytes());
+    }
+    out.extend(buf);
+    if let Some(e) = err {
+        out.extend(format!("\n[read failed: {e}]\n").bytes());
+    }
+    out
+}
+
+fn drain(r: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || tail(r, TAIL))
+}
+
 /// A child in its own process group, so a change can stop everything it started.
 struct Job {
     child: Child,
     out: JoinHandle<Vec<u8>>,
     err: JoinHandle<Vec<u8>>,
-}
-
-fn drain(mut r: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut b = Vec::new();
-        r.read_to_end(&mut b).ok();
-        b
-    })
 }
 
 impl Job {
@@ -96,23 +137,41 @@ impl Job {
     /// Waits for the job, or stops it and returns `None` once a file changes.
     fn wait(mut self, rx: &Receiver<()>) -> Option<(ExitStatus, Vec<u8>)> {
         loop {
-            if let Some(status) = self.child.try_wait().unwrap_or_else(|e| die(e)) {
-                let mut out = self.out.join().unwrap_or_default();
-                out.extend(self.err.join().unwrap_or_default());
-                return Some((status, out));
-            }
-            if QUIT.load(Relaxed) || rx.recv_timeout(POLL).is_ok() {
-                // Give the build a moment to stop cleanly.
-                self.signal(libc::SIGTERM);
-                let t = Instant::now();
-                while self.child.try_wait().ok().flatten().is_none() && t.elapsed() < GRACE {
-                    thread::sleep(POLL);
+            match self.child.try_wait() {
+                Ok(Some(status)) => return Some((status, self.output())),
+                Ok(None) if !interrupted(rx) => {}
+                Ok(None) => {
+                    self.stop();
+                    return None;
                 }
-                self.signal(libc::SIGKILL);
-                self.child.wait().ok();
-                return None;
+                Err(e) => {
+                    self.stop();
+                    die(e)
+                }
             }
         }
+    }
+
+    /// Ends a running job early, stopping its whole group gracefully and then by force.
+    fn stop(mut self) {
+        self.signal(libc::SIGTERM);
+        let t = Instant::now();
+        while self.child.try_wait().ok().flatten().is_none() && t.elapsed() < GRACE {
+            thread::sleep(POLL);
+        }
+        self.signal(libc::SIGKILL);
+        self.child.wait().ok();
+    }
+
+    fn output(self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, h) in [("stdout", self.out), ("stderr", self.err)] {
+            out.extend(
+                h.join()
+                    .unwrap_or_else(|_| format!("\n[{name} reader panicked]\n").into()),
+            );
+        }
+        out
     }
 }
 
@@ -139,6 +198,12 @@ fn settle(rx: &Receiver<()>) {
     while rx.recv_timeout(DEBOUNCE).is_ok() {}
 }
 
+enum Cycle {
+    Passed,
+    Failed,
+    Interrupted,
+}
+
 /// What stays loaded between cycles.
 struct Watch {
     cli: Cli,
@@ -149,8 +214,7 @@ struct Watch {
 }
 
 impl Watch {
-    /// Builds and checks once, returning `false` when a change cut it short.
-    fn cycle(&mut self, rx: &Receiver<()>) -> bool {
+    fn cycle(&mut self, rx: &Receiver<()>) -> Cycle {
         let t = Instant::now();
         show("building...", b"");
         let build = self
@@ -160,27 +224,26 @@ impl Watch {
             .unwrap_or_else(|| format!("lake build {}", self.cli.modules.join(" ")));
         let Some((status, out)) = Job::spawn(Command::new("sh").args(["-c", &build])).wait(rx)
         else {
-            return false;
+            return Cycle::Interrupted;
         };
         if !status.success() {
             show(&format!("build failed in {:.1?}", t.elapsed()), &out);
-            return true;
+            return Cycle::Failed;
         }
         show("checking...", b"");
-        let done = match self.check(rx) {
-            Ok(done) => done,
-            Err(e) => {
-                println!("{e}");
-                true
-            }
-        };
-        if done {
-            println!("total {:.1?}", t.elapsed());
+        let cycle = self.check(rx).unwrap_or_else(|e| {
+            println!("{e}");
+            Cycle::Failed
+        });
+        match cycle {
+            Cycle::Passed => println!("total {:.1?}", t.elapsed()),
+            Cycle::Failed => println!("failed, total {:.1?}", t.elapsed()),
+            Cycle::Interrupted => {}
         }
-        done
+        cycle
     }
 
-    fn check(&mut self, rx: &Receiver<()>) -> Result<bool, String> {
+    fn check(&mut self, rx: &Receiver<()>) -> Result<Cycle, String> {
         let olean = |e: olean_export::Error| format!("olean: {e}");
         let env = match &mut self.env {
             Some(env) => {
@@ -195,11 +258,7 @@ impl Watch {
         };
         let arena = Arena::new();
         let store = import::from_env(&arena, env).map_err(|e| e.to_string())?;
-        // SAFETY: plain mimalloc calls, as in nl-fast.
-        unsafe {
-            mi_collect(true);
-            mi_option_set(MI_OPTION_PURGE_DELAY, -1);
-        }
+        fast::release_import_memory();
         if let Some(p) = &self.config.prelude {
             let arena = Arena::new();
             let reference = import::import(&arena, p).map_err(|e| e.to_string())?;
@@ -215,21 +274,26 @@ impl Watch {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let indices: Vec<u32> = (0..store.declars.len() as u32).collect();
         let stop = AtomicBool::new(false);
-        thread::scope(|sc| {
+        let code = thread::scope(|sc| {
             let run = sc.spawn(|| self.checks.run(&store, &indices, cache.as_ref(), &stop));
             while !run.is_finished() {
-                if QUIT.load(Relaxed) || rx.recv_timeout(POLL).is_ok() {
+                if interrupted(rx) {
                     stop.store(true, Relaxed);
+                    break;
                 }
             }
-            run.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+            run.join().unwrap_or_else(|p| std::panic::resume_unwind(p))
         });
         let stopped = stop.load(Relaxed);
         if let Some(c) = &cache {
             c.save(path, stopped)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
         }
-        Ok(!stopped)
+        Ok(match (stopped, code) {
+            (true, _) => Cycle::Interrupted,
+            (false, 0) => Cycle::Passed,
+            (false, _) => Cycle::Failed,
+        })
     }
 }
 
@@ -254,18 +318,11 @@ fn lake_path() -> Vec<PathBuf> {
 fn main() {
     let cli = Cli::parse();
     let config = Config::load(None).unwrap_or_else(|e| die(e));
-    let checks = Checks {
-        threads: cli.threads.or(config.threads).map_or_else(
-            || thread::available_parallelism().map_or(1, usize::from),
-            usize::from,
-        ),
-        trace: false,
-        quiet: true,
-        native_only: config.fallback != Some(true),
-        cache_audit: config.cache_audit == Some(true),
-        core: config.core(),
-        limits: config.limits(),
-    };
+    let threads = cli.threads.or(config.threads).map_or_else(
+        || thread::available_parallelism().map_or(1, usize::from),
+        usize::from,
+    );
+    let checks = config.checks(threads, false, true);
     for sig in [libc::SIGINT, libc::SIGTERM] {
         // SAFETY: the handler only stores to an atomic.
         unsafe { libc::signal(sig, quit as *const () as libc::sighandler_t) };
@@ -289,10 +346,45 @@ fn main() {
         .watch(Path::new("."), RecursiveMode::Recursive)
         .unwrap_or_else(|e| die(e));
     while !QUIT.load(Relaxed) {
-        if w.cycle(&rx) {
-            settle(&rx);
-        } else {
-            while rx.recv_timeout(DEBOUNCE).is_ok() {}
+        match w.cycle(&rx) {
+            Cycle::Passed | Cycle::Failed => settle(&rx),
+            Cycle::Interrupted => while rx.recv_timeout(DEBOUNCE).is_ok() {},
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Breaks(io::Cursor<Vec<u8>>);
+
+    impl Read for Breaks {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            match self.0.read(b)? {
+                0 => Err(io::Error::other("pipe broke")),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn tail_keeps_the_end_and_reports_errors() {
+        let input: Vec<u8> = (0..3 * TAIL as u32).map(|i| (i % 251) as u8).collect();
+        let out = tail(Breaks(io::Cursor::new(input.clone())), TAIL);
+        let head = format!("[{} earlier bytes dropped]\n", 2 * TAIL);
+        let end = "\n[read failed: pipe broke]\n";
+        assert!(out.starts_with(head.as_bytes()));
+        assert!(out.ends_with(end.as_bytes()));
+        assert_eq!(&out[head.len()..out.len() - end.len()], &input[2 * TAIL..]);
+    }
+
+    #[test]
+    fn dead_watcher_does_not_spin() {
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        let t = Instant::now();
+        assert!(!changed(&rx));
+        assert!(t.elapsed() >= POLL);
     }
 }

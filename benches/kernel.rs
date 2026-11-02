@@ -369,7 +369,7 @@ fn saved(name: &str) -> PathBuf {
 
 fn main() {
     let cli = Cli::parse();
-    // SAFETY: plain mimalloc call; -1 keeps freed pages mapped, as nl-fast does.
+    // SAFETY: a plain mimalloc call. -1 keeps freed pages mapped, as nl-fast does.
     unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, -1) };
     let worker = thread::Builder::new()
         .stack_size(WORKER_STACK_BYTES)

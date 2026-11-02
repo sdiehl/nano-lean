@@ -1,5 +1,5 @@
 use super::*;
-use crate::checker::{self, Adapter};
+use crate::checker::{self, Adapter, CheckPath};
 use crate::import::import_bytes;
 use crate::resource::Budget;
 use crate::term::outcome::{Decline, Failure};
@@ -68,7 +68,7 @@ fn fixture_outcomes_match_the_term_checker() {
                 "{file}: {name}: {}",
                 new.as_ref().err().map_or("", |f| f.reason())
             );
-            let kind = |r: &Result<bool, Failure>| {
+            let kind = |r: &Result<CheckPath, Failure>| {
                 r.as_ref()
                     .map_err(super::super::term::outcome::Failure::status)
                     .copied()

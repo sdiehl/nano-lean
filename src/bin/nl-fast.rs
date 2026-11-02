@@ -1,7 +1,6 @@
 use clap::{Parser, value_parser};
-use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
 use nano_lean::export::ExportError;
-use nano_lean::fast::{Checks, Config, MAX_THREADS};
+use nano_lean::fast::{self, Checks, Config, MAX_THREADS};
 use nano_lean::import::{self, blean};
 use nano_lean::term::{arena::Arena, intern::Store};
 use std::collections::HashSet;
@@ -13,8 +12,6 @@ use std::{fs, process};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-const MI_OPTION_PURGE_DELAY: mi_option_t = 15;
 
 /// Check a Lean export (ndjson or blean) with the fast checker.
 #[derive(Parser)]
@@ -31,7 +28,7 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(short = 'j', long, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     threads: Option<u16>,
-    /// Threads importing ndjson, one builder plus scanners; 1 (the default) reads serially
+    /// Threads importing ndjson, one builder plus scanners. 1, the default, reads serially
     #[arg(long, value_name = "N", value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     import_threads: Option<u16>,
     /// Check only this declaration
@@ -115,6 +112,8 @@ fn options() -> Options {
     c.steps = cli.steps.or(c.steps);
     c.arena_mib = cli.arena_mib.or(c.arena_mib);
     c.term_core = Some(cli.term_core || c.term_core == Some(true));
+    c.fallback = Some(cli.fallback || c.fallback == Some(true));
+    c.cache_audit = Some(cli.cache_audit || c.cache_audit == Some(true));
     Options {
         path: cli.path.filter(|p| p != "-"),
         olean: cli.olean,
@@ -124,15 +123,11 @@ fn options() -> Options {
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
         import_threads: cli.import_threads.or(c.import_threads).unwrap_or(1).into(),
-        checks: Checks {
-            threads: cli.threads.or(c.threads).unwrap_or(1).into(),
-            trace: cli.trace,
-            quiet: cli.quiet,
-            native_only: !(cli.fallback || c.fallback == Some(true)),
-            cache_audit: cli.cache_audit || c.cache_audit == Some(true),
-            core: c.core(),
-            limits: c.limits(),
-        },
+        checks: c.checks(
+            cli.threads.or(c.threads).unwrap_or(1).into(),
+            cli.trace,
+            cli.quiet,
+        ),
         prelude: cli.prelude.or(c.prelude),
         axioms: cli.axioms.or(c.axioms),
         cache: cli.cache.or(c.cache).filter(|_| !cli.no_cache),
@@ -199,12 +194,7 @@ fn main() {
         }
         None => load(&arena, o.path.as_deref().map(Path::new), o.import_threads),
     };
-    // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
-    // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
-    unsafe {
-        mi_collect(true);
-        mi_option_set(MI_OPTION_PURGE_DELAY, -1);
-    }
+    fast::release_import_memory();
     let s = store.stats;
     if !o.quiet {
         eprintln!(

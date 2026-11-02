@@ -78,8 +78,7 @@ fn signature(kind: Kind, params: &[String], encoded: bool) -> Expr {
     let u = Level::Param(params[0].clone());
     let v = params
         .get(1)
-        .map(|p| Level::Param(p.clone()))
-        .unwrap_or(Level::Nat(0));
+        .map_or(Level::Nat(0), |p| Level::Param(p.clone()));
     let a_ty = Name::new("A");
     let av = Expr::Var(a_ty.clone());
     let rel = Name::new("r");

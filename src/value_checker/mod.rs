@@ -33,7 +33,7 @@ use smallvec::SmallVec;
 use stats::Stats;
 use stats::{bytes, stat};
 use std::fmt;
-use std::mem::{take, transmute};
+use std::mem::take;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use tables::{POOL, Tables};
 use value::{Head, K, Memo, Sub, V, Val};
@@ -108,12 +108,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             included: SmallVec::new(),
             id: Sub { ks: e, vs: e },
             dummy,
-            // SAFETY: pooled tables are empty.
             t: POOL
                 .with(|p| p.borrow_mut().take())
-                .map_or_else(Default::default, |t| unsafe {
-                    transmute::<Tables<'static>, Tables<'t>>(t)
-                }),
+                .map_or_else(Default::default, tables::Spare::revive),
             base: arena.used_bytes(),
             floor: stack_floor(),
             fail: None,

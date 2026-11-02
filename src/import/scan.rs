@@ -3,18 +3,46 @@ use crate::term::decl::Hint;
 /// A scanned line. A string name holds the byte range of its text within the line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Line {
-    Str(u32, u32, u32, u32),
+    Str {
+        id: u32,
+        pre: u32,
+        start: u32,
+        end: u32,
+    },
     Num(u32, u32, u64),
     Succ(u32, u32),
-    Max(u32, u32, u32, bool),
+    Max {
+        id: u32,
+        a: u32,
+        b: u32,
+        imax: bool,
+    },
     Param(u32, u32),
     App(u32, u32, u32),
     Bvar(u32, u64),
     Sort(u32, u32),
     Const(u32, u32),
-    Binder(u32, u32, u32, u32, bool),
-    Let(u32, u32, u32, u32, u32, bool),
-    Proj(u32, u32, u64, u32),
+    Binder {
+        id: u32,
+        name: u32,
+        ty: u32,
+        body: u32,
+        lam: bool,
+    },
+    Let {
+        id: u32,
+        name: u32,
+        ty: u32,
+        val: u32,
+        body: u32,
+        nondep: bool,
+    },
+    Proj {
+        id: u32,
+        name: u32,
+        idx: u64,
+        e: u32,
+    },
     Thm(u32, u32, u32),
     Def(u32, u32, u32, Hint),
 }
@@ -336,7 +364,13 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
             c.lit(b",\"ie\":")?;
             let i = c.u32()?;
             c.lit(b"}")?;
-            Line::Binder(i, name, ty, body, false)
+            Line::Binder {
+                id: i,
+                name,
+                ty,
+                body,
+                lam: false,
+            }
         }
         (b'i', b'e') => {
             c.lit(b"{\"ie\":")?;
@@ -346,7 +380,13 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
                 b'l' if c.lit(b"lam\":").is_some() => {
                     let (name, ty, body) = binder(&mut c)?;
                     c.lit(b"}")?;
-                    Line::Binder(i, name, ty, body, true)
+                    Line::Binder {
+                        id: i,
+                        name,
+                        ty,
+                        body,
+                        lam: true,
+                    }
                 }
                 b'l' => {
                     c.lit(b"letE\":{\"body\":")?;
@@ -360,7 +400,14 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
                     c.lit(b",\"value\":")?;
                     let val = c.u32()?;
                     c.lit(b"}}")?;
-                    Line::Let(i, name, ty, val, body, nondep)
+                    Line::Let {
+                        id: i,
+                        name,
+                        ty,
+                        val,
+                        body,
+                        nondep,
+                    }
                 }
                 b's' => {
                     c.lit(b"sort\":")?;
@@ -376,7 +423,12 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
                     c.lit(b",\"typeName\":")?;
                     let n = c.u32()?;
                     c.lit(b"}}")?;
-                    Line::Proj(i, n, k, e)
+                    Line::Proj {
+                        id: i,
+                        name: n,
+                        idx: k,
+                        e,
+                    }
                 }
                 _ => return None,
             }
@@ -390,7 +442,12 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
                 let s = c.quoted()?;
                 let at = s.as_ptr() as usize - b.as_ptr() as usize;
                 c.lit(b"}}")?;
-                Line::Str(i, pre, at as u32, (at + s.len()) as u32)
+                Line::Str {
+                    id: i,
+                    pre,
+                    start: at as u32,
+                    end: (at + s.len()) as u32,
+                }
             } else {
                 c.lit(b",\"num\":{\"i\":")?;
                 let n = c.u64()?;
@@ -422,7 +479,12 @@ fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> 
                     c.lit(b",")?;
                     let d = c.u32()?;
                     c.lit(b"]")?;
-                    Line::Max(i, a, d, imax)
+                    Line::Max {
+                        id: i,
+                        a,
+                        b: d,
+                        imax,
+                    }
                 }
                 _ => return None,
             };
@@ -518,7 +580,16 @@ fn forall(w: &[u8; WIN], len: usize) -> Option<(Line, usize)> {
     }
     let e = id(w, &mut i)?;
     let j = end(w, i, len, b"}")?;
-    Some((Line::Binder(e, name, ty, body, false), j))
+    Some((
+        Line::Binder {
+            id: e,
+            name,
+            ty,
+            body,
+            lam: false,
+        },
+        j,
+    ))
 }
 
 #[inline(always)]
@@ -533,7 +604,16 @@ fn lam(w: &[u8; WIN], len: usize) -> Option<(Line, usize)> {
     }
     let (name, ty, body) = parts(w, &mut i)?;
     let j = end(w, i, len, b"}}")?;
-    Some((Line::Binder(e, name, ty, body, true), j))
+    Some((
+        Line::Binder {
+            id: e,
+            name,
+            ty,
+            body,
+            lam: true,
+        },
+        j,
+    ))
 }
 
 /// Lanes at or above ten as their top bits. A carry out of a lane only disturbs the

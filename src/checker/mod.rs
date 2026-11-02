@@ -45,13 +45,21 @@ impl Default for Limits {
     }
 }
 
+/// Whether a declaration was settled by its own core or rechecked by the term core after the
+/// arena ran out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckPath {
+    Primary,
+    Fallback,
+}
+
 /// Both engines share the work budget and rejections never retry.
 pub fn check_declaration<'a>(
     store: &'a Store<'a>,
     arena: &mut Arena,
     idx: u32,
     limits: Limits,
-) -> Result<bool, Failure> {
+) -> Result<CheckPath, Failure> {
     check_with_adapter(store, arena, idx, limits, None, false)
 }
 
@@ -62,15 +70,15 @@ pub fn check_with_adapter<'a>(
     mut limits: Limits,
     mut adapter: Option<&mut Adapter<'a>>,
     native_only: bool,
-) -> Result<bool, Failure> {
+) -> Result<CheckPath, Failure> {
     let (result, steps) = check_shared(store, arena, idx, limits, adapter.as_deref_mut());
     limits.steps = steps;
     match result {
         Err(Failure::Declined(Decline::Exhausted(Budget::Arena))) if !native_only => {
             arena.reset();
-            check_existing_only(store, arena, idx, limits, adapter).map(|()| true)
+            check_existing_only(store, arena, idx, limits, adapter).map(|()| CheckPath::Fallback)
         }
-        result => result.map(|()| false),
+        result => result.map(|()| CheckPath::Primary),
     }
 }
 

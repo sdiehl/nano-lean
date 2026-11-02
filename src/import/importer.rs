@@ -442,13 +442,18 @@ impl<'a> Importer<'a> {
     #[inline(always)]
     fn apply(&mut self, l: Line, b: &[u8]) -> Result<()> {
         match l {
-            Line::Str(i, pre, s, e) => match std::str::from_utf8(&b[s as usize..e as usize]) {
-                Ok(s) => self.do_str(i, pre, s),
+            Line::Str {
+                id,
+                pre,
+                start,
+                end,
+            } => match std::str::from_utf8(&b[start as usize..end as usize]) {
+                Ok(s) => self.do_str(id, pre, s),
                 Err(_) => invalid("invalid string"),
             },
             Line::Num(i, pre, n) => self.do_num(i, pre, n),
             Line::Succ(i, l) => self.do_succ(i, l),
-            Line::Max(i, a, c, imax) => self.do_max(i, a, c, imax),
+            Line::Max { id, a, b: c, imax } => self.do_max(id, a, c, imax),
             Line::Param(i, n) => self.do_param(i, n),
             Line::App(i, f, a) => self.do_app(i, f, a),
             Line::Bvar(i, v) => self.do_bvar(i, v),
@@ -456,11 +461,22 @@ impl<'a> Importer<'a> {
             Line::Const(..) | Line::Thm(..) | Line::Def(..) => {
                 unreachable!("listed lines carry their universe list separately")
             }
-            Line::Binder(i, name, ty, body, lam) => self.do_binder(i, name, ty, body, lam),
-            Line::Let(i, name, ty, val, body, nondep) => {
-                self.do_let(i, name, ty, val, body, nondep)
-            }
-            Line::Proj(i, n, idx, e) => self.do_proj(i, n, idx, e),
+            Line::Binder {
+                id,
+                name,
+                ty,
+                body,
+                lam,
+            } => self.do_binder(id, name, ty, body, lam),
+            Line::Let {
+                id,
+                name,
+                ty,
+                val,
+                body,
+                nondep,
+            } => self.do_let(id, name, ty, val, body, nondep),
+            Line::Proj { id, name, idx, e } => self.do_proj(id, name, idx, e),
         }
     }
 

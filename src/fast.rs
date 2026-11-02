@@ -1,7 +1,7 @@
 //! The parallel checking loop behind `nl-fast` and `nl-watch`.
 
 use crate::cache::Cache;
-use crate::checker::{Adapter, Limits};
+use crate::checker::{Adapter, CheckPath, Limits};
 use crate::term::intern::Store;
 use crate::value_checker::{self, Session};
 use crate::verdict::Core;
@@ -83,6 +83,28 @@ impl Config {
             steps: self.steps.unwrap_or(DEFAULT_STEPS),
             arena_bytes: self.arena_mib.unwrap_or(DEFAULT_ARENA_MIB) as usize * MIB,
         }
+    }
+
+    pub fn checks(&self, threads: usize, trace: bool, quiet: bool) -> Checks {
+        Checks {
+            threads,
+            trace,
+            quiet,
+            native_only: self.fallback != Some(true),
+            cache_audit: self.cache_audit == Some(true),
+            core: self.core(),
+            limits: self.limits(),
+        }
+    }
+}
+
+/// Returns freed import buffers to the OS, and keeps later frees mapped for reuse.
+pub fn release_import_memory() {
+    const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+    // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, -1);
     }
 }
 
@@ -233,7 +255,7 @@ impl Checks {
                                         store.declars[idx as usize].name()
                                     );
                                 }
-                                if matches!(r, Ok(true)) {
+                                if matches!(r, Ok(CheckPath::Fallback)) {
                                     fallbacks.fetch_add(1, Relaxed);
                                     progress.set_message(tally());
                                 }
