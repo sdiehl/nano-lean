@@ -9,7 +9,7 @@ use rustc_hash::FxBuildHasher;
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::hash::{BuildHasher, Hash};
-use std::mem::{replace, take, transmute};
+use std::mem::{replace, swap, take, transmute};
 use std::ops::Deref;
 use std::ptr;
 use std::rc::Rc;
@@ -58,10 +58,16 @@ impl Derived<'_> {
     }
 }
 
+/// A checked type with the parameter list it relied on.
+type Scoped<'t> = (V<'t>, LevelsPtr<'t>);
+
+/// An open result with its environment and whether it was inferred without checking.
+type Inferred<'t> = (Env<'t>, Scoped<'t>, bool);
+
 #[derive(Default)]
 pub(super) struct Tables<'t> {
     pub(super) conv_locals: Logged<(usize, usize), V<'t>>,
-    pub(super) eval_memo: Lossy<(ExprPtr<'t>, Sub<'t>, usize), V<'t>>,
+    pub(super) eval_memo: Lossy<(ExprPtr<'t>, Sub<'t>, usize), V<'t>, 16>,
     pub(super) eval_closed: Memo<(ExprPtr<'t>, Sub<'t>), V<'t>>,
     pub(super) delta: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), (V<'t>, Hot)>,
     pub(super) derived: Derived<'t>,
@@ -69,9 +75,13 @@ pub(super) struct Tables<'t> {
     pub(super) rules: FxHashMap<(NamePtr<'t>, usize, LevelsPtr<'t>), V<'t>>,
     pub(super) support: FxHashMap<ExprPtr<'t>, Option<&'t [u16]>>,
     pub(super) arg_support: FxHashMap<(NamePtr<'t>, usize), Rc<[bool]>>,
-    /// Closed results with the parameter list they relied on, valid under any list including it.
-    pub(super) infer_closed: [FxHashMap<(ExprPtr<'t>, Sub<'t>), (V<'t>, LevelsPtr<'t>)>; 2],
-    pub(super) infer_open: [Logged<(ExprPtr<'t>, Sub<'t>, usize), V<'t>>; 2],
+    /// Results valid under any parameter list including the one they relied on.
+    pub(super) infer_closed: [FxHashMap<(ExprPtr<'t>, Sub<'t>), Scoped<'t>>; 2],
+    pub(super) infer_open: [Logged<(ExprPtr<'t>, Sub<'t>, usize), Scoped<'t>>; 2],
+    /// Open applications by the environments they were inferred in, matched on their support.
+    /// Open applications by the environment they were evaluated in, matched on their support.
+    pub(super) eval_proj: Lossy<(ExprPtr<'t>, Sub<'t>), (Env<'t>, V<'t>), 14>,
+    pub(super) infer_proj: Lossy<(ExprPtr<'t>, Sub<'t>), Inferred<'t>, 14>,
     pub(super) eq_cache: LoggedSet<(usize, usize)>,
     pub(super) fail_cache: LoggedSet<(usize, usize)>,
     /// Pairs decided unequal, smaller key first.
@@ -81,45 +91,35 @@ pub(super) struct Tables<'t> {
     /// Neutrals with their hashes, so a rehash never walks a spine.
     pub(super) neus: [HashTable<(u64, V<'t>)>; 2],
     pub(super) neu_log: Vec<(u64, V<'t>)>,
-    pub(super) envs: [Lossy<(usize, usize), Env<'t>>; 2],
+    pub(super) envs: [Lossy<(usize, usize), Env<'t>, 16>; 2],
     /// Trimmed environments by source and support mask.
-    pub(super) prunes: Lossy<(usize, u32), Env<'t>>,
+    pub(super) prunes: Lossy<(usize, u32), Env<'t>, 12>,
     pub(super) frames: [Logged<&'t Ptrs<'t>, Env<'t>>; 2],
     pub(super) lazies: [Set<'t, Lazy<'t>>; 2],
     pub(super) nats: FxHashMap<BigUint, V<'t>>,
 }
 
 impl<'t> Tables<'t> {
+    /// Everything outlives the declaration except budget-bound failures, the clearing log, and
+    /// lazies, measured not to pay for their retention. Checked inference results carry the
+    /// parameter list they relied on. Sound because the core reads only the store below its limit, a session moves
+    /// only to a later declaration, and any failure or fallback discards it. Negatives persist
+    /// only as established inequality, never as an exhausted budget, which `fail_cache` holds.
     pub(super) fn durable(&mut self) -> Tables<'t> {
-        Tables {
-            delta: take(&mut self.delta),
-            derived: take(&mut self.derived),
-            const_ty: take(&mut self.const_ty),
-            rules: take(&mut self.rules),
-            eval_closed: take(&mut self.eval_closed),
-            support: take(&mut self.support),
-            arg_support: take(&mut self.arg_support),
-            infer_closed: take(&mut self.infer_closed),
-            nats: take(&mut self.nats),
-            hc: [take(&mut self.hc[0]), Default::default()],
-            neus: [take(&mut self.neus[0]), Default::default()],
-            ..Default::default()
-        }
+        let mut d = take(self);
+        self.swap_scoped(&mut d);
+        d
     }
 
-    pub(super) fn absorb(&mut self, d: Tables<'t>) {
-        self.delta = d.delta;
-        self.derived = d.derived;
-        self.const_ty = d.const_ty;
-        self.rules = d.rules;
-        self.eval_closed = d.eval_closed;
-        self.support = d.support;
-        self.arg_support = d.arg_support;
-        self.infer_closed = d.infer_closed;
-        self.nats = d.nats;
-        let [h, _] = d.hc;
-        let [n, _] = d.neus;
-        (self.hc[0], self.neus[0]) = (h, n);
+    pub(super) fn absorb(&mut self, mut d: Tables<'t>) {
+        self.swap_scoped(&mut d);
+        *self = d;
+    }
+
+    fn swap_scoped(&mut self, d: &mut Tables<'t>) {
+        swap(&mut self.fail_cache, &mut d.fail_cache);
+        swap(&mut self.neu_log, &mut d.neu_log);
+        swap(&mut self.lazies, &mut d.lazies);
     }
 }
 
@@ -151,6 +151,8 @@ impl Tables<'_> {
             arg_support,
             infer_closed,
             infer_open,
+            infer_proj,
+            eval_proj,
             eq_cache,
             fail_cache,
             neq_cache,
@@ -184,6 +186,8 @@ impl Tables<'_> {
         hc.iter_mut().for_each(|l| l.empty(keep));
         envs.iter_mut().for_each(|l| l.empty(keep));
         prunes.empty(keep);
+        infer_proj.empty(keep);
+        eval_proj.empty(keep);
         frames.iter_mut().for_each(|l| l.empty(keep));
         lazies.iter_mut().for_each(|l| l.empty(keep));
         if neus[1].len() <= neu_log.len() {
@@ -334,15 +338,17 @@ impl<K: Copy + Eq + Hash, V> Logged<K, V> {
 
 /// Direct mapped and bounded: a colliding insert evicts, so a long evaluation keeps recent
 /// results instead of growing a table of entries that are mostly never read again. Slots
-/// stamped with an older epoch are empty, so emptying a large table writes nothing.
-pub(super) struct Lossy<K, V> {
+/// stamped with an older epoch are empty, so emptying a large table writes nothing. `BITS` caps
+/// the slot count, kept small since the tables persist across declarations and a large one
+/// misses the cache on every probe.
+pub(super) struct Lossy<K, V, const BITS: u32> {
     slots: Vec<(u32, Option<(K, V)>)>,
     live: usize,
     grow_at: usize,
     epoch: u32,
 }
 
-impl<K, V> Default for Lossy<K, V> {
+impl<K, V, const BITS: u32> Default for Lossy<K, V, BITS> {
     fn default() -> Self {
         Self {
             slots: Vec::new(),
@@ -354,10 +360,9 @@ impl<K, V> Default for Lossy<K, V> {
 }
 
 const LOSSY_MIN: usize = 1 << 10;
-const LOSSY_MAX: usize = 1 << 20;
 const LOSSY_KEEP: usize = 1 << 16;
 
-impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
+impl<K: Copy + Eq + Hash, V: Copy, const BITS: u32> Lossy<K, V, BITS> {
     #[inline]
     fn slot(&self, h: u64) -> usize {
         h as usize & (self.slots.len() - 1)
@@ -404,7 +409,7 @@ impl<K: Copy + Eq + Hash, V: Copy> Lossy<K, V> {
         let n = (self.slots.len() * 2).max(LOSSY_MIN);
         let old = replace(&mut self.slots, vec![(self.epoch.wrapping_sub(1), None); n]);
         self.live = 0;
-        self.grow_at = if n < LOSSY_MAX { n / 4 * 3 } else { usize::MAX };
+        self.grow_at = if n < 1 << BITS { n / 4 * 3 } else { usize::MAX };
         for (e, kv) in old {
             if let (true, Some((k, v))) = (e == self.epoch, kv) {
                 let i = self.slot(fx(&k));
@@ -540,7 +545,7 @@ impl<T> Footprint for Set<'_, T> {
 }
 
 #[cfg(feature = "vstats")]
-impl<K, V> Footprint for Lossy<K, V> {
+impl<K, V, const BITS: u32> Footprint for Lossy<K, V, BITS> {
     fn footprint(&self) -> (usize, usize) {
         (
             self.live,

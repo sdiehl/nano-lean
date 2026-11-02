@@ -229,6 +229,7 @@ pub mod mk {
         )
     }
 
+    #[inline(always)]
     pub fn app<'a>(fun: ExprPtr<'a>, arg: ExprPtr<'a>) -> (Expr<'a>, Meta) {
         (
             Expr::App {

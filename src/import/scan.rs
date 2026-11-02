@@ -1,7 +1,7 @@
 use crate::term::decl::Hint;
 
 /// A scanned line. A string name holds the byte range of its text within the line.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Line {
     Str(u32, u32, u32, u32),
     Num(u32, u32, u64),
@@ -55,16 +55,10 @@ fn word(b: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(*b.first_chunk::<8>()?) ^ (0x30 * LANES))
 }
 
-/// Leading lanes below ten. A lane at or above ten sets its top bit, and carries
-/// out of a lane only disturb the lanes above it.
+/// Leading lanes below ten.
 #[inline(always)]
 fn run(x: u64) -> usize {
-    let above = (x.wrapping_add(0x76 * LANES) | x) & (0x80 * LANES);
-    if above == 0 {
-        8
-    } else {
-        (above.trailing_zeros() / 8) as usize
-    }
+    (above(x).trailing_zeros() / 8).min(8) as usize
 }
 
 /// The first `n` lanes as a decimal number, folding digit pairs then halves.
@@ -278,7 +272,23 @@ fn decl(
 }
 
 /// The line and where it stops. Pass `usize::MAX` as `len` to stop at the next newline.
+#[inline(always)]
 pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> {
+    if let Some(w) = b.first_chunk::<WIN>()
+        && let Some(r) = match w[2] {
+            b'a' => app(w, len).map(|(e, f, a, j)| (Line::App(e, f, a), j)),
+            b'f' => forall(w, len),
+            b'i' => lam(w, len),
+            _ => None,
+        }
+    {
+        return Some(r);
+    }
+    other(b, len, scratch)
+}
+
+#[inline(never)]
+fn other(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize)> {
     let mut c = Cur { b, i: 0, len };
     let r = match (b.get(2)?, b.get(3)?) {
         (b't', _) => {
@@ -424,6 +434,177 @@ pub fn fast(b: &[u8], len: usize, scratch: &mut Vec<u32>) -> Option<(Line, usize
     c.end().map(|e| (r, e))
 }
 
+/// Application and binder lines are most of an export, so they are read from a fixed
+/// window with word compares. The longest such line ends before byte 120.
+pub const WIN: usize = 128;
+
+/// The bytes of `s` as a little endian word, with the mask covering them.
+const fn tag(s: &[u8]) -> (u64, u64) {
+    let mut w = 0u64;
+    let mut k = 0;
+    while k < s.len() {
+        w |= (s[k] as u64) << (8 * k);
+        k += 1;
+    }
+    (w, u64::MAX >> (64 - 8 * s.len()))
+}
+
+#[inline(always)]
+fn ld(w: &[u8; WIN], i: usize) -> u64 {
+    let mut a = [0; 8];
+    a.copy_from_slice(&w[i..i + 8]);
+    u64::from_le_bytes(a)
+}
+
+#[inline(always)]
+fn has(w: &[u8; WIN], i: &mut usize, s: &[u8]) -> bool {
+    let mut ok = true;
+    for c in s.chunks(8) {
+        let (t, m) = tag(c);
+        ok &= ld(w, *i) & m == t;
+        *i += c.len();
+    }
+    ok
+}
+
+/// The binder info and the body key after it.
+#[inline(always)]
+fn info(w: &[u8; WIN], i: &mut usize) -> bool {
+    match (w[*i], w[*i + 2]) {
+        (b'd', _) => has(w, i, b"default\",\"body\":"),
+        (b'i', b'p') => has(w, i, b"implicit\",\"body\":"),
+        (b'i', _) => has(w, i, b"instImplicit\",\"body\":"),
+        _ => has(w, i, b"strictImplicit\",\"body\":"),
+    }
+}
+
+/// The body, name and type ids of a binder whose info starts at `i`.
+#[inline(always)]
+fn parts(w: &[u8; WIN], i: &mut usize) -> Option<(u32, u32, u32)> {
+    if !info(w, i) {
+        return None;
+    }
+    let body = id(w, i)?;
+    if !has(w, i, b",\"name\":") {
+        return None;
+    }
+    let name = id(w, i)?;
+    if !has(w, i, b",\"type\":") {
+        return None;
+    }
+    let ty = id(w, i)?;
+    Some((name, ty, body))
+}
+
+#[inline(always)]
+fn end(w: &[u8; WIN], i: usize, len: usize, s: &[u8]) -> Option<usize> {
+    let mut k = i;
+    if !has(w, &mut k, s) {
+        return None;
+    }
+    let j = k + usize::from(w[k] == b'\r');
+    (j == len || w[j] == b'\n').then_some(j)
+}
+
+#[inline(always)]
+fn forall(w: &[u8; WIN], len: usize) -> Option<(Line, usize)> {
+    let mut i = 0;
+    if !has(w, &mut i, b"{\"forallE\":{\"binderInfo\":\"") {
+        return None;
+    }
+    let (name, ty, body) = parts(w, &mut i)?;
+    if !has(w, &mut i, b"},\"ie\":") {
+        return None;
+    }
+    let e = id(w, &mut i)?;
+    let j = end(w, i, len, b"}")?;
+    Some((Line::Binder(e, name, ty, body, false), j))
+}
+
+#[inline(always)]
+fn lam(w: &[u8; WIN], len: usize) -> Option<(Line, usize)> {
+    let mut i = 6;
+    if ld(w, 0) & tag(b"{\"ie\":").1 != tag(b"{\"ie\":").0 {
+        return None;
+    }
+    let e = id(w, &mut i)?;
+    if !has(w, &mut i, b",\"lam\":{\"binderInfo\":\"") {
+        return None;
+    }
+    let (name, ty, body) = parts(w, &mut i)?;
+    let j = end(w, i, len, b"}}")?;
+    Some((Line::Binder(e, name, ty, body, true), j))
+}
+
+/// Lanes at or above ten as their top bits. A carry out of a lane only disturbs the
+/// lanes above it.
+#[inline(always)]
+fn above(x: u64) -> u64 {
+    (x.wrapping_add(0x76 * LANES) | x) & (0x80 * LANES)
+}
+
+/// Eight left aligned digit lanes as a number, leading zero lanes included.
+#[inline(always)]
+fn fold(v: u64) -> u64 {
+    const PAIRS: u64 = 0x0000_00ff_0000_00ff;
+    const HIGH: u64 = 0x000f_4240_0000_0064;
+    const LOW: u64 = 0x0000_2710_0000_0001;
+    let y = v.wrapping_mul(10).wrapping_add(v >> 8);
+    ((y & PAIRS)
+        .wrapping_mul(HIGH)
+        .wrapping_add(((y >> 16) & PAIRS).wrapping_mul(LOW)))
+        >> 32
+}
+
+/// A canonical decimal of at most ten digits that fits a u32. The top bit of the first
+/// lane that is not a digit sits at `8 * n + 7`.
+#[inline(always)]
+fn id(w: &[u8; WIN], i: &mut usize) -> Option<u32> {
+    let x = ld(w, *i) ^ (0x30 * LANES);
+    let ax = above(x);
+    if ax != 0 {
+        let t = ax.trailing_zeros();
+        if t == 7 || (x & 0xff == 0 && t > 15) {
+            return None;
+        }
+        *i += (t >> 3) as usize;
+        return Some(fold(x << (71 - t)) as u32);
+    }
+    let y = ld(w, *i + 8) ^ (0x30 * LANES);
+    let t = above(y).trailing_zeros();
+    if x & 0xff == 0 || t > 23 {
+        return None;
+    }
+    let hi = fold(x);
+    if t == 7 {
+        *i += 8;
+        return Some(hi as u32);
+    }
+    *i += 8 + (t >> 3) as usize;
+    let m = (t >> 3) as usize;
+    u32::try_from(hi * POW10[m] + fold(y << (71 - t))).ok()
+}
+
+/// The ids of an application line and where it stops.
+#[inline(always)]
+pub fn app(w: &[u8; WIN], len: usize) -> Option<(u32, u32, u32, usize)> {
+    let mut i = 6;
+    if ld(w, 0) != tag(b"{\"app\":{").0 || !has(w, &mut i, b":{\"arg\":") {
+        return None;
+    }
+    let a = id(w, &mut i)?;
+    if !has(w, &mut i, b",\"fn\":") {
+        return None;
+    }
+    let f = id(w, &mut i)?;
+    if !has(w, &mut i, b"},\"ie\":") {
+        return None;
+    }
+    let e = id(w, &mut i)?;
+    let j = end(w, i, len, b"}")?;
+    Some((e, f, a, j))
+}
+
 fn binder(c: &mut Cur<'_>) -> Option<(u32, u32, u32)> {
     c.lit(b"{\"binderInfo\":")?;
     c.quoted()?;
@@ -439,7 +620,7 @@ fn binder(c: &mut Cur<'_>) -> Option<(u32, u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cur;
+    use super::{Cur, WIN, other};
 
     fn slow(b: &[u8]) -> Option<(u64, usize)> {
         let mut c = Cur {
@@ -510,6 +691,54 @@ mod tests {
         }
         for b in &cases {
             assert_eq!(fast(b), slow(b), "{:?}", String::from_utf8_lossy(b));
+        }
+    }
+
+    #[test]
+    fn window_lines_agree_with_cursor() {
+        let ids = [
+            "0",
+            "7",
+            "12345678",
+            "123456789",
+            "4294967295",
+            "4294967296",
+            "012",
+            "",
+            "x",
+        ];
+        let infos = [
+            "default",
+            "implicit",
+            "instImplicit",
+            "strictImplicit",
+            "other",
+        ];
+        let mut lines = Vec::new();
+        for (a, b) in ids.iter().zip(ids.iter().rev()) {
+            lines.push(format!("{{\"app\":{{\"arg\":{a},\"fn\":{b}}},\"ie\":{a}}}"));
+            for k in infos {
+                let p =
+                    format!("{{\"binderInfo\":\"{k}\",\"body\":{a},\"name\":{b},\"type\":{a}}}");
+                lines.push(format!("{{\"forallE\":{p},\"ie\":{b}}}"));
+                lines.push(format!("{{\"ie\":{b},\"lam\":{p}}}"));
+            }
+        }
+        let mut cases = Vec::new();
+        for l in &lines {
+            for tail in ["", "\r", "x", "}", " "] {
+                cases.push(format!("{l}{tail}"));
+            }
+            cases.push(l[..l.len() - 1].to_string());
+        }
+        for c in cases {
+            let mut b = c.clone().into_bytes();
+            b.push(b'\n');
+            b.resize(b.len() + WIN, b'9');
+            let (mut x, mut y) = (Vec::new(), Vec::new());
+            for len in [usize::MAX, c.len()] {
+                assert_eq!(super::fast(&b, len, &mut x), other(&b, len, &mut y), "{c}");
+            }
         }
     }
 }

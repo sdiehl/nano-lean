@@ -119,9 +119,6 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
 
     #[inline]
     fn expr(&mut self, (e, meta): (Expr<'t>, Meta)) -> ExprPtr<'t> {
-        if let Some(p) = self.store.dag.find_expr(&e) {
-            return p;
-        }
         self.dag.intern_expr(self.arena, e, meta)
     }
 
@@ -180,12 +177,7 @@ impl<'t, 'a: 't> Ctx<'t, 'a> {
             hash,
             sup,
         };
-        if let Some(p) = self
-            .store
-            .dag
-            .find_expr(&e)
-            .or_else(|| self.dag.find_expr(&e))
-        {
+        if let Some(p) = self.dag.find_expr(&e) {
             return p;
         }
         let data = self.arena.alloc(probe);

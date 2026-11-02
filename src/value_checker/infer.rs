@@ -1,4 +1,4 @@
-use super::value::{Clo, Env, Head, K, Sub, V};
+use super::value::{Clo, Env, Head, K, Sub, V, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::term::expr::Expr;
@@ -227,12 +227,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             }
         } else {
             let raw = (e, sub, env.key());
-            if let Some(&t) = self.t.infer_open[0].get(&raw) {
-                // Open entries do not record whether they met a parameter.
-                self.scoped += 1;
-                return Ok(t);
+            if let Some(&(t, s)) = self.t.infer_open[0].get(&raw) {
+                if s.is_empty() {
+                    return Ok(t);
+                }
+                if s == self.uparams {
+                    self.scoped += 1;
+                    return Ok(t);
+                }
             }
-            if only && let Some(&t) = self.t.infer_open[1].get(&raw) {
+            if only && let Some(&(t, _)) = self.t.infer_open[1].get(&raw) {
                 return Ok(t);
             }
         }
@@ -273,18 +277,25 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         };
         if !closed && env.key() != raw.2 && !self.bypassed() {
             let k = (e, sub, env.key());
-            let hit = match self.t.infer_open[0].get(&k) {
-                Some(&t) => {
-                    self.scoped += 1;
-                    Some(t)
+            let hit = match self.t.infer_open[0].get(&k).copied() {
+                Some((t, s)) if self.within(s) => {
+                    if !s.is_empty() {
+                        self.scoped += 1;
+                    }
+                    Some((t, s))
                 }
-                None if only => self.t.infer_open[1].get(&k).copied(),
-                None => None,
+                _ if only => self.t.infer_open[1].get(&k).copied(),
+                _ => None,
             };
-            if let Some(t) = hit {
-                self.t.infer_open[usize::from(only)].insert(raw, t);
-                return Ok(t);
+            if let Some(h) = hit {
+                self.t.infer_open[usize::from(only)].insert(raw, h);
+                return Ok(h.0);
             }
+        }
+        let proj = !closed && matches!(*e, Expr::App { .. }) && !self.bypassed();
+        if proj && let Some(h) = self.infer_projected(env, sub, e, only) {
+            self.t.infer_open[usize::from(only)].insert(raw, h);
+            return Ok(h.0);
         }
         #[cfg(feature = "memocheck")]
         self.audit_entered();
@@ -419,20 +430,57 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Expr::NatLit { .. } => self.literal_type(self.names.nat)?,
             Expr::StrLit { .. } => self.literal_type(self.names.string)?,
         };
+        let s = if only || self.scoped == mark {
+            LevelsPtr::new(&[])
+        } else {
+            self.uparams
+        };
         if closed {
-            let s = if only || self.scoped == mark {
-                LevelsPtr::new(&[])
-            } else {
-                self.uparams
-            };
             self.t.infer_closed[usize::from(only)].insert((e, sub), (t, s));
         } else {
-            self.t.infer_open[usize::from(only)].insert((e, sub, env.key()), t);
+            self.t.infer_open[usize::from(only)].insert((e, sub, env.key()), (t, s));
             if env.key() != raw.2 {
-                self.t.infer_open[usize::from(only)].insert(raw, t);
+                self.t.infer_open[usize::from(only)].insert(raw, (t, s));
+            }
+            if proj {
+                stat!(self, proj_put);
+                self.t.infer_proj.insert((e, sub), (env, (t, s), only));
             }
         }
         Ok(t)
+    }
+}
+
+impl<'t, 'a: 't> Vc<'t, 'a> {
+    /// An earlier result whose environment agrees with this one on every slot `e` reads.
+    #[inline(never)]
+    fn infer_projected(
+        &mut self,
+        env: Env<'t>,
+        sub: Sub<'t>,
+        e: ExprPtr<'t>,
+        only: bool,
+    ) -> Option<(V<'t>, LevelsPtr<'t>)> {
+        stat!(self, proj_probe);
+        let sl = self.slots(e)?;
+        let &(o, h, m) = self.t.infer_proj.probe(&(e, sub)).ok()?;
+        if m && !only {
+            return None;
+        }
+        for j in sl {
+            match (o.get(j), env.get(j)) {
+                (Some(a), Some(b)) if key(a) == key(b) => {}
+                _ => return None,
+            }
+        }
+        if !self.within(h.1) {
+            return None;
+        }
+        stat!(self, proj_hit);
+        if !h.1.is_empty() {
+            self.scoped += 1;
+        }
+        Some(h)
     }
 }
 

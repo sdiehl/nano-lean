@@ -105,7 +105,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 break n;
             }
             if self.deriving && opaque_nat(t1) {
-                break t1;
+                return Ok(t1);
             }
             match self.unfold(t1, true)? {
                 Some(n) => t = n,

@@ -26,13 +26,13 @@ const FAILURES_SHOWN: usize = 30;
 const TICK: Duration = Duration::from_millis(250);
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 const SESSION_BYTES: usize = 64 << 20;
-const RUN: u32 = 64;
 
 /// The same settings as the `nl-fast` flags, which override them.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub threads: Option<u16>,
+    pub import_threads: Option<u16>,
     pub steps: Option<u64>,
     pub arena_mib: Option<u32>,
     pub fallback: Option<bool>,
@@ -57,8 +57,10 @@ impl Config {
             Err(_) => return Ok(Self::default()),
         };
         let mut c: Self = toml::from_str(&text).map_err(|e| fail(&e))?;
-        if c.threads
-            .is_some_and(|j| !(1..=MAX_THREADS).contains(&i64::from(j)))
+        if [c.threads, c.import_threads]
+            .iter()
+            .flatten()
+            .any(|&j| !(1..=MAX_THREADS).contains(&i64::from(j)))
         {
             return Err(fail(&format!("threads must be in 1..={MAX_THREADS}")));
         }
@@ -134,7 +136,7 @@ impl Checks {
         // Neighbours share constants, so runs keep a session's tables warm, shrinking near the end.
         let claim = || {
             let left = n.saturating_sub(next.load(Relaxed));
-            let k = (left / (4 * o.threads as u32).max(1)).clamp(1, RUN);
+            let k = (left / (4 * o.threads as u32)).max(1);
             let at = next.fetch_add(k, Relaxed);
             (at < n).then(|| at..(at + k).min(n))
         };

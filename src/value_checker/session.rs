@@ -64,6 +64,7 @@ const LOCAL_RESTART: u32 = 1 << 31;
 struct State {
     epoch: u64,
     last: u32,
+    memo: u32,
     next_local: u32,
     ctx: Ctx<'static, 'static>,
     t: Tables<'static>,
@@ -149,6 +150,7 @@ impl<'a> Session<'a> {
                 vc.ctx = transmute::<Ctx<'static, 'static>, Ctx<'_, '_>>(s.ctx);
             }
             vc.next_local = s.next_local;
+            vc.epoch = s.memo;
         } else if let Some(t) = self.spare.take() {
             // SAFETY: spare tables are empty.
             vc.t.absorb(unsafe { transmute::<Tables<'static>, Tables<'_>>(t) });
@@ -170,6 +172,7 @@ impl<'a> Session<'a> {
                 State {
                     epoch,
                     last: idx,
+                    memo: vc.epoch,
                     next_local: vc.next_local,
                     ctx: transmute::<Ctx<'_, '_>, Ctx<'static, 'static>>(ctx),
                     t: transmute::<Tables<'_>, Tables<'static>>(t),

@@ -129,6 +129,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             _ => self.stats.ev_other += 1,
         }
         self.tick()?;
+        let proj =
+            !closed && !audited && matches!(*e, Expr::App { .. }) && e.sup().count_ones() >= 2;
+        if proj && let Some(v) = self.eval_projected(env, sub, e) {
+            self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
+            return Ok(v);
+        }
         let v = match *e {
             Expr::Var { idx, .. } => match env.get(idx) {
                 Some(v) => v,
@@ -214,8 +220,27 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.t.eval_closed.insert_new(h, (e, sub), v);
         } else {
             self.t.eval_memo.insert_new(h, (e, sub, env.key()), v);
+            if proj {
+                self.t.eval_proj.insert((e, sub), (env, v));
+            }
         }
         Ok(v)
+    }
+
+    /// An earlier value whose environment agrees with this one on every slot `e` reads.
+    #[inline(never)]
+    fn eval_projected(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> Option<V<'t>> {
+        stat!(self, eproj_probe);
+        let sl = self.slots(e)?;
+        let &(o, v) = self.t.eval_proj.probe(&(e, sub)).ok()?;
+        for j in sl {
+            match (o.get(j), env.get(j)) {
+                (Some(a), Some(b)) if key(a) == key(b) => {}
+                _ => return None,
+            }
+        }
+        stat!(self, eproj_hit);
+        Some(v)
     }
 
     /// Under the identity substitution a constant head is its own neutral.

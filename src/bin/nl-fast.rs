@@ -31,6 +31,9 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(short = 'j', long, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     threads: Option<u16>,
+    /// Threads importing ndjson, one builder plus scanners; 1 (the default) reads serially
+    #[arg(long, value_name = "N", value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
+    import_threads: Option<u16>,
     /// Check only this declaration
     #[arg(long, value_name = "NAME")]
     declaration: Option<String>,
@@ -84,6 +87,7 @@ struct Options {
     only: Option<HashSet<String>>,
     limit: usize,
     import_only: bool,
+    import_threads: usize,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
     cache: Option<PathBuf>,
@@ -119,6 +123,7 @@ fn options() -> Options {
         only: cli.only.as_deref().map(names),
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
+        import_threads: cli.import_threads.or(c.import_threads).unwrap_or(1).into(),
         checks: Checks {
             threads: cli.threads.or(c.threads).unwrap_or(1).into(),
             trace: cli.trace,
@@ -192,7 +197,7 @@ fn main() {
             import::olean(&arena, &olean_export::search_path(), &roots)
                 .unwrap_or_else(|e| exit_on(&e))
         }
-        None => load(&arena, o.path.as_deref().map(Path::new), o.checks.threads),
+        None => load(&arena, o.path.as_deref().map(Path::new), o.import_threads),
     };
     // Freed import buffers go back to the OS, and later frees stay mapped for reuse.
     // SAFETY: plain mimalloc calls, and -1 disables the purge delay.

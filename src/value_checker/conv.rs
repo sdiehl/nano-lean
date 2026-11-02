@@ -71,7 +71,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let r = same || self.def_eq_core(t, s)?;
         if r {
             self.t.eq_cache.insert_both(key(t), key(s));
-        } else if !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..)) {
+        } else if !self.deriving && !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..)) {
             self.t.neq_cache.insert(k);
         }
         Ok(r)

@@ -27,7 +27,6 @@ pub(super) struct Importer<'a> {
     pub(super) blocks: FxHashMap<NamePtr<'a>, Block>,
     pub(super) stats: Stats,
     scratch: Vec<u32>,
-    aliases: Vec<u32>,
 }
 
 const MAX_GAP: usize = 1 << 16;
@@ -49,6 +48,10 @@ impl<T: Copy> Table<T> {
             sparse: FxHashMap::default(),
             holes: 0,
         }
+    }
+
+    fn filled(&self) -> usize {
+        self.dense.len() - self.holes + self.sparse.len()
     }
 
     fn fits(&self, k: usize) -> bool {
@@ -83,8 +86,19 @@ impl<T: Copy> Table<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn put(&mut self, i: u32, x: T) -> Result<()> {
+        let k = i as usize;
+        if k == self.dense.len() && k < self.dense.capacity() && self.sparse.is_empty() {
+            self.dense.push(Some(x));
+            return Ok(());
+        }
+        self.put_slow(i, x)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn put_slow(&mut self, i: u32, x: T) -> Result<()> {
         let k = i as usize;
         if k == self.dense.len() && self.sparse.is_empty() {
             self.dense.push(Some(x));
@@ -138,16 +152,34 @@ impl<'a> Importer<'a> {
                 ..Stats::default()
             },
             scratch: Vec::new(),
-            aliases: Vec::new(),
         }
     }
 
     pub(super) fn lines(&mut self, bytes: &[u8], n: &mut usize) -> Result<()> {
-        let mut start = 0;
-        for end in memchr::memchr_iter(b'\n', bytes).chain([bytes.len()]) {
-            let line = &bytes[start..];
-            self.raw_line(line, end - start, n)?;
-            start = end + 1;
+        let mut s = 0;
+        while s < bytes.len() {
+            let b = &bytes[s..];
+            if *n != 0
+                && let Some(w) = b.first_chunk::<{ scan::WIN }>()
+                && w[2] == b'a'
+                && let Some((e, f, a, j)) = scan::app(w, usize::MAX)
+            {
+                self.do_app(e, f, a).map_err(|e| e.at("line", *n))?;
+                *n += 1;
+                s += j + 1;
+                continue;
+            }
+            if *n != 0
+                && let Some((l, e)) = scan::fast(b, usize::MAX, &mut self.scratch)
+            {
+                self.scanned(l, b).map_err(|e| e.at("line", *n))?;
+                *n += 1;
+                s += e + 1;
+                continue;
+            }
+            let len = memchr::memchr(b'\n', b).unwrap_or(b.len());
+            self.raw_line(b, len, n)?;
+            s += len + 1;
         }
         Ok(())
     }
@@ -214,21 +246,18 @@ impl<'a> Importer<'a> {
         self.add_level(i, Level::Param(n, hash64!(PARAM_HASH, n)))
     }
 
-    /// Exported nodes are already shared, so the table is bulk filled once at the end.
+    /// Exported nodes are already shared and checking never looks them up, so they are only allocated.
     fn intern(&mut self, (e, nlb): (Expr<'a>, Meta)) -> ExprPtr<'a> {
         ExprPtr::new(self.arena.alloc(e), nlb)
     }
 
     pub(super) fn alias(&mut self, i: u32, e: u32) -> Result<()> {
         let e = self.expr(e)?;
-        self.stats.expressions += 1;
-        self.aliases.push(i);
         self.exprs.put(i, e)
     }
 
     fn add_expr(&mut self, i: u32, node: (Expr<'a>, Meta)) -> Result<()> {
         let p = self.intern(node);
-        self.stats.expressions += 1;
         self.exprs.put(i, p)
     }
 
@@ -258,6 +287,7 @@ impl<'a> Importer<'a> {
         Ok(self.dag.intern_levels(self.arena, &ls))
     }
 
+    #[inline(always)]
     pub(super) fn do_app(&mut self, i: u32, f: u32, a: u32) -> Result<()> {
         let (f, a) = (self.expr(f)?, self.expr(a)?);
         self.add_expr(i, mk::app(f, a))
@@ -336,13 +366,7 @@ impl<'a> Importer<'a> {
     #[inline(always)]
     fn line(&mut self, b: &[u8], len: usize, first: bool) -> Result<()> {
         if !first && let Some((l, _)) = scan::fast(b, len, &mut self.scratch) {
-            if l.listed() {
-                let us = std::mem::take(&mut self.scratch);
-                let r = self.listed(l, &us);
-                self.scratch = us;
-                return r;
-            }
-            return self.apply(l, b);
+            return self.scanned(l, b);
         }
         let v: Value = serde_json::from_slice(&b[..len])?;
         self.general(&v, first)
@@ -355,6 +379,17 @@ impl<'a> Importer<'a> {
             *n += 1;
         }
         Ok(())
+    }
+
+    #[inline(always)]
+    fn scanned(&mut self, l: Line, b: &[u8]) -> Result<()> {
+        if l.listed() {
+            let us = std::mem::take(&mut self.scratch);
+            let r = self.listed(l, &us);
+            self.scratch = us;
+            return r;
+        }
+        self.apply(l, b)
     }
 
     /// Applies a scanned chunk, completing the line `carry` holds from earlier chunks.
@@ -430,27 +465,9 @@ impl<'a> Importer<'a> {
     }
 
     pub(super) fn finish(mut self) -> Result<Store<'a>> {
+        self.stats.expressions = self.exprs.filled();
         self.names = Table::new(Vec::new());
         self.levels = Table::new(Vec::new());
-        self.aliases.sort_unstable();
-        let all = &self.aliases;
-        let mut aliases = all.iter().copied().peekable();
-        let sparse = self
-            .exprs
-            .sparse
-            .iter()
-            .filter(|(i, _)| all.binary_search(i).is_err())
-            .map(|(_, &e)| e);
-        let fresh = self.stats.expressions - self.aliases.len();
-        self.dag.exprs.fill(
-            fresh,
-            (0..)
-                .zip(&self.exprs.dense)
-                .filter(move |(i, _)| aliases.next_if_eq(i).is_none())
-                .filter_map(|(_, e)| *e)
-                .chain(sparse)
-                .map(ExprPtr::as_ref),
-        );
         let names = Names::build(&self.dag, self.anon);
         for n in [names.quot, names.quot_mk, names.quot_lift, names.quot_ind]
             .into_iter()

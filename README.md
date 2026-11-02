@@ -20,7 +20,7 @@ Successfully type-checks all of Mathlib (718k declarations) with 0 errors and 0 
 cargo install --git https://github.com/sdiehl/nano-lean
 
 # Check a Lean export (NDJSON or blean)
-nl-fast FILE.ndjson [-j THREADS]
+nl-fast FILE.ndjson [-j THREADS] [--import-threads N]
 nl-fast FILE.blean [-j THREADS]
 
 # Reject an export whose primitives differ from a trusted export of Init

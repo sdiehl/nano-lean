@@ -82,7 +82,6 @@ impl Environment {
             .collect();
         let mut tc = self.checker(&e.params);
         let ty = a.ty.substitute_levels(&levels)?;
-        tc.sort(&e.ty)?;
         if !ty.aeq(&e.ty) {
             tc.sort(&ty)?;
             demand(tc.conv(&ty, &e.ty)?, "incorrect recursor type")?;
@@ -97,9 +96,7 @@ impl Environment {
                 "incorrect recursor rule metadata",
             )?;
             let rhs = ar.rhs.substitute_levels(&levels)?;
-            if rhs.aeq(&er.rhs) {
-                tc.well_typed(&er.rhs)?;
-            } else {
+            if !rhs.aeq(&er.rhs) {
                 let ty = tc.infer(&er.rhs)?;
                 tc.check(&rhs, &ty)?;
                 demand(
