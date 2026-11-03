@@ -106,9 +106,54 @@ pub enum View<'t> {
 pub struct EnvNode<'t> {
     pub head: V<'t>,
     pub tail: Env<'t>,
-    pub open: bool,
+    /// The frame under the node run, so lookups past `depth` index it directly.
+    pub base: Env<'t>,
     pub depth: u32,
-    pub len: u32,
+    pub open: bool,
+}
+
+impl<'t> EnvNode<'t> {
+    /// SAFETY: the tail must be a node.
+    #[inline(always)]
+    unsafe fn next(&self) -> &'t EnvNode<'t> {
+        match self.tail.0 {
+            Some(EnvObj::Node(m)) => m,
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    /// The node `i` links down, unrolled by two since deep walks dominate the steps.
+    #[inline]
+    pub fn nth_node(&'t self, i: u16) -> &'t EnvNode<'t> {
+        debug_assert!(u32::from(i) < self.depth);
+        let (mut n, mut k) = (self, u32::from(i));
+        // SAFETY: `depth` counts the nodes above the base, so `i < depth` stays on nodes.
+        unsafe {
+            while k >= 2 {
+                n = n.next().next();
+                k -= 2;
+            }
+            if k != 0 {
+                n = n.next();
+            }
+        }
+        n
+    }
+
+    #[inline]
+    pub fn below(&self, i: u16) -> Option<V<'t>> {
+        self.base_vals()
+            .get(usize::from(i) - self.depth as usize)
+            .copied()
+    }
+
+    #[inline]
+    pub fn base_vals(&self) -> &'t [V<'t>] {
+        match self.base.0 {
+            Some(EnvObj::Frame(f)) => f.vals,
+            _ => &[],
+        }
+    }
 }
 
 pub struct Frame<'t> {
@@ -133,19 +178,30 @@ impl<'t> Env<'t> {
     }
 
     #[inline]
-    pub fn get(self, mut i: u16) -> Option<V<'t>> {
-        let mut e = self;
-        loop {
-            match e.view() {
-                View::Nil => return None,
-                View::Node(n) if i == 0 => return Some(n.head),
-                View::Node(n) => {
-                    i -= 1;
-                    e = n.tail;
-                }
-                View::Frame(f) => return f.vals.get(usize::from(i)).copied(),
-            }
+    pub fn get(self, i: u16) -> Option<V<'t>> {
+        match self.0 {
+            None => None,
+            Some(EnvObj::Frame(f)) => f.vals.get(usize::from(i)).copied(),
+            Some(EnvObj::Node(n)) if u32::from(i) < n.depth => Some(n.nth_node(i).head),
+            Some(EnvObj::Node(n)) => n.below(i),
         }
+    }
+
+    /// The node `d` links down and its head.
+    ///
+    /// # Safety
+    /// `self` must be a node and `d` below its depth.
+    #[inline]
+    pub unsafe fn down(self, d: u16) -> (Self, V<'t>) {
+        let Some(EnvObj::Node(n)) = self.0 else {
+            unsafe { std::hint::unreachable_unchecked() }
+        };
+        if d == 0 {
+            return (self, n.head);
+        }
+        let p = n.nth_node(d - 1);
+        // SAFETY: `d` is below the depth, so the link under `p` is a node.
+        (p.tail, unsafe { p.next() }.head)
     }
 
     pub fn open(self) -> bool {
@@ -166,7 +222,7 @@ impl<'t> Env<'t> {
     pub fn size(self) -> usize {
         match self.view() {
             View::Nil => 0,
-            View::Node(n) => n.len as usize,
+            View::Node(n) => n.depth as usize + n.base_vals().len(),
             View::Frame(f) => f.vals.len(),
         }
     }
@@ -196,3 +252,5 @@ impl<'t> Env<'t> {
 pub fn key(v: V<'_>) -> usize {
     v as *const Val as usize
 }
+
+const _: () = assert!(size_of::<EnvObj<'_>>() == 32);

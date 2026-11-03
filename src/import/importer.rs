@@ -158,17 +158,14 @@ impl<'a> Importer<'a> {
     pub(super) fn lines(&mut self, bytes: &[u8], n: &mut usize) -> Result<()> {
         let mut s = 0;
         while s < bytes.len() {
-            let b = &bytes[s..];
-            if *n != 0
-                && let Some(w) = b.first_chunk::<{ scan::WIN }>()
-                && w[2] == b'a'
-                && let Some((e, f, a, j)) = scan::app(w, usize::MAX)
-            {
-                self.do_app(e, f, a).map_err(|e| e.at("line", *n))?;
-                *n += 1;
-                s += j + 1;
-                continue;
+            if *n != 0 {
+                let (t, k) = self.apps(bytes, s);
+                (s, *n) = (t, *n + k);
+                if s >= bytes.len() {
+                    break;
+                }
             }
+            let b = &bytes[s..];
             if *n != 0
                 && let Some((l, e)) = scan::fast(b, usize::MAX, &mut self.scratch)
             {
@@ -182,6 +179,34 @@ impl<'a> Importer<'a> {
             s += len + 1;
         }
         Ok(())
+    }
+
+    /// Builds the run of application lines from `s` that take the dense fast path, in a loop
+    /// small enough to keep its constants in registers. Returns where the run stops and its
+    /// length, leaving any other line, and every error, to the general path.
+    #[inline(never)]
+    fn apps(&mut self, bytes: &[u8], mut s: usize) -> (usize, usize) {
+        if !self.exprs.sparse.is_empty() {
+            return (s, 0);
+        }
+        let arena = self.arena;
+        let mut dense = std::mem::take(&mut self.exprs.dense);
+        let start = dense.len();
+        while let Some(w) = bytes[s..].first_chunk::<{ scan::WIN }>()
+            && w[2] == b'a'
+            && let Some((e, f, a, j)) = scan::app(w, usize::MAX)
+            && e as usize == dense.len()
+            && dense.len() < dense.capacity()
+            && let Some(&Some(f)) = dense.get(f as usize)
+            && let Some(&Some(a)) = dense.get(a as usize)
+        {
+            let (node, nlb) = mk::app(f, a);
+            dense.push(Some(ExprPtr::new(arena.alloc(node), nlb)));
+            s += j + 1;
+        }
+        let k = dense.len() - start;
+        self.exprs.dense = dense;
+        (s, k)
     }
 
     pub(super) fn finish_lines(self, n: usize) -> Result<Store<'a>> {

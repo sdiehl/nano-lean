@@ -88,8 +88,8 @@ impl Eq for Ptrs<'_> {}
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn mk(&mut self, k: K<'t>, open: bool) -> V<'t> {
-        // Open Pi values almost never recur, so probing for them only costs.
-        if open && matches!(k, K::Pi(..)) {
+        // Pi values rarely recur, so probing for them only costs.
+        if matches!(k, K::Pi(..)) {
             stat!(self, vals);
             bytes!(self, b_val, size_of::<Val>());
             return self.ctx.arena.alloc(Val::new(k, open));

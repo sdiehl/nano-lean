@@ -1,4 +1,4 @@
-use super::eval::{SPINE, agree};
+use super::eval::{SPINE, WIDE_SPINE, agree};
 use super::tables::{Inferred, Mode, Scoped};
 use super::value::{Clo, Env, Head, K, Sub, V, key};
 use super::{R, Vc, stat};
@@ -6,6 +6,7 @@ use crate::checker::env::Decls;
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::{ensure, reject};
+use smallvec::SmallVec;
 use std::mem::MaybeUninit;
 use std::ptr;
 
@@ -17,16 +18,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         match self.whnf(t)?.k {
             K::Sort(l) => Ok(l),
             _ => reject!(self, "expected a sort"),
-        }
-    }
-
-    pub(crate) fn ensure_pi(&mut self, t: V<'t>) -> R<(V<'t>, Clo<'t>)> {
-        if let K::Pi(d, c) = t.k {
-            return Ok((d, c));
-        }
-        match self.whnf(t)?.k {
-            K::Pi(d, c) => Ok((d, c)),
-            _ => reject!(self, "expected a function type"),
         }
     }
 
@@ -87,8 +78,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     Head::Proj(n, i, s) => self.proj_type(n, i, s)?,
                 };
                 for &a in args {
-                    let (_, c) = self.ensure_pi(t)?;
-                    t = self.inst(c, a)?;
+                    let p = match t.k {
+                        K::Pi(..) => t,
+                        _ => self.whnf(t)?,
+                    };
+                    let K::Pi(_, c) = p.k else {
+                        reject!(self, "expected a function type")
+                    };
+                    t = self.inst_pi(p, c, a)?;
                 }
                 t
             }
@@ -257,7 +254,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         e: ExprPtr<'t>,
         mode: Mode,
     ) -> R<V<'t>> {
-        let mut args = Vec::new();
+        let mut args = SmallVec::<[ExprPtr<'t>; WIDE_SPINE]>::new();
         let mut f = e;
         while let Expr::App { fun, arg, .. } = *f {
             args.push(arg);
@@ -284,7 +281,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             _ => (self.infer(env, sub, f, mode)?, args),
         };
         for &a in rest.iter().rev() {
-            self.tick()?;
             let p = match ft.k {
                 K::Pi(..) => ft,
                 _ => self.whnf(ft)?,
@@ -301,30 +297,35 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             } else {
                 self.dummy
             };
-            ft = if c.typed {
-                self.inst(c, x)?
-            } else {
-                let k = (key(p), key(x));
-                match self.t.insts.probe(&k) {
-                    Ok(&v) => {
-                        stat!(self, inst_hit);
-                        #[cfg(feature = "memocheck")]
-                        self.audit_value("instantiation", v, |vc| {
-                            vc.audit_bypass();
-                            vc.inst(c, x)
-                        });
-                        v
-                    }
-                    Err(h) => {
-                        stat!(self, inst_miss);
-                        let v = self.inst(c, x)?;
-                        self.t.insts.insert_new(h, k, v);
-                        v
-                    }
-                }
-            };
+            ft = self.inst_pi(p, c, x)?;
         }
         Ok(ft)
+    }
+
+    /// Instantiates the codomain of `p`, whose closure is `c`, memoized for untyped closures.
+    #[inline(always)]
+    fn inst_pi(&mut self, p: V<'t>, c: Clo<'t>, x: V<'t>) -> R<V<'t>> {
+        if c.typed {
+            return self.inst(c, x);
+        }
+        let k = (key(p), key(x));
+        match self.t.insts.probe(&k) {
+            Ok(&v) => {
+                stat!(self, inst_hit);
+                #[cfg(feature = "memocheck")]
+                self.audit_value("instantiation", v, |vc| {
+                    vc.audit_bypass();
+                    vc.inst(c, x)
+                });
+                Ok(v)
+            }
+            Err(h) => {
+                stat!(self, inst_miss);
+                let v = self.inst(c, x)?;
+                self.t.insts.insert_new(h, k, v);
+                Ok(v)
+            }
+        }
     }
 
     #[inline(never)]

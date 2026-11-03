@@ -16,7 +16,8 @@ use std::ptr;
 use std::slice::Iter;
 
 /// Arguments an application spine holds before evaluation spills to the heap.
-pub(super) const SPINE: usize = 8;
+pub(super) const SPINE: usize = 16;
+pub(super) const WIDE_SPINE: usize = 32;
 
 const SHALLOW: u32 = 8;
 const EXACT: usize = 256;
@@ -46,12 +47,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.stats.push_open_new += u64::from(open);
         }
         bytes!(self, b_env, size_of::<EnvObj>());
+        let (base, depth) = match env.view() {
+            View::Node(n) => (n.base, n.depth),
+            _ => (env, 0),
+        };
         let e = Env::new(self.ctx.arena.alloc(EnvObj::Node(EnvNode {
             head: v,
             tail: env,
+            base,
+            depth: depth + 1,
             open,
-            depth: env.depth() + 1,
-            len: env.size() as u32 + 1,
         })));
         self.t.envs[usize::from(open)].insert_new(h, k, e);
         e
@@ -274,14 +279,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     #[cold]
     #[inline(never)]
     fn eval_app_wide(&mut self, env: Env<'t>, sub: Sub<'t>, e: ExprPtr<'t>) -> R<V<'t>> {
-        let mut args = Vec::new();
+        let mut args = SmallVec::<[ExprPtr<'t>; WIDE_SPINE]>::new();
         let mut f = e;
         while let Expr::App { fun, arg, .. } = *f {
             args.push(arg);
             f = fun;
         }
         let head = self.eval_head(env, sub, f)?;
-        let mut vs = Vec::with_capacity(args.len());
+        let mut vs = SmallVec::<[V<'t>; WIDE_SPINE]>::with_capacity(args.len());
         for &a in args.iter().rev() {
             vs.push(self.eval(env, sub, a)?);
         }
@@ -456,6 +461,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             match e.view() {
                 View::Nil => break,
                 View::Node(node) => {
+                    if u32::from(j - at) >= node.depth {
+                        e = node.base;
+                        at += node.depth as u16;
+                        continue;
+                    }
                     if j == at {
                         buf[usize::from(j)] = node.head;
                         open |= node.head.open;
@@ -701,10 +711,15 @@ fn seek<'t>(e: &mut Env<'t>, at: &mut u16, j: u16) -> Option<V<'t>> {
     loop {
         match e.view() {
             View::Nil => return None,
-            View::Node(n) if *at == j => return Some(n.head),
+            View::Node(n) if u32::from(j - *at) < n.depth => {
+                // SAFETY: the guard puts `j - at` below this node's depth.
+                let (f, v) = unsafe { e.down(j - *at) };
+                (*e, *at) = (f, j);
+                return Some(v);
+            }
             View::Node(n) => {
-                *e = n.tail;
-                *at += 1;
+                *e = n.base;
+                *at += n.depth as u16;
             }
             View::Frame(f) => return f.vals.get(usize::from(j - *at)).copied(),
         }
