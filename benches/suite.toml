@@ -157,6 +157,18 @@ kind = "all"
 reps = 5
 
 [[bench]]
+name = "arena/beta-ladder"
+file = "fixtures/beta-ladder.ndjson"
+kind = "all"
+reps = 20
+
+[[bench]]
+name = "scaled/beta-ladder-16k"
+file = "fixtures/beta-ladder-16k.ndjson"
+kind = "all"
+reps = 5
+
+[[bench]]
 name = "arena/church-numerals"
 file = "fixtures/church-numerals.ndjson"
 kind = "all"

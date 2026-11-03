@@ -54,7 +54,13 @@ mathlib fin-insert Fin.insertNth_apply_succAbove
 mathlib rat-encodable-instance Rat.instEncodable
 mathlib uniform-prod UniformOnFun.uniformEquivProdArrow._proof_1
 
-for t in app-lam church-numerals fueled-chain grind-ring-5 let-ladder magma-list-deep-n21 \
-  magma-list-pair-n7 shared-subterm shift-cascade; do
+for t in app-lam beta-ladder church-numerals fueled-chain grind-ring-5 let-ladder \
+  magma-list-deep-n21 magma-list-pair-n7 shared-subterm shift-cascade; do
   arena "$t"
 done
+
+# The arena ladder is small enough that a quadratic regression hides in noise
+if [[ -f $out/beta-ladder.ndjson ]]; then
+  python3 "$root/benches/scale-ladder.py" "$out/beta-ladder.ndjson" 16000 "$out/beta-ladder-16k.ndjson" &&
+    echo beta-ladder-16k
+fi
