@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 (2026-11-03)
+
+- Cut Mathlib checking cost by about a tenth:
+  - Hash memo keys once and check projected memo hits with a lockstep environment walk.
+  - Memoize Pi codomain instantiation across application spines.
+  - Index environment frames directly from node runs.
+  - Build applications of up to 16 arguments on the stack.
+  - Build runs of application lines straight into the import table.
+
 ## 0.3.0 (2026-11-02)
 
 - Check `.olean` files directly with `nl-fast --olean`, importing records straight into the checker.
