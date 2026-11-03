@@ -20,6 +20,7 @@ pub(super) const SPINE: usize = 16;
 pub(super) const WIDE_SPINE: usize = 32;
 
 const SHALLOW: u32 = 8;
+const RUN: u32 = 64;
 const EXACT: usize = 256;
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
@@ -51,6 +52,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             View::Node(n) => (n.base, n.depth),
             _ => (env, 0),
         };
+        if depth >= RUN {
+            return self.collapse(env, v, open, h, k);
+        }
         let e = Env::new(self.ctx.arena.alloc(EnvObj::Node(EnvNode {
             head: v,
             tail: env,
@@ -58,6 +62,23 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             depth: depth + 1,
             open,
         })));
+        self.t.envs[usize::from(open)].insert_new(h, k, e);
+        e
+    }
+
+    /// A run deeper than `RUN` becomes a frame, so lookups stay within `RUN` steps of one.
+    #[cold]
+    #[inline(never)]
+    fn collapse(
+        &mut self,
+        env: Env<'t>,
+        v: V<'t>,
+        open: bool,
+        h: u64,
+        k: (usize, usize),
+    ) -> Env<'t> {
+        let buf: Vec<V<'t>> = std::iter::once(v).chain(env.iter()).collect();
+        let e = self.frame_in(&buf, open);
         self.t.envs[usize::from(open)].insert_new(h, k, e);
         e
     }
@@ -431,8 +452,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     /// Keep only the slots `e` reads, so closures equal up to unused captures share one value.
     pub(crate) fn trim(&mut self, env: Env<'t>, e: ExprPtr<'t>) -> R<Env<'t>> {
         stat!(self, trims);
+        // Runs are capped at `RUN`, so a read set too wide to keep exactly keeps the environment.
         let Some(sup) = self.slots(e) else {
-            return Ok(self.flatten(env));
+            return Ok(env);
         };
         let Some((max, len)) = sup.bounds() else {
             return Ok(Env::EMPTY);
@@ -493,22 +515,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             self.t.prunes.insert_new(h, (env.key(), mask), r);
         }
         Ok(r)
-    }
-
-    /// Exact support is quadratic down a binder ladder, so expressions past `EXACT` slots keep
-    /// every capture and only cap the chain depth.
-    fn flatten(&mut self, env: Env<'t>) -> Env<'t> {
-        if env.depth() <= SHALLOW {
-            return env;
-        }
-        let h = match self.t.prunes.probe(&(env.key(), WIDE)) {
-            Ok(&r) => return r,
-            Err(h) => h,
-        };
-        let buf: SmallVec<[V<'t>; 32]> = env.iter().collect();
-        let r = self.frame(&buf);
-        self.t.prunes.insert_new(h, (env.key(), WIDE), r);
-        r
     }
 
     fn frame(&mut self, vals: &[V<'t>]) -> Env<'t> {

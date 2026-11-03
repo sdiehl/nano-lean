@@ -8,6 +8,7 @@
   - Index environment frames directly from node runs.
   - Build applications of up to 16 arguments on the stack.
   - Build runs of application lines straight into the import table.
+- Check long beta ladders in near linear time by collapsing deep environment runs into frames.
 
 ## 0.3.0 (2026-11-02)
 
