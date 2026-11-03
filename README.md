@@ -89,43 +89,43 @@ Checking all of Mathlib from the blean binary export:
 
 Checking the full imported environment of [OpenAI's Navier–Stokes and Euler proofs](https://github.com/openai/NavierStokesAndEuler) from the blean binary export
 
-|                       | M4 Max `-j 1` | M4 Max `-j 10` | M4 Max `-j 14` | M4 Max `-j 28` | M4 Max `-j 64` |
-| --------------------- | ------------- | -------------- | -------------- | -------------- | -------------- |
-| Wall time             | 83.58 s       | 18.74 s        | 17.13 s        | 17.67 s        | 20.85 s        |
-| Kernel check          | 78.83 s       | 13.00 s        | 12.11 s        | 12.56 s        | 15.51 s        |
-| Instructions          | 914.8 G       | 971.5 G        | 977.0 G        | 984.8 G        | 1011.8 G       |
-| Cycles                | 333.2 G       | 426.4 G        | 471.3 G        | 483.5 G        | 566.2 G        |
-| Peak memory footprint | 10.14 GB      | 11.56 GB       | 12.29 GB       | 14.62 GB       | 19.86 GB       |
+|                       | M4 Max `-j 14` |
+| --------------------- | -------------- |
+| Wall time             | 17.13 s        |
+| Kernel check          | 12.11 s        |
+| Instructions          | 977.0 G        |
+| Cycles                | 471.3 G        |
+| Peak memory footprint | 12.29 GB       |
 
 Checking the full imported environment of [CSLib](https://github.com/leanprover/cslib) from the blean binary export
 
-|                       | M4 Max `-j 1` | M4 Max `-j 10` | M4 Max `-j 14` | M4 Max `-j 28` | M4 Max `-j 64` |
-| --------------------- | ------------- | -------------- | -------------- | -------------- | -------------- |
-| Wall time             | 21.74 s       | 4.61 s         | 4.42 s         | 4.56 s         | 4.74 s         |
-| Kernel check          | 20.04 s       | 2.96 s         | 2.75 s         | 2.81 s         | 3.04 s         |
-| Instructions          | 258.0 G       | 296.1 G        | 300.8 G        | 305.5 G        | 309.2 G        |
-| Cycles                | 87.5 G        | 120.4 G        | 136.6 G        | 141.1 G        | 142.4 G        |
-| Peak memory footprint | 3.18 GB       | 5.89 GB        | 6.92 GB        | 8.92 GB        | 12.08 GB       |
+|                       | M4 Max `-j 14` |
+| --------------------- | -------------- |
+| Wall time             | 4.42 s         |
+| Kernel check          | 2.75 s         |
+| Instructions          | 300.8 G        |
+| Cycles                | 136.6 G        |
+| Peak memory footprint | 6.92 GB        |
 
 Checking [OpenAI's quasi-Riemann hypothesis proof](https://github.com/openai/math/blob/main/lean/docs/003.md) and its dependencies from the blean binary export
 
-|                       | M4 Max `-j 1` | M4 Max `-j 10` | M4 Max `-j 14` | M4 Max `-j 28` | M4 Max `-j 64` |
-| --------------------- | ------------- | -------------- | -------------- | -------------- | -------------- |
-| Wall time             | 20.74 s       | 3.75 s         | 3.66 s         | 3.76 s         | 4.04 s         |
-| Kernel check          | 19.71 s       | 2.71 s         | 2.58 s         | 2.70 s         | 2.90 s         |
-| Instructions          | 227.4 G       | 235.2 G        | 236.4 G        | 239.0 G        | 242.6 G        |
-| Cycles                | 84.0 G        | 108.0 G        | 122.6 G        | 125.2 G        | 127.2 G        |
-| Peak memory footprint | 3.12 GB       | 6.80 GB        | 7.42 GB        | 10.15 GB       | 12.08 GB       |
+|                       | M4 Max `-j 14` |
+| --------------------- | -------------- |
+| Wall time             | 3.66 s         |
+| Kernel check          | 2.58 s         |
+| Instructions          | 236.4 G        |
+| Cycles                | 122.6 G        |
+| Peak memory footprint | 7.42 GB        |
 
 Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/blob/main/lean/docs/159.md) and its dependencies from the blean binary export
 
-|                       | M4 Max `-j 1` | M4 Max `-j 14` |
-| --------------------- | ------------- | -------------- |
-| Wall time             | 94.58 s       | 23.33 s        |
-| Kernel check          | 91.80 s       | 19.11 s        |
-| Instructions          | 796.9 G       | 837.9 G        |
-| Cycles                | 375.6 G       | 550.0 G        |
-| Peak memory footprint | 12.64 GB      | 26.42 GB       |
+|                       | M4 Max `-j 14` |
+| --------------------- | -------------- |
+| Wall time             | 23.33 s        |
+| Kernel check          | 19.11 s        |
+| Instructions          | 837.9 G        |
+| Cycles                | 550.0 G        |
+| Peak memory footprint | 26.42 GB       |
 
 ## Trust model
 
