@@ -8,6 +8,7 @@
 - Start faster on tiny inputs: one worker per declaration at most, no mimalloc environment scan.
 - Keep long sparse environments untrimmed, so shift cascades check about 40% cheaper.
 - Give argument probes under cheap heads a smaller budget, so lazy projections check about 35% cheaper.
+- Check inductive blocks about a quarter cheaper.
 
 ## 0.3.1 (2026-11-03)
 

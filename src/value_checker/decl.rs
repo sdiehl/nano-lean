@@ -131,16 +131,47 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 #[derive(Clone, Copy)]
 pub(crate) enum RecCheck<'t> {
     Sort(ExprPtr<'t>),
+    /// A constructor type whose fields, the binders past the parameter count, must stay within
+    /// the inductive's universe.
+    Ctor(ExprPtr<'t>, u16, LevelPtr<'t>),
     Type(ExprPtr<'t>, ExprPtr<'t>),
     Rule(ExprPtr<'t>, ExprPtr<'t>),
 }
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
+    fn check_ctor_in(&mut self, ty: ExprPtr<'t>, np: u16, bound: LevelPtr<'t>) -> R<()> {
+        let id = self.id;
+        let (mut env, mut e, mut k) = (Env::EMPTY, ty, 0);
+        while let Expr::Pi { ty: b, body, .. } = *e {
+            self.tick()?;
+            let s = self.infer(env, id, b, Mode::Check)?;
+            let l = self.ensure_sort(s)?;
+            if k >= np {
+                ensure!(
+                    self,
+                    self.leq(l, bound)?,
+                    "constructor field universe exceeds inductive universe"
+                );
+            }
+            let dom = self.eval(env, id, b)?;
+            let x = self.binder_local(dom);
+            env = self.push(env, x);
+            e = body;
+            k += 1;
+        }
+        let s = self.infer(env, id, e, Mode::Check)?;
+        self.ensure_sort(s)?;
+        Ok(())
+    }
+
     fn rec_check(&mut self, c: RecCheck<'t>) -> R<()> {
         let id = self.id;
         match c {
             RecCheck::Sort(ty) => {
                 self.check_type(ty)?;
+            }
+            RecCheck::Ctor(ty, np, bound) => {
+                self.restoring_depth(|vc| vc.check_ctor_in(ty, np, bound))?;
             }
             // A recursor identical to the one built from the checked specification is accepted as
             // built, the way the Lean kernel trusts its own; anything else is checked as a term.

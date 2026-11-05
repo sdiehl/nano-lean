@@ -1,4 +1,4 @@
-use super::{Elim, Premises, Spec, Tc};
+use super::{Elim, Premises, Spec, Tc, local_ty};
 use crate::kernel;
 use crate::term::decl::Recursor;
 use crate::term::intern::Block;
@@ -26,7 +26,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             None => {
                 let s = &shapes[0];
                 let mut ok = true;
-                for (&x, &l) in s.fields.iter().zip(&s.levels) {
+                for &x in &s.fields {
+                    let l = self.level_of(local_ty(x))?;
                     ok &= self.is_zero(l)? || s.indices.contains(&x);
                 }
                 ok
@@ -222,7 +223,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         };
         for &c in &checks[i..] {
             match c {
-                RecCheck::Sort(ty) => {
+                RecCheck::Sort(ty) | RecCheck::Ctor(ty, ..) => {
                     self.sort_of(ty)?;
                 }
                 RecCheck::Type(ty, want) if !ty.same(want) => {

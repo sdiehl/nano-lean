@@ -255,6 +255,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(r)
     }
 
+    fn leq(&mut self, a: LevelPtr<'t>, b: LevelPtr<'t>) -> R<bool> {
+        let Some(r) = self.ctx.try_leq(a, b) else {
+            reject!(self, "{LEVEL_FORM}")
+        };
+        Ok(r)
+    }
+
     pub(crate) fn sub(&self, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> Sub<'t> {
         if ks.is_empty() || ks == vs {
             self.id

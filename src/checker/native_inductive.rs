@@ -14,6 +14,15 @@ use std::ops::Range;
 /// Enough interned terms for a typical block, so the tables never regrow.
 const BLOCK_EXPRS: usize = 4096;
 
+fn pis(mut e: ExprPtr<'_>) -> usize {
+    let mut n = 0;
+    while let Expr::Pi { body, .. } = *e {
+        n += 1;
+        e = body;
+    }
+    n
+}
+
 mod recursor;
 
 fn spine(mut e: ExprPtr<'_>) -> (ExprPtr<'_>, Vec<ExprPtr<'_>>) {
@@ -104,7 +113,6 @@ struct Shape<'t> {
     name: NamePtr<'t>,
     head: ExprPtr<'t>,
     fields: Vec<ExprPtr<'t>>,
-    levels: Vec<LevelPtr<'t>>,
     indices: Vec<ExprPtr<'t>>,
     owner: usize,
 }
@@ -146,6 +154,8 @@ struct Premises<'t> {
 struct Ctors<'t> {
     result_level: LevelPtr<'t>,
     zero: bool,
+    /// Whether the term core still has to bound the field universes.
+    bound: bool,
     recursive: bool,
     reflexive: bool,
     nested: Vec<Nested<'t>>,
@@ -512,13 +522,25 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         zero: bool,
     ) -> R<(Vec<Shape<'t>>, Vec<Nested<'t>>)> {
         let (ups, np) = (fam.levels, types[0].num_params);
-        let wf: Vec<_> = ctors.iter().map(|c| RecCheck::Sort(c.info.ty)).collect();
+        let bounded: Vec<bool> = ctors
+            .iter()
+            .map(|c| !zero && pis(c.info.ty) >= usize::from(np) + usize::from(c.num_fields))
+            .collect();
+        let wf: Vec<_> = ctors
+            .iter()
+            .zip(&bounded)
+            .map(|(c, &b)| match b {
+                true => RecCheck::Ctor(c.info.ty, np, result_level),
+                false => RecCheck::Sort(c.info.ty),
+            })
+            .collect();
         let ctors_wf = self.vc_reject(&wf)?.is_none();
         let expand = types[0].num_nested > 0;
         let mut shapes = Vec::new();
         let mut cs = Ctors {
             result_level,
             zero,
+            bound: true,
             recursive: false,
             reflexive: false,
             nested: Vec::new(),
@@ -527,9 +549,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         while owner < types.len() + cs.nested.len() {
             if let Some(t) = types.get(owner) {
                 for (index, &name) in t.ctors.iter().enumerate() {
-                    let Some(&c) = ctors.iter().find(|c| c.info.name == name) else {
+                    let Some(ci) = ctors.iter().position(|c| c.info.name == name) else {
                         reject!(self, "missing constructor")
                     };
+                    let c = ctors[ci];
                     ensure!(
                         self,
                         c.induct == t.info.name
@@ -547,6 +570,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     }
                     let k = self.ctx.konst(name, ups);
                     let head = self.ctx.apps(k, &fam.params);
+                    cs.bound = !(ctors_wf && bounded[ci]);
                     let s = self.shape(fam, &mut cs, rest, name, head, owner)?;
                     ensure!(
                         self,
@@ -567,6 +591,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     let rest = self.expand(fam, &mut cs, rest)?;
                     let k = self.ctx.konst(name, levels);
                     let head = self.ctx.apps(k, &ds);
+                    cs.bound = true;
                     let s = self.shape(fam, &mut cs, rest, name, head, owner)?;
                     ensure!(
                         self,
@@ -608,16 +633,16 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         owner: usize,
     ) -> R<Shape<'t>> {
         let (fields, ret) = self.telescope(rest)?;
-        let mut levels = Vec::with_capacity(fields.len());
         for &x in &fields {
             let ty = local_ty(x);
-            let l = self.level_of(ty)?;
-            levels.push(l);
-            ensure!(
-                self,
-                cs.zero || self.leq(l, cs.result_level)?,
-                "constructor field universe exceeds inductive universe"
-            );
+            if cs.bound && !cs.zero {
+                let l = self.level_of(ty)?;
+                ensure!(
+                    self,
+                    self.leq(l, cs.result_level)?,
+                    "constructor field universe exceeds inductive universe"
+                );
+            }
             self.tick()?;
             self.positive(fam, ty)?;
             let has = fam.occurs(ty);
@@ -636,7 +661,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             name,
             head,
             fields,
-            levels,
             indices,
             owner,
         })
