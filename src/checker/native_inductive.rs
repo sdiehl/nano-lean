@@ -225,37 +225,51 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
 
     fn open_params(
         &mut self,
-        mut ty: ExprPtr<'t>,
+        ty: ExprPtr<'t>,
         count: u16,
         params: &mut Vec<ExprPtr<'t>>,
     ) -> R<ExprPtr<'t>> {
+        let (mut e, mut open) = (ty, 0);
         for _ in 0..count {
-            let w = self.whnf(ty)?;
-            let Expr::Pi { ty: d, body, .. } = *w else {
+            if !e.is_pi() {
+                let b = self.inst(e, &params[params.len() - open..])?;
+                e = self.whnf(b)?;
+                open = 0;
+            }
+            let Expr::Pi { ty: d, body, .. } = *e else {
                 reject!(self, "missing inductive parameter")
             };
+            let d = self.inst(d, &params[params.len() - open..])?;
             let d = self.binder_ty(d);
-            let x = self.fresh_local(d);
-            ty = self.inst1(body, x)?;
-            params.push(x);
+            params.push(self.fresh_local(d));
+            e = body;
+            open += 1;
         }
-        Ok(ty)
+        self.inst(e, &params[params.len() - open..])
     }
 
-    fn consume_params(&mut self, mut ty: ExprPtr<'t>, params: &[ExprPtr<'t>]) -> R<ExprPtr<'t>> {
-        for &x in params {
-            let w = self.whnf(ty)?;
-            let Expr::Pi { ty: d, body, .. } = *w else {
+    /// Like `telescope`, bodies stay unsubstituted while the binders are syntactic Pis.
+    fn consume_params(&mut self, ty: ExprPtr<'t>, params: &[ExprPtr<'t>]) -> R<ExprPtr<'t>> {
+        let (mut e, mut open) = (ty, 0);
+        for (k, &x) in params.iter().enumerate() {
+            if !e.is_pi() {
+                let b = self.inst(e, &params[k - open..k])?;
+                e = self.whnf(b)?;
+                open = 0;
+            }
+            let Expr::Pi { ty: d, body, .. } = *e else {
                 reject!(self, "missing inductive parameter")
             };
+            let d = self.inst(d, &params[k - open..k])?;
             ensure!(
                 self,
                 self.def_eq(d, local_ty(x))?,
                 "inductive parameter type mismatch"
             );
-            ty = self.inst1(body, x)?;
+            e = body;
+            open += 1;
         }
-        Ok(ty)
+        self.inst(e, &params[params.len() - open..])
     }
 
     fn instantiate_params(
