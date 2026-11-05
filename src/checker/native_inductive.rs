@@ -11,6 +11,9 @@ use crate::value_checker::RecCheck;
 use crate::{ensure, reject};
 use std::ops::Range;
 
+/// Enough interned terms for a typical block, so the tables never regrow.
+const BLOCK_EXPRS: usize = 4096;
+
 mod recursor;
 
 fn spine(mut e: ExprPtr<'_>) -> (ExprPtr<'_>, Vec<ExprPtr<'_>>) {
@@ -385,6 +388,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub(crate) fn check_block(&mut self, b: Block) -> R<()> {
+        self.ctx.dag.exprs.reserve(BLOCK_EXPRS);
+        self.ctx.memo.reserve(BLOCK_EXPRS);
         let Members { types, ctors, recs } = self.block_members(b)?;
         let ups = types[0].info.uparams;
         ensure!(

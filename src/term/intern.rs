@@ -71,6 +71,10 @@ impl<'a, T: ?Sized + Keyed> Interner<'a, T> {
         self.0.len()
     }
 
+    pub fn reserve(&mut self, n: usize) {
+        self.0.reserve(n, |r| r.key_hash());
+    }
+
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<&'a T> {
         self.0.find(hash, |r| eq(r)).copied()
