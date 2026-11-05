@@ -155,22 +155,15 @@ impl Checks {
         let fails = AtomicUsize::new(0);
         let fallbacks = AtomicUsize::new(0);
         let n = indices.len() as u32;
+        let workers = o.threads.min(indices.len()).max(1);
         // Neighbours share constants, so runs keep a session's tables warm, shrinking near the end.
         let claim = || {
             let left = n.saturating_sub(next.load(Relaxed));
-            let k = (left / (4 * o.threads as u32)).max(1);
+            let k = (left / (4 * workers as u32)).max(1);
             let at = next.fetch_add(k, Relaxed);
             (at < n).then(|| at..(at + k).min(n))
         };
         let exit = AtomicUsize::new(0);
-        let progress = if o.trace || o.quiet {
-            ProgressBar::hidden()
-        } else {
-            ProgressBar::new(u64::from(n))
-        };
-        progress.set_style(
-            ProgressStyle::with_template(PROGRESS_TEMPLATE).expect("valid progress template"),
-        );
         let tally = || {
             format!(
                 "{} fail, {} fallback",
@@ -178,8 +171,17 @@ impl Checks {
                 fallbacks.load(Relaxed)
             )
         };
-        progress.set_message(tally());
-        progress.enable_steady_tick(TICK);
+        let progress = if o.trace || o.quiet {
+            ProgressBar::hidden()
+        } else {
+            let p = ProgressBar::new(u64::from(n));
+            p.set_style(
+                ProgressStyle::with_template(PROGRESS_TEMPLATE).expect("valid progress template"),
+            );
+            p.set_message(tally());
+            p.enable_steady_tick(TICK);
+            p
+        };
         let (done, stopped) = mpsc::channel::<()>();
         thread::scope(|sc| {
             // Stop the reporter even if joining a worker unwinds.
@@ -201,7 +203,7 @@ impl Checks {
                     }
                 });
             }
-            let workers: Vec<_> = (0..o.threads)
+            let workers: Vec<_> = (0..workers)
                 .map(|_| {
                     thread::Builder::new()
                         .stack_size(WORKER_STACK_BYTES)

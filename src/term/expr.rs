@@ -131,6 +131,52 @@ impl<'a> ExprPtr<'a> {
         }
         n
     }
+
+    /// Structural equality across interning tables, for terms a checker built against imported ones.
+    pub fn same(self, o: ExprPtr<'a>) -> bool {
+        if self == o {
+            return true;
+        }
+        match (*self, *o) {
+            (Expr::Var { idx: i, .. }, Expr::Var { idx: j, .. }) => i == j,
+            (Expr::Sort { level: l, .. }, Expr::Sort { level: m, .. }) => l == m,
+            (
+                Expr::Const {
+                    name: n, levels: l, ..
+                },
+                Expr::Const {
+                    name: m, levels: k, ..
+                },
+            ) => n == m && l == k,
+            (Expr::App { fun: f, arg: a, .. }, Expr::App { fun: g, arg: b, .. }) => {
+                f.same(g) && a.same(b)
+            }
+            (Expr::Lam { ty: a, body: b, .. }, Expr::Lam { ty: c, body: d, .. })
+            | (Expr::Pi { ty: a, body: b, .. }, Expr::Pi { ty: c, body: d, .. }) => {
+                a.same(c) && b.same(d)
+            }
+            (Expr::Let { data: a, .. }, Expr::Let { data: b, .. }) => {
+                a.nondep == b.nondep && a.ty.same(b.ty) && a.val.same(b.val) && a.body.same(b.body)
+            }
+            (
+                Expr::Proj {
+                    name: n,
+                    idx: i,
+                    e: a,
+                    ..
+                },
+                Expr::Proj {
+                    name: m,
+                    idx: j,
+                    e: b,
+                    ..
+                },
+            ) => n == m && i == j && a.same(b),
+            (Expr::NatLit { n: a, .. }, Expr::NatLit { n: b, .. }) => a == b || *a == *b,
+            (Expr::StrLit { s: a, .. }, Expr::StrLit { s: b, .. }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<Expr<'_>>() == 32);

@@ -11,8 +11,18 @@ use std::rc::Rc;
 
 /// Steps a same-head argument probe takes before both sides unfold instead.
 const PROBE_BUDGET: u64 = 16384;
+/// Under a head that unfolds cheaply, such as a projection, a probe gives up sooner: unfolding
+/// usually settles it, and the probes that do succeed nearly all finish well within this.
+const CHEAP_PROBE_BUDGET: u64 = 1024;
 
 const SAME_FUEL: u32 = 512;
+
+fn probe_budget(h: Hint) -> u64 {
+    match h {
+        Hint::Regular(_) => PROBE_BUDGET,
+        _ => CHEAP_PROBE_BUDGET,
+    }
+}
 
 fn zero(l: LevelPtr<'_>) -> bool {
     match *l {
@@ -231,10 +241,10 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let (K::Neu(Head::Const(a, la), ta), K::Neu(Head::Const(b, lb), sa)) = (t.k, s.k)
             && ta.len() == sa.len()
             && !ta.is_empty()
-            && self.delta_hint(t).is_some()
+            && let Some(h) = self.delta_hint(t)
             && a == b
             && self.levels_eq(la, lb)?
-            && self.probe_args(t, s)?
+            && self.probe_args(t, s, probe_budget(h))?
         {
             return Ok(true);
         }
@@ -330,7 +340,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(Some(self.def_eq(tt, st)?))
     }
 
-    fn probe_args(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+    fn probe_args(&mut self, t: V<'t>, s: V<'t>, budget: u64) -> R<bool> {
         if self.t.fail_cache.contains(&(key(t), key(s))) {
             return Ok(false);
         }
@@ -339,7 +349,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         stat!(self, probes);
         let outer = self.steps_left;
-        let budget = outer.min(PROBE_BUDGET);
+        let budget = outer.min(budget);
         self.steps_left = budget;
         self.probe_outer = Some(outer);
         let r = self.args_eq(t, s);
@@ -508,7 +518,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                             && matches!(ht, Hint::Regular(_))
                             && a == b
                             && self.levels_eq(la, lb)?
-                            && self.probe_args(t, s)?
+                            && self.probe_args(t, s, PROBE_BUDGET)?
                         {
                             return Ok(Ok(true));
                         }

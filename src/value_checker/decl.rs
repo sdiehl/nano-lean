@@ -142,17 +142,19 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             RecCheck::Sort(ty) => {
                 self.check_type(ty)?;
             }
+            // A recursor identical to the one built from the checked specification is accepted as
+            // built, the way the Lean kernel trusts its own; anything else is checked as a term.
             RecCheck::Type(ty, want) => {
-                self.check_type(ty)?;
-                if ty != want {
+                if !ty.same(want) {
+                    self.check_type(ty)?;
                     let a = self.eval(Env::EMPTY, id, ty)?;
                     let b = self.eval(Env::EMPTY, id, want)?;
                     ensure!(self, self.def_eq(a, b)?, "incorrect recursor type");
                 }
             }
             RecCheck::Rule(rhs, want) => {
-                let wt = self.infer(Env::EMPTY, id, want, Mode::Check)?;
-                if rhs != want {
+                if !rhs.same(want) {
+                    let wt = self.infer(Env::EMPTY, id, want, Mode::Check)?;
                     let at = self.infer(Env::EMPTY, id, rhs, Mode::Check)?;
                     ensure!(
                         self,

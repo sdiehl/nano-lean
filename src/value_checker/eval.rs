@@ -20,6 +20,10 @@ pub(super) const SPINE: usize = 16;
 pub(super) const WIDE_SPINE: usize = 32;
 
 const SHALLOW: u32 = 8;
+/// A wide support at least `WIDE_FLOOR` long and this many times sparser than its span keeps the
+/// environment: the dense frame would cost more to build and hash than the lookups it saves.
+const SPARSE: usize = 4;
+const WIDE_FLOOR: usize = 128;
 const RUN: u32 = 64;
 const EXACT: usize = 256;
 
@@ -395,7 +399,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 if ptr::eq(d, d1) && env.key() == c.env.key() {
                     t
                 } else {
-                    self.mk(K::Pi(d1, Clo { env, ..c }), d1.open || env.open())
+                    self.mk_pi(d1, Clo { env, ..c }, d1.open || env.open())
                 }
             }
             K::Lam(l, c) => {
@@ -465,6 +469,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         let mask = match sup {
             Slots::Mask(m) => m,
+            Slots::Wide(_) if n >= WIDE_FLOOR && n > SPARSE * len => return Ok(env),
             Slots::Wide(_) => 0,
         };
         let mut h = 0;

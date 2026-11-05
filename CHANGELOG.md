@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-11-05)
+
+- Intern Pi values built by rule substitution, so deep `List` indexing runs about 12x cheaper.
+- Accept recursors that match the ones built from their inductive.
+- Check nested inductive blocks natively by expanding nested occurrences.
+- Start faster on tiny inputs: one worker per declaration at most, no mimalloc environment scan.
+- Keep long sparse environments untrimmed, so shift cascades check about 40% cheaper.
+- Give argument probes under cheap heads a smaller budget, so lazy projections check about 35% cheaper.
+
 ## 0.3.1 (2026-11-03)
 
 - Cut Mathlib checking cost by about a tenth:

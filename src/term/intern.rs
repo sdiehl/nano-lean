@@ -5,10 +5,10 @@ use super::expr::{Expr, HAS_LOCAL, Meta, mk};
 use super::level::Level;
 use super::name::{NUM_HASH, Name, NameNode, NatRed, STR_HASH, StrNode};
 use super::names::{
-    BOOL, BOOL_FALSE, BOOL_TRUE, CHAR, CHAR_OF_NAT, EQ, LIST, LIST_CONS, LIST_NIL, NAT, NAT_ADD,
-    NAT_BEQ, NAT_BLE, NAT_DIV, NAT_GCD, NAT_LAND, NAT_LOG2, NAT_LOR, NAT_MOD, NAT_MUL, NAT_POW,
-    NAT_SHL, NAT_SHR, NAT_SUB, NAT_SUCC, NAT_XOR, NAT_ZERO, QUOT, QUOT_IND, QUOT_LIFT, QUOT_MK,
-    STRING, STRING_OF_LIST,
+    AUTO_PARAM, BOOL, BOOL_FALSE, BOOL_TRUE, CHAR, CHAR_OF_NAT, EQ, LIST, LIST_CONS, LIST_NIL, NAT,
+    NAT_ADD, NAT_BEQ, NAT_BLE, NAT_DIV, NAT_GCD, NAT_LAND, NAT_LOG2, NAT_LOR, NAT_MOD, NAT_MUL,
+    NAT_POW, NAT_SHL, NAT_SHR, NAT_SUB, NAT_SUCC, NAT_XOR, NAT_ZERO, OPT_PARAM, OUT_PARAM, QUOT,
+    QUOT_IND, QUOT_LIFT, QUOT_MK, SEMI_OUT_PARAM, STRING, STRING_OF_LIST,
 };
 use super::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::hash64;
@@ -291,6 +291,10 @@ names! {
     list_cons = LIST_CONS,
     nat = NAT,
     nat_zero = NAT_ZERO,
+    out_param = OUT_PARAM,
+    semi_out_param = SEMI_OUT_PARAM,
+    opt_param = OPT_PARAM,
+    auto_param = AUTO_PARAM,
     bool = BOOL,
     bool_true = BOOL_TRUE,
     bool_false = BOOL_FALSE,

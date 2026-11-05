@@ -2,3 +2,7 @@
 # whenever unrelated code ahead of them changes size, which alone swung Mathlib wall time by 2%.
 [build]
 rustflags = ["-C", "llvm-args=-align-all-functions=6"]
+
+# mimalloc otherwise scans the whole environment once per option at startup.
+[env]
+CFLAGS = "-DMI_NO_GETENV"

@@ -128,6 +128,27 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         v
     }
 
+    /// Substitution rebuilds the same Pi values on every fire of a rule, and a recursor chain
+    /// stays shared across calls only while they keep one pointer, so these are interned.
+    pub(crate) fn mk_pi(&mut self, d: V<'t>, c: Clo<'t>, open: bool) -> V<'t> {
+        let k = K::Pi(d, c);
+        let hk = hkey(k);
+        let hc = &mut self.t.hc[usize::from(open)];
+        let h = fx(&hk);
+        if let Some(v) = hc.find(h, |v| hkey(v.k) == hk) {
+            #[cfg(feature = "vstats")]
+            self.stats.mk_kind(2 - usize::from(open), true);
+            return v;
+        }
+        #[cfg(feature = "vstats")]
+        self.stats.mk_kind(2 - usize::from(open), false);
+        let v = self.ctx.arena.alloc(Val::new(k, open));
+        hc.insert(h, v);
+        bytes!(self, b_val, size_of::<Val>());
+        stat!(self, vals);
+        v
+    }
+
     /// One table for open and closed neutrals, since the key decides openness.
     pub(crate) fn neu(&mut self, h: Head<'t>, sp: &[V<'t>], rest: &[V<'t>]) -> V<'t> {
         stat!(self, spine_req);

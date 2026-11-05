@@ -16,13 +16,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         result_level: LevelPtr<'t>,
         zero: bool,
     ) -> R<Elim<'t>> {
-        let (types, shapes, ups) = (&spec.types, &spec.shapes, spec.fam.levels);
+        let (members, shapes, ups) = (spec.indices.len(), &spec.shapes, spec.fam.levels);
         let zeros: Vec<_> = ups.iter().map(|_| self.ctx.zero()).collect();
         let zeros = self.ctx.levels(&zeros);
         let at_zero = self.ctx.subst_level(result_level, ups, zeros);
         let positive = !self.is_zero(at_zero)?;
-        let large = match kernel::Recursor::forced_elimination(positive, types.len(), shapes.len())
-        {
+        let large = match kernel::Recursor::forced_elimination(positive, members, shapes.len()) {
             Some(large) => large,
             None => {
                 let s = &shapes[0];
@@ -33,8 +32,8 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 ok
             }
         };
-        let k = kernel::Recursor::k_like(zero, types.len(), shapes.iter().map(|s| s.fields.len()));
-        ensure!(self, recs.len() == types.len(), "incorrect recursor count");
+        let k = kernel::Recursor::k_like(zero, members, shapes.iter().map(|s| s.fields.len()));
+        ensure!(self, recs.len() == members, "incorrect recursor count");
         let uparams = recs[0].info.uparams;
         let level = if large {
             ensure!(
@@ -59,23 +58,26 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let (fam, ups) = (&spec.fam, spec.fam.levels);
         let mut motives = Vec::new();
         let mut majors = Vec::new();
-        for (t, indices) in spec.types.iter().zip(&spec.indices) {
-            let c = self.ctx.konst(t.info.name, ups);
-            let args: Vec<_> = fam.params.iter().chain(indices).copied().collect();
-            let applied = self.ctx.apps(c, &args);
+        for (m, indices) in spec.indices.iter().enumerate() {
+            let head = match spec.types.get(m) {
+                Some(t) => {
+                    let c = self.ctx.konst(t.info.name, ups);
+                    self.ctx.apps(c, &fam.params)
+                }
+                None => fam.apps[m - spec.types.len()],
+            };
+            let applied = self.ctx.apps(head, indices);
             let major = self.fresh_local(applied);
             let s = self.ctx.sort(elim);
             let xs: Vec<_> = indices.iter().copied().chain([major]).collect();
-            let mty = self.bind(&xs, s, false);
+            let mty = self.bind(fam, &xs, s, false)?;
             motives.push(self.fresh_local(mty));
             majors.push(major);
         }
         let mut minors = Vec::new();
         let mut recursive_fields = Vec::with_capacity(spec.shapes.len());
         for s in &spec.shapes {
-            let c = self.ctx.konst(s.ctor.info.name, ups);
-            let args: Vec<_> = fam.params.iter().chain(&s.fields).copied().collect();
-            let ctor = self.ctx.apps(c, &args);
+            let ctor = self.ctx.apps(s.head, &s.fields);
             let args: Vec<_> = s.indices.iter().copied().chain([ctor]).collect();
             let conclusion = self.ctx.apps(motives[s.owner], &args);
             let mut xs = s.fields.clone();
@@ -85,12 +87,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     let term = self.ctx.apps(x, &rf.locals);
                     let margs: Vec<_> = rf.indices.iter().copied().chain([term]).collect();
                     let body = self.ctx.apps(motives[rf.owner], &margs);
-                    let ih = self.bind(&rf.locals, body, false);
+                    let ih = self.bind(fam, &rf.locals, body, false)?;
                     xs.push(self.fresh_local(ih));
                     recs.push(rf);
                 }
             }
-            let ty = self.bind(&xs, conclusion, false);
+            let ty = self.bind(fam, &xs, conclusion, false)?;
             minors.push(self.fresh_local(ty));
             recursive_fields.push(recs);
         }
@@ -110,7 +112,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         elim: &Elim<'t>,
         p: &Premises<'t>,
     ) -> R<()> {
-        let (types, shapes, all) = (&spec.types, &spec.shapes, &spec.fam.names);
+        let (fam, types, shapes, all) = (&spec.fam, &spec.types, &spec.shapes, &spec.fam.names);
         let (np, rups) = (types[0].num_params, elim.uparams);
         let prefix: Vec<_> = spec
             .fam
@@ -120,11 +122,17 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             .chain(&p.minors)
             .copied()
             .collect();
-        let prefix_tys = self.binder_types(&prefix);
+        let prefix_tys = self.binder_types(fam, &prefix)?;
         let pre: Vec<_> = prefix.iter().copied().zip(prefix_tys).collect();
         let rec_str = self.ctx.string(kernel::Recursor::SUFFIX);
-        let rec_names: Vec<_> = all.iter().map(|&n| self.ctx.str_name(n, rec_str)).collect();
-        for (owner, t) in types.iter().enumerate() {
+        let mut rec_names: Vec<_> = all.iter().map(|&n| self.ctx.str_name(n, rec_str)).collect();
+        for k in 1..=spec.indices.len() - types.len() {
+            let s = self
+                .ctx
+                .string(&format!("{}_{k}", kernel::Recursor::SUFFIX));
+            rec_names.push(self.ctx.str_name(all[0], s));
+        }
+        for (owner, indices) in spec.indices.iter().enumerate() {
             let Some(&r) = recs.iter().find(|r| r.info.name == rec_names[owner]) else {
                 reject!(self, "missing recursor")
             };
@@ -133,19 +141,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 r.all == &all[..]
                     && r.info.uparams == rups
                     && r.num_params == np
-                    && r.num_indices == t.num_indices
-                    && usize::from(r.num_motives) == types.len()
+                    && usize::from(r.num_indices) == indices.len()
+                    && usize::from(r.num_motives) == spec.indices.len()
                     && usize::from(r.num_minors) == shapes.len()
                     && r.is_k == elim.k,
                 "incorrect recursor metadata"
             );
-            let tail: Vec<_> = spec.indices[owner]
-                .iter()
-                .copied()
-                .chain([p.majors[owner]])
-                .collect();
+            let tail: Vec<_> = indices.iter().copied().chain([p.majors[owner]]).collect();
             let result = self.ctx.apps(p.motives[owner], &tail);
-            let want = self.bind_after(&pre, &tail, result, false);
+            let want = self.bind_after(fam, &pre, &tail, result, false)?;
             self.recursor_checks(&[RecCheck::Type(r.info.ty, want)])?;
             let mine: Vec<_> = shapes
                 .iter()
@@ -161,7 +165,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             self.limit = b.end;
             let mut checks = Vec::new();
             for (rule, (minor, s)) in r.rules.iter().zip(mine) {
-                if rule.ctor != s.ctor.info.name || usize::from(rule.nfields) != s.fields.len() {
+                if rule.ctor != s.name || usize::from(rule.nfields) != s.fields.len() {
                     self.recursor_checks(&checks)?;
                     reject!(self, "incorrect recursor rule metadata");
                 }
@@ -176,10 +180,10 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                         .chain([term])
                         .collect();
                     let call = self.ctx.apps(rc, &a);
-                    args.push(self.bind(&rf.locals, call, true));
+                    args.push(self.bind(fam, &rf.locals, call, true)?);
                 }
                 let rhs = self.ctx.apps(p.minors[minor], &args);
-                let want = self.bind_after(&pre, &s.fields, rhs, true);
+                let want = self.bind_after(fam, &pre, &s.fields, rhs, true)?;
                 checks.push(RecCheck::Rule(rule.rhs, want));
             }
             self.recursor_checks(&checks)?;
@@ -222,11 +226,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 RecCheck::Sort(ty) => {
                     self.sort_of(ty)?;
                 }
-                RecCheck::Type(ty, want) => {
+                RecCheck::Type(ty, want) if !ty.same(want) => {
                     self.sort_of(ty)?;
                     ensure!(self, self.def_eq(ty, want)?, "incorrect recursor type");
                 }
-                RecCheck::Rule(rhs, want) => {
+                RecCheck::Rule(rhs, want) if !rhs.same(want) => {
                     let wt = self.infer(want, false)?;
                     let at = self.infer(rhs, false)?;
                     ensure!(
@@ -240,6 +244,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                         "incorrect recursor computation rule"
                     );
                 }
+                RecCheck::Type(..) | RecCheck::Rule(..) => {}
             }
         }
         Err(self.disagree())

@@ -71,11 +71,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let native = self.native_block(block);
         #[cfg(feature = "vstats")]
         let _timer = BlockTimer(usize::from(!native), Instant::now());
-        if native {
-            self.check_block(block)
-        } else {
-            self.check_existing(idx)
+        if !native {
+            return self.check_existing(idx);
         }
+        let result = self.check_block(block);
+        if result.is_ok()
+            || !self.nested_block(block)
+            || !matches!(self.fail, Some(Failure::Rejected(_)))
+        {
+            return result;
+        }
+        // A nested block the native expansion turns down is re-decided by the reference path,
+        // which carries Lean's own reasons.
+        self.fail = None;
+        self.check_existing(idx)
     }
 
     pub(super) fn check_existing(&mut self, idx: u32) -> R<()> {
