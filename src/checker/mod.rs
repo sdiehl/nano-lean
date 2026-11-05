@@ -24,6 +24,7 @@ use crate::term::ops::LEVEL_FORM;
 use crate::term::outcome::{Decline, Failure, R, Stop};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
+use crate::value_checker::RecChecker;
 use crate::{ensure, reject};
 use env::{Decls, strip_pis};
 use std::cell::Cell;
@@ -142,6 +143,7 @@ pub struct Tc<'t, 'a: 't> {
     pub(crate) whnf_cache: FxHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) eq_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     pub(crate) fail_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
+    pub(crate) rec: RecChecker<'t, 'a>,
 }
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
@@ -180,6 +182,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             whnf_cache: FxHashMap::default(),
             eq_cache: FxHashSet::default(),
             fail_cache: FxHashSet::default(),
+            rec: RecChecker::default(),
         }
     }
 
@@ -254,6 +257,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             whnf_cache,
             eq_cache,
             fail_cache,
+            rec,
         } = self;
         infer_cache.iter_mut().for_each(FxHashMap::clear);
         open_infer_cache.iter_mut().for_each(FxHashMap::clear);
@@ -265,6 +269,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         unfold_cache.clear();
         eq_cache.clear();
         fail_cache.clear();
+        *rec = RecChecker::default();
         let_vals.clear();
         *probe_remaining = None;
         conversion_depth.set(0);

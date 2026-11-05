@@ -5,7 +5,7 @@ use crate::term::intern::Block;
 use crate::term::level::Level;
 use crate::term::outcome::{Failure, R, Stop};
 use crate::term::ptr::LevelPtr;
-use crate::value_checker::{RecCheck, check_recursor};
+use crate::value_checker::RecCheck;
 use crate::{ensure, reject};
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
@@ -197,15 +197,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             return Ok(None);
         }
         let (limits, uparams, limit) = (self.limits, self.uparams, self.limit);
-        check_recursor(
-            &mut self.ctx,
-            limits,
-            &mut self.steps_left,
-            uparams,
-            limit,
-            checks,
-        )
-        .map_err(|f| self.failed(f))
+        let Self {
+            rec,
+            ctx,
+            steps_left,
+            ..
+        } = self;
+        let r = rec.check(ctx, limits, steps_left, uparams, limit, checks);
+        r.map_err(|f| self.failed(f))
     }
 
     /// Acceptance needs both cores, so a value-core rejection the term core overturns is internal.

@@ -175,35 +175,55 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 }
 
-pub(crate) fn check_recursor<'t, 'a: 't>(
-    ctx: &mut Ctx<'t, 'a>,
-    limits: Limits,
-    steps: &mut u64,
-    uparams: LevelsPtr<'t>,
-    limit: u32,
-    checks: &[RecCheck<'t>],
-) -> Result<Option<usize>, Failure> {
-    let mut vc = Vc::new(ctx.store, ctx.arena, limits);
-    swap(&mut vc.ctx, ctx);
-    let e = vc.ctx.levels(&[]);
-    vc.id = Sub { ks: e, vs: e };
-    vc.steps_left = *steps;
-    vc.uparams = uparams;
-    vc.limit = limit;
-    let mut at = 0;
-    let result = checks
-        .iter()
-        .enumerate()
-        .try_for_each(|(i, &c)| {
-            at = i;
-            vc.rec_check(c)
-        })
-        .map_err(|_| vc.failure());
-    swap(&mut vc.ctx, ctx);
-    *steps = vc.steps_left;
-    match result {
-        Ok(()) => Ok(None),
-        Err(Failure::Rejected(_)) => Ok(Some(at)),
-        Err(failure) => Err(failure),
+/// The value core a block's obligation batches share, so each starts from what the earlier ones
+/// evaluated. Dropped when the limit would move backwards or a batch fails.
+#[derive(Default)]
+pub(crate) struct RecChecker<'t, 'a: 't>(Option<Vc<'t, 'a>>);
+
+impl<'t, 'a: 't> RecChecker<'t, 'a> {
+    pub(crate) fn check(
+        &mut self,
+        ctx: &mut Ctx<'t, 'a>,
+        limits: Limits,
+        steps: &mut u64,
+        uparams: LevelsPtr<'t>,
+        limit: u32,
+        checks: &[RecCheck<'t>],
+    ) -> Result<Option<usize>, Failure> {
+        if self.0.as_ref().is_some_and(|vc| vc.limit > limit) {
+            self.0 = None;
+        }
+        let vc = self
+            .0
+            .get_or_insert_with(|| Vc::new(ctx.store, ctx.arena, limits));
+        swap(&mut vc.ctx, ctx);
+        let e = vc.ctx.levels(&[]);
+        vc.id = Sub { ks: e, vs: e };
+        vc.steps_left = *steps;
+        vc.uparams = uparams;
+        vc.included.clear();
+        vc.limit = limit;
+        let mut at = 0;
+        let result = checks
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, &c)| {
+                at = i;
+                vc.rec_check(c)
+            })
+            .map_err(|_| vc.failure());
+        swap(&mut vc.ctx, ctx);
+        *steps = vc.steps_left;
+        match result {
+            Ok(()) => Ok(None),
+            Err(Failure::Rejected(_)) => {
+                self.0 = None;
+                Ok(Some(at))
+            }
+            Err(failure) => {
+                self.0 = None;
+                Err(failure)
+            }
+        }
     }
 }

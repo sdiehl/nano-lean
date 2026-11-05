@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use tables::{POOL, Tables};
 use value::{Head, K, Memo, Sub, V, Val};
 
-pub(crate) use decl::{RecCheck, check_recursor};
+pub(crate) use decl::{RecCheck, RecChecker};
 pub use session::{BRIDGED, Session, check};
 #[cfg(feature = "vstats")]
 pub use stats::{RESETS, TOTAL, report};
