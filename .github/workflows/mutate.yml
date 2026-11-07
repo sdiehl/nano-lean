@@ -18,7 +18,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       LEAN_TOOLCHAIN: leanprover/lean4:v4.34.1
-      EXPORTER_VERSION: 0.2.0
+      EXPORTER_VERSION: 0.5.0
       SHAPES: rose_ex ArrTree OptList PairTree Even' Odd' Term VTree Deep SWrap Sig Univ Ex
     steps:
       - uses: actions/checkout@v4

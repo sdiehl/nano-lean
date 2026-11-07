@@ -32,7 +32,7 @@ jobs:
           - lean: "4.34.1"
             githash: 5045d0056413266e57c625dcd7c365b10e377c52
             format: "3.1.0"
-            exporter: "0.2.0"
+            exporter: "0.5.0"
           # Expected declaration names, pinned per Lean version and corpus.
           - lean: "4.34.1"
             corpus: init-prelude
