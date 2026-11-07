@@ -824,14 +824,15 @@ checksum = "da038d8d8338082be2ca0d8ecd3f096233c7f2b69e69be0e6fbb2c8b193336a4"
 
 [[package]]
 name = "olean-export"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "823ffc3e0fe3004e59529137e5a7918d767c227361b7f94d79b7f6607935dd73"
+checksum = "58190a7e3c8c306f13117d23f5aca559d39a2ec2f58cc05911e9ee004a8ee40f"
 dependencies = [
  "clap",
  "hashbrown 0.17.1",
  "indicatif",
  "itoa",
+ "libc",
  "memmap2",
  "parking_lot 0.13.0",
  "postcard",

@@ -57,7 +57,7 @@ fn truncated<T>() -> Result<T> {
 
 fn line(r: &Record<'_>, buf: &mut Vec<u8>) -> Result<Value> {
     buf.clear();
-    Ndjson::new(&mut *buf).record(r).map_err(corrupt)?;
+    Ndjson::new(&mut *buf).record(None, r).map_err(corrupt)?;
     Ok(serde_json::from_slice(buf)?)
 }
 
@@ -315,7 +315,7 @@ impl<'a> Records<'a> {
 impl Sink for &mut Records<'_> {
     type Output = ();
 
-    fn record(&mut self, r: &Record<'_>) -> olean_export::Result<()> {
+    fn record(&mut self, _: Option<u32>, r: &Record<'_>) -> olean_export::Result<()> {
         self.take(r).map_err(|e| {
             let msg = e.to_string();
             self.fail(e);
