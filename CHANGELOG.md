@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3 (2026-11-08)
+## 0.3.3 (2026-11-09)
 
 - Update `olean-export` dependency to latest version.
 - Add `--session-mib` to keep worker tables across more declarations.
@@ -9,6 +9,9 @@
 - Decode only the selected declarations' cone with `--olean`.
 - Overlap export reads with parsing.
 - Check large exports near each declaration's dependencies, keeping tables warm.
+- Store accepted keys in olean-export's shared accepted format.
+- Keep other checkers' sections when saving the cache.
+- Test cache keys against olean-export's reference keys.
 
 ## 0.3.2 (2026-11-05)
 

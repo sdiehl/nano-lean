@@ -122,7 +122,9 @@ Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/b
 
 ## Caching
 
-`--cache FILE` skips declarations a previous run accepted and records the new ones. Editing a declaration rechecks it and everything that depends on it, and a new checker version starts the file over.
+`--cache FILE` skips declarations a previous run accepted and records the new ones. Each declaration is keyed by a hash over its whole dependency closure, so editing a declaration rechecks it and everything that depends on it, and a new checker version starts the file over.
+
+The keys and the file format come from [olean-export](https://github.com/sdiehl/olean-export)'s `key` and `accepted` modules, so other checkers can share one store, each in its own section. With `olean-export --per-module` and `join`, an unchanged module's export can be reused as is too.
 
 ```sh
 nl-fast --cache mathlib.accepted mathlib.blean

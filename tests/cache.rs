@@ -3,6 +3,9 @@
 use nano_lean::cache::Cache;
 use nano_lean::import;
 use nano_lean::term::arena::Arena;
+use nano_lean::term::decl::Declar;
+use olean_export::key::Keys;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -161,4 +164,68 @@ fn config_enables_and_no_cache_overrides() {
     let off = run(&["--no-cache"]);
     assert!(off.status.success(), "{off:?}");
     assert!(!String::from_utf8_lossy(&off.stderr).contains("recorded"));
+}
+
+fn fixtures(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            fixtures(&p, out);
+        } else if p.extension().is_some_and(|x| x == "ndjson" || x == "blean") {
+            out.push(p);
+        }
+    }
+}
+
+fn big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn_scoped(s, f)
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// Our keys are olean-export's reference keys, so other tools can compute them.
+#[test]
+fn keys_match_the_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut files = Vec::new();
+    fixtures(Path::new(FIXTURES), &mut files);
+    files.push(emit(dir.path(), "base", BASE));
+    let mut compared = 0;
+    for path in files {
+        let bytes = std::fs::read(&path).unwrap();
+        let reference: HashMap<String, Option<[u8; 32]>> = big_stack(|| {
+            let mut k = Keys::new();
+            let read = if olean_export::blean::sniff(&bytes) {
+                olean_export::blean::read(&bytes, &mut k)
+            } else {
+                olean_export::ndjson::read(&bytes[..], &mut k)
+            };
+            read.ok()
+                .map(|()| k.into_keys().into_iter().map(|d| (d.name, d.key)).collect())
+        })
+        .unwrap_or_default();
+        let arena = Arena::new();
+        let Ok(store) = import::import(&arena, &path) else {
+            continue;
+        };
+        let missing = dir.path().join("none");
+        let Some(cache) = big_stack(|| Cache::open(&store, &missing, "value", false).unwrap())
+        else {
+            continue;
+        };
+        for (i, d) in store.declars.iter().enumerate() {
+            if matches!(d, Declar::Def(..) | Declar::Thm(..) | Declar::Opaque(..)) {
+                let name = d.name().to_string();
+                let ours = big_stack(|| cache.lookup(i as u32).0);
+                assert_eq!(ours, reference[&name], "{} {name}", path.display());
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 100, "{compared}");
 }

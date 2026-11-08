@@ -1,16 +1,19 @@
 //! An opt-in record of accepted declarations, keyed by content, so a rerun skips them. The file
 //! is trusted input like the export: a key in it is taken as an accepted declaration.
 //!
-//! Layout: `MAGIC`, a 32-byte tag over the checker build, core and environment, then sorted
-//! 32-byte keys. A file with another tag is ignored.
+//! The file is an olean-export accepted store, which other checkers may share. Our section is
+//! named `CHECKER` and tagged over the build, core and environment; a section with another
+//! tag is ignored, and other checkers' sections are kept.
 
 mod key;
 
 use crate::term::intern::Store;
 use key::Keys;
 use memmap2::Mmap;
+use olean_export::accepted::{self, Section};
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -18,13 +21,13 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 pub type Key = [u8; 32];
 
 const MAGIC: &[u8; 8] = b"NLCACHE1";
-const HEADER: usize = MAGIC.len() + 32;
+const CHECKER: &str = "nano-lean";
 const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " ", env!("NL_SOURCE_HASH"));
 
 pub struct Cache<'a> {
     keys: Keys<'a>,
     tag: Key,
-    map: Option<Mmap>,
+    map: Option<(Mmap, Range<usize>)>,
     pub audit: bool,
     pub hits: AtomicUsize,
     accepted: Mutex<Vec<Key>>,
@@ -53,11 +56,11 @@ impl<'a> Cache<'a> {
             Ok(f) => {
                 // SAFETY: writers replace the file by rename, so the mapped inode never changes.
                 let m = unsafe { Mmap::map(&f)? };
-                let ok = m.len() >= HEADER
-                    && (m.len() - HEADER).is_multiple_of(32)
-                    && m[..MAGIC.len()] == *MAGIC
-                    && m[MAGIC.len()..HEADER] == tag;
-                ok.then_some(m)
+                let keys = ours(&m, &tag).map(|keys| {
+                    let start = keys.as_ptr() as usize - m.as_ptr() as usize;
+                    start..start + keys.len() * 32
+                });
+                keys.map(|r| (m, r))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e),
@@ -74,8 +77,8 @@ impl<'a> Cache<'a> {
 
     fn stored(&self) -> &[Key] {
         self.map
-            .as_deref()
-            .map_or(&[], |m| m[HEADER..].as_chunks().0)
+            .as_ref()
+            .map_or(&[], |(m, r)| m[r.clone()].as_chunks().0)
     }
 
     /// The declaration's key, and whether the file records it. A key outside the stored ones
@@ -96,8 +99,8 @@ impl<'a> Cache<'a> {
             .extend_from_slice(keys);
     }
 
-    /// Writes the accepted keys, plus every stored key when `keep` is set, and replaces the file.
-    /// Returns how many it wrote.
+    /// Writes the accepted keys, plus every stored key when `keep` is set, as our section, keeps
+    /// the other checkers' sections, and replaces the file. Returns how many keys it wrote.
     pub fn save(&self, path: &Path, keep: bool) -> io::Result<usize> {
         let mut accepted = std::mem::take(
             &mut *self
@@ -110,20 +113,31 @@ impl<'a> Cache<'a> {
         }
         accepted.sort_unstable();
         accepted.dedup();
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-        let mut f = io::BufWriter::new(File::create(&tmp)?);
-        f.write_all(MAGIC)?;
-        f.write_all(&self.tag)?;
-        for k in &accepted {
-            f.write_all(k)?;
-        }
-        f.into_inner()
-            .map_err(io::IntoInnerError::into_error)?
-            .sync_all()?;
-        fs::rename(&tmp, path)?;
+        let old = match fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let mut sections: Vec<Section<'_>> = accepted::parse(&old)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.checker != CHECKER)
+            .collect();
+        sections.push(Section {
+            checker: CHECKER,
+            tag: self.tag,
+            keys: &accepted,
+        });
+        accepted::save(path, &sections)?;
         Ok(accepted.len())
     }
+}
+
+/// Our section's keys, if the file is a store and our section carries `tag`.
+fn ours<'m>(bytes: &'m [u8], tag: &Key) -> Option<&'m [Key]> {
+    accepted::parse(bytes)
+        .ok()?
+        .into_iter()
+        .find(|s| s.checker == CHECKER && s.tag == *tag)
+        .map(|s| s.keys)
 }

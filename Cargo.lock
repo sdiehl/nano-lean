@@ -824,10 +824,11 @@ checksum = "da038d8d8338082be2ca0d8ecd3f096233c7f2b69e69be0e6fbb2c8b193336a4"
 
 [[package]]
 name = "olean-export"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58190a7e3c8c306f13117d23f5aca559d39a2ec2f58cc05911e9ee004a8ee40f"
+checksum = "0c6d8d3641fcef0043c740b8afebfaf96737a73d6b49e7c931f034b3bcbed26b"
 dependencies = [
+ "blake3",
  "clap",
  "hashbrown 0.17.1",
  "indicatif",
