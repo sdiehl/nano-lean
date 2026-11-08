@@ -86,8 +86,6 @@ Checking all of Mathlib from the blean binary export:
 | --------------------- | --------- | ---------- | -------------- |
 | Wall time             | 57.4 s    | 16.7 s     | 11.85 s        |
 | Kernel check          | 53.5 s    | 12.5 s     | 7.55 s         |
-| Instructions          | 708.5 G   | 746.5 G    | 742.3 G        |
-| Cycles                | 247.7 G   | 385.6 G    | 352.7 G        |
 | Peak memory footprint | 7.5 GB    | 9.2 GB     | 10.7 GB        |
 
 Checking the full imported environment of [OpenAI's Navier–Stokes and Euler proofs](https://github.com/openai/NavierStokesAndEuler) from the blean binary export
@@ -96,8 +94,6 @@ Checking the full imported environment of [OpenAI's Navier–Stokes and Euler pr
 | --------------------- | -------------- |
 | Wall time             | 17.13 s        |
 | Kernel check          | 12.11 s        |
-| Instructions          | 977.0 G        |
-| Cycles                | 471.3 G        |
 | Peak memory footprint | 12.29 GB       |
 
 Checking the full imported environment of [CSLib](https://github.com/leanprover/cslib) from the blean binary export
@@ -106,8 +102,6 @@ Checking the full imported environment of [CSLib](https://github.com/leanprover/
 | --------------------- | -------------- |
 | Wall time             | 4.42 s         |
 | Kernel check          | 2.75 s         |
-| Instructions          | 300.8 G        |
-| Cycles                | 136.6 G        |
 | Peak memory footprint | 6.92 GB        |
 
 Checking [OpenAI's quasi-Riemann hypothesis proof](https://github.com/openai/math/blob/main/lean/docs/003.md) and its dependencies from the blean binary export
@@ -116,8 +110,6 @@ Checking [OpenAI's quasi-Riemann hypothesis proof](https://github.com/openai/mat
 | --------------------- | -------------- |
 | Wall time             | 3.66 s         |
 | Kernel check          | 2.58 s         |
-| Instructions          | 236.4 G        |
-| Cycles                | 122.6 G        |
 | Peak memory footprint | 7.42 GB        |
 
 Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/blob/main/lean/docs/159.md) and its dependencies from the blean binary export
@@ -126,13 +118,7 @@ Checking [OpenAI's Erdős reciprocal-sum proof](https://github.com/openai/math/b
 | --------------------- | -------------- |
 | Wall time             | 23.33 s        |
 | Kernel check          | 19.11 s        |
-| Instructions          | 837.9 G        |
-| Cycles                | 550.0 G        |
 | Peak memory footprint | 26.42 GB       |
-
-## Trust model
-
-See [docs/TRUST.md](docs/TRUST.md) for what the checkers trust and how `--prelude`, `--axioms` and the cache bound it.
 
 ## Caching
 
