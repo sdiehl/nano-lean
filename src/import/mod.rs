@@ -21,6 +21,10 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 use std::thread;
 
+const PAR_CHUNK: usize = 4 << 20;
+const CHUNK: usize = 16 << 20;
+const READ_AHEAD: usize = 2;
+
 type Result<T> = std::result::Result<T, ExportError>;
 
 fn invalid<T>(s: impl Into<String>) -> Result<T> {
@@ -50,8 +54,6 @@ pub fn import_with(arena: &Arena, path: impl AsRef<Path>, threads: usize) -> Res
     }
     import_reader(arena, file, len)
 }
-
-const PAR_CHUNK: usize = 4 << 20;
 
 struct Ready {
     batches: FxHashMap<usize, Batch>,
@@ -174,8 +176,6 @@ fn import_lines<'a>(
     im.finish_lines(n)
 }
 
-const CHUNK: usize = 16 << 20;
-
 /// Large or unsized inputs are read on a second thread, so read syscalls and disk waits
 /// overlap with parsing instead of sitting on its path.
 pub fn import_reader(arena: &Arena, r: impl Read + Send, len: usize) -> Result<Store<'_>> {
@@ -196,8 +196,6 @@ pub fn import_reader(arena: &Arena, r: impl Read + Send, len: usize) -> Result<S
         im.finish_lines(n)
     })
 }
-
-const READ_AHEAD: usize = 2;
 
 /// Sends blocks cut at line ends, carrying each partial last line into the next buffer.
 fn read_blocks(
