@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 (2026-11-08)
+
+- Update `olean-export` dependency to latest version.
+- Add `--session-mib` to keep worker tables across more declarations.
+- Add arena-order Init and Std benches exported with `lean4export`.
+- Decode only the selected declarations' cone with `--olean`.
+
 ## 0.3.2 (2026-11-05)
 
 - Intern Pi values built by rule substitution, so deep `List` indexing runs about 12x cheaper.

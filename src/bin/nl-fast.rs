@@ -193,8 +193,21 @@ fn main() {
     let store = match &o.olean {
         Some(roots) => {
             let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
-            import::olean(&arena, &olean_export::search_path(), &roots)
-                .unwrap_or_else(|e| exit_on(&e))
+            let targets: Option<Vec<&str>> =
+                (o.selected.is_some() || o.only.is_some()).then(|| {
+                    o.selected
+                        .iter()
+                        .chain(o.only.iter().flatten())
+                        .map(String::as_str)
+                        .collect()
+                });
+            import::olean(
+                &arena,
+                &olean_export::search_path(),
+                &roots,
+                targets.as_deref(),
+            )
+            .unwrap_or_else(|e| exit_on(&e))
         }
         None => load(&arena, o.path.as_deref().map(Path::new), o.import_threads),
     };

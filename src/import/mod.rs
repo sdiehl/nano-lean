@@ -217,17 +217,47 @@ pub fn import_bytes<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Store<'a>> {
 }
 
 /// Loads `roots` and their imports from `.olean` files on `search`, as a blean export would.
-pub fn olean<'a>(arena: &'a Arena, search: &[PathBuf], roots: &[&str]) -> Result<Store<'a>> {
-    let env = olean_export::Env::load(search, roots)
-        .map_err(|e| ExportError::Invalid(format!("olean: {e}")))?;
-    from_env(arena, &env)
+/// Given `targets`, the store holds only their cone, and proofs outside it stay undecoded.
+pub fn olean<'a>(
+    arena: &'a Arena,
+    search: &[PathBuf],
+    roots: &[&str],
+    targets: Option<&[&str]>,
+) -> Result<Store<'a>> {
+    let env = match targets {
+        None => olean_export::Env::load(search, roots),
+        Some(t) => {
+            let jobs = std::thread::available_parallelism().map_or(1, usize::from);
+            olean_export::Env::load_cone(search, roots, t, jobs, &|_, _| {})
+        }
+    }
+    .map_err(|e| ExportError::Invalid(format!("olean: {e}")))?;
+    export(arena, &env, targets)
 }
 
 /// Exports every constant of `env` straight into a store.
 pub fn from_env<'a>(arena: &'a Arena, env: &olean_export::Env) -> Result<Store<'a>> {
+    export(arena, env, None)
+}
+
+fn export<'a>(
+    arena: &'a Arena,
+    env: &olean_export::Env,
+    targets: Option<&[&str]>,
+) -> Result<Store<'a>> {
     let mut sink = blean::Records::new(arena, env.names.len() + env.levels.len() + env.exprs.len());
     let mut ex = olean_export::Exporter::with_sink(env, &mut sink);
-    let out = ex.meta().and_then(|()| ex.all()).and_then(|()| ex.finish());
+    let body = |ex: &mut olean_export::Exporter<'_, _>| match targets {
+        None => ex.all(),
+        Some(t) => t
+            .iter()
+            .filter_map(|n| env.find_name(n))
+            .try_for_each(|c| ex.constant(c)),
+    };
+    let out = ex
+        .meta()
+        .and_then(|()| body(&mut ex))
+        .and_then(|()| ex.finish());
     if let Err(e) = out {
         sink.fail(ExportError::Invalid(format!("olean: {e}")));
     }
