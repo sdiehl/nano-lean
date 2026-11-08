@@ -31,12 +31,15 @@ pub(super) struct Importer<'a> {
     track: bool,
 }
 
-/// Records which earlier declarations each declaration's lines reach. A node belongs to the
-/// declaration that follows it, and a node of an earlier one stands for all that one reached.
+/// Records which earlier declarations each declaration's lines reach. Every node keeps a summary
+/// of the constants under it: none, one declaration, or many, standing for the declaration that
+/// follows the node, which uses it and so reaches all of them.
 #[derive(Default)]
 struct Recorder<'a> {
-    /// Per expression id, the index of the declaration that follows it.
-    range: Vec<u32>,
+    /// Per expression id, 0, `j + 1` for declaration `j` alone, or `MANY | d`.
+    sum: Vec<u32>,
+    /// Summary of the node being built.
+    acc: u32,
     /// First expression id after the latest declaration.
     start: u32,
     /// Per declaration, the last declaration that marked it, to keep `out.decls` distinct.
@@ -46,12 +49,44 @@ struct Recorder<'a> {
     out: Deps<'a>,
 }
 
+const MANY: u32 = 1 << 31;
+
 impl<'a> Recorder<'a> {
     #[inline(always)]
-    fn foreign(&mut self, i: u32, here: u32) {
-        if i < self.start {
-            self.mark(self.range[i as usize], here);
+    fn join(&mut self, s: u32) {
+        if self.acc == 0 {
+            self.acc = s;
+        } else if s != 0 && s != self.acc {
+            self.acc = MANY;
         }
+    }
+
+    #[inline(always)]
+    fn child(&mut self, i: u32, here: u32) {
+        let Some(&s) = self.sum.get(i as usize) else {
+            return;
+        };
+        self.join(s);
+        if i < self.start && s != 0 {
+            self.mark(if s & MANY != 0 { s & !MANY } else { s - 1 }, here);
+        }
+    }
+
+    #[inline(always)]
+    fn constant(&mut self, j: u32, here: u32) {
+        self.join(j + 1);
+        self.mark(j, here);
+    }
+
+    #[inline(always)]
+    fn node(&mut self, here: u32) {
+        let s = if self.acc & MANY != 0 {
+            MANY | here
+        } else {
+            self.acc
+        };
+        self.sum.push(s);
+        self.acc = 0;
     }
 
     #[inline(always)]
@@ -68,7 +103,8 @@ impl<'a> Recorder<'a> {
         self.out.names.append(&mut self.pending);
         let ends = (self.out.decls.len() as u32, self.out.names.len() as u32);
         self.out.ends.push(ends);
-        self.start = self.range.len() as u32;
+        self.start = self.sum.len() as u32;
+        self.acc = 0;
     }
 }
 
@@ -199,7 +235,7 @@ impl<'a> Importer<'a> {
             },
             scratch: Vec::new(),
             deps: Recorder {
-                range: Vec::with_capacity(lines),
+                sum: Vec::with_capacity(lines),
                 stamp: vec![0],
                 ..Recorder::default()
             },
@@ -255,9 +291,9 @@ impl<'a> Importer<'a> {
             && let Some(&Some(a)) = dense.get(aa as usize)
         {
             if track {
-                deps.foreign(fa, here);
-                deps.foreign(aa, here);
-                deps.range.push(here);
+                deps.child(fa, here);
+                deps.child(aa, here);
+                deps.node(here);
             }
             let (node, nlb) = mk::app(f, a);
             dense.push(Some(ExprPtr::new(arena.alloc(node), nlb)));
@@ -286,7 +322,7 @@ impl<'a> Importer<'a> {
 
     #[inline(always)]
     pub(super) fn expr(&mut self, i: u32) -> Result<ExprPtr<'a>> {
-        self.deps.foreign(i, self.declars.len() as u32);
+        self.deps.child(i, self.declars.len() as u32);
         self.exprs.get(i)
     }
 
@@ -295,8 +331,8 @@ impl<'a> Importer<'a> {
         if !self.track {
             return;
         }
-        if self.deps.range.len() == i as usize {
-            self.deps.range.push(self.declars.len() as u32);
+        if self.deps.sum.len() == i as usize {
+            self.deps.node(self.declars.len() as u32);
         } else {
             self.track = false;
         }
@@ -309,8 +345,11 @@ impl<'a> Importer<'a> {
         }
         let here = self.declars.len() as u32;
         match n.decl_idx() {
-            Some(j) => self.deps.mark(j, here),
-            None => self.deps.pending.push(n),
+            Some(j) => self.deps.constant(j, here),
+            None => {
+                self.deps.acc = MANY;
+                self.deps.pending.push(n);
+            }
         }
     }
 
@@ -619,7 +658,7 @@ impl<'a> Importer<'a> {
             }
         }
         let deps = (self.track
-            && self.deps.range.len() == self.exprs.dense.len()
+            && self.deps.sum.len() == self.exprs.dense.len()
             && self.deps.out.ends.len() == self.declars.len()
             && self.exprs.sparse.is_empty())
         .then_some(self.deps.out);
