@@ -5,6 +5,7 @@
 - Update `olean-export` dependency to latest version.
 - Add `--session-mib` to keep worker tables across more declarations.
 - Add arena-order Init and Std benches exported with `lean4export`.
+- Abort on panic, safe since nothing catches unwinding panics.
 - Decode only the selected declarations' cone with `--olean`.
 
 ## 0.3.2 (2026-11-05)

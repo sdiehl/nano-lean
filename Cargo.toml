@@ -75,6 +75,7 @@ opt-level = 3
 overflow-checks = false
 lto = "fat"
 codegen-units = 1
+panic = "abort"
 
 [profile.test]
 opt-level = 3
