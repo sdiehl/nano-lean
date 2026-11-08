@@ -12,6 +12,7 @@ pub mod parallel;
 pub mod parser;
 #[cfg(feature = "profile")]
 mod profile;
+pub mod reorder;
 mod resource;
 pub mod schema;
 pub mod syntax;

@@ -320,6 +320,15 @@ names! {
     nat_log2 = NAT_LOG2 => Log2,
 }
 
+/// Per declaration, the earlier declarations its import lines reach and the constants they name
+/// before those are declared, as flat lists ending at `ends`.
+#[derive(Default)]
+pub struct Deps<'a> {
+    pub ends: Vec<(u32, u32)>,
+    pub decls: Vec<u32>,
+    pub names: Vec<NamePtr<'a>>,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
     pub declarations: usize,
@@ -344,4 +353,5 @@ pub struct Store<'a> {
     pub blocks: FxHashMap<NamePtr<'a>, Block>,
     pub names: Names<'a>,
     pub stats: Stats,
+    pub deps: Option<Deps<'a>>,
 }

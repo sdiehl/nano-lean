@@ -2,7 +2,9 @@
 
 use crate::cache::Cache;
 use crate::checker::{Adapter, CheckPath, Limits};
+use crate::resource::Budget;
 use crate::term::intern::Store;
+use crate::term::outcome::{Decline, Failure};
 use crate::value_checker::{self, Session};
 use crate::verdict::Core;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -98,6 +100,12 @@ impl Config {
             session_bytes: self.session_mib.unwrap_or(DEFAULT_SESSION_MIB) as usize * MIB,
         }
     }
+}
+
+/// The session's tables count against the declaration's memory budget, so a warm session can
+/// starve a declaration that fits in a fresh one.
+fn budget_exhausted<T>(r: &Result<T, Failure>) -> bool {
+    matches!(r, Err(Failure::Declined(Decline::Exhausted(Budget::Arena))))
 }
 
 /// Returns freed import buffers to the OS, and keeps later frees mapped for reuse.
@@ -244,7 +252,8 @@ impl Checks {
                                 if o.trace {
                                     eprintln!("start {idx} {}", store.declars[idx as usize].name());
                                 }
-                                let r = o.core.check(
+                                let warm = session.arena().used_bytes() > 0;
+                                let mut r = o.core.check(
                                     store,
                                     &mut session,
                                     idx,
@@ -252,6 +261,17 @@ impl Checks {
                                     &mut adapter,
                                     o.native_only,
                                 );
+                                if warm && budget_exhausted(&r) {
+                                    session.reset();
+                                    r = o.core.check(
+                                        store,
+                                        &mut session,
+                                        idx,
+                                        o.limits,
+                                        &mut adapter,
+                                        o.native_only,
+                                    );
+                                }
                                 if r.is_ok() {
                                     accepted.extend(key);
                                 } else if hit && r.as_ref().is_err_and(|f| f.exit_code() == 1) {

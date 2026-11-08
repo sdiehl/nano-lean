@@ -48,6 +48,9 @@ struct Cli {
     /// Keep a worker's tables until its session arena passes MIB
     #[arg(long, value_name = "MIB")]
     session_mib: Option<u32>,
+    /// Check in export order instead of near each declaration's dependencies
+    #[arg(long)]
+    no_reorder: bool,
     /// Stop after import
     #[arg(long)]
     import_only: bool,
@@ -87,6 +90,7 @@ struct Options {
     only: Option<HashSet<String>>,
     limit: usize,
     import_only: bool,
+    reorder: bool,
     import_threads: usize,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
@@ -126,6 +130,7 @@ fn options() -> Options {
         only: cli.only.as_deref().map(names),
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
+        reorder: !cli.no_reorder && cli.limit.is_none(),
         import_threads: cli.import_threads.or(c.import_threads).unwrap_or(1).into(),
         checks: c.checks(
             cli.threads.or(c.threads).unwrap_or(1).into(),
@@ -158,7 +163,8 @@ fn load<'a>(arena: &'a Arena, path: Option<&Path>, threads: usize) -> Store<'a> 
                     Err(e) => Err(ExportError::Invalid(e.to_string())),
                 }
             } else {
-                import::import_reader(arena, stdin, 0)
+                drop(stdin);
+                import::import_reader(arena, io::stdin(), 0)
             }
         }
     };
@@ -190,7 +196,7 @@ fn main() {
     }
     let t = Instant::now();
     let arena = Arena::new();
-    let store = match &o.olean {
+    let mut store = match &o.olean {
         Some(roots) => {
             let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
             let targets: Option<Vec<&str>> =
@@ -232,8 +238,11 @@ fn main() {
     if let Some(a) = &o.axioms {
         import::check_axioms(&store, a).unwrap_or_else(|e| exit_on(&e));
     }
+    if o.reorder {
+        nano_lean::reorder::reorder(&mut store);
+    }
     if o.import_only {
-        return;
+        process::exit(0);
     }
     let filtered = o.selected.is_some() || o.only.is_some();
     let indices: Vec<_> = store
@@ -288,7 +297,6 @@ fn main() {
         }
         code
     };
-    if code != 0 {
-        process::exit(code as i32);
-    }
+    // Exiting here skips freeing the store, which is pure teardown cost.
+    process::exit(code as i32);
 }

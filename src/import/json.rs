@@ -236,6 +236,7 @@ impl<'a> Importer<'a> {
         }
         n.set_decl_idx(self.declars.len() as u32);
         self.declars.push(d);
+        self.flush_deps();
         self.stats.declarations += 1;
         Ok(())
     }

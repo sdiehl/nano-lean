@@ -5,7 +5,7 @@ use crate::term::FxHashMap;
 use crate::term::arena::Arena;
 use crate::term::decl::Declar;
 use crate::term::expr::{Expr, LetData, Meta, NLB_MASK, mk};
-use crate::term::intern::{Block, Dag, Names, Stats, Store};
+use crate::term::intern::{Block, Dag, Deps, Names, Stats, Store};
 use crate::term::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::term::name::{NUM_HASH, Name, STR_HASH};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
@@ -27,7 +27,53 @@ pub(super) struct Importer<'a> {
     pub(super) blocks: FxHashMap<NamePtr<'a>, Block>,
     pub(super) stats: Stats,
     scratch: Vec<u32>,
+    deps: Recorder<'a>,
+    track: bool,
 }
+
+/// Records which earlier declarations each declaration's lines reach. A node belongs to the
+/// declaration that follows it, and a node of an earlier one stands for all that one reached.
+#[derive(Default)]
+struct Recorder<'a> {
+    /// Per expression id, the index of the declaration that follows it.
+    range: Vec<u32>,
+    /// First expression id after the latest declaration.
+    start: u32,
+    /// Per declaration, the last declaration that marked it, to keep `out.decls` distinct.
+    stamp: Vec<u32>,
+    /// Constants not yet declared, which only a declaration's own block may name.
+    pending: Vec<NamePtr<'a>>,
+    out: Deps<'a>,
+}
+
+impl<'a> Recorder<'a> {
+    #[inline(always)]
+    fn foreign(&mut self, i: u32, here: u32) {
+        if i < self.start {
+            self.mark(self.range[i as usize], here);
+        }
+    }
+
+    #[inline(always)]
+    fn mark(&mut self, j: u32, here: u32) {
+        let s = &mut self.stamp[j as usize];
+        if *s != here + 1 {
+            *s = here + 1;
+            self.out.decls.push(j);
+        }
+    }
+
+    fn flush(&mut self) {
+        self.stamp.push(0);
+        self.out.names.append(&mut self.pending);
+        let ends = (self.out.decls.len() as u32, self.out.names.len() as u32);
+        self.out.ends.push(ends);
+        self.start = self.range.len() as u32;
+    }
+}
+
+/// Smaller inputs check too quickly for their order to matter.
+const RECORD_BYTES: usize = 64 << 20;
 
 const MAX_GAP: usize = 1 << 16;
 /// Decimal parsing is quadratic, so 4M digits would already take 10s.
@@ -152,6 +198,12 @@ impl<'a> Importer<'a> {
                 ..Stats::default()
             },
             scratch: Vec::new(),
+            deps: Recorder {
+                range: Vec::with_capacity(lines),
+                stamp: vec![0],
+                ..Recorder::default()
+            },
+            track: bytes == 0 || bytes >= RECORD_BYTES,
         }
     }
 
@@ -191,21 +243,29 @@ impl<'a> Importer<'a> {
         }
         let arena = self.arena;
         let mut dense = std::mem::take(&mut self.exprs.dense);
+        let mut deps = std::mem::take(&mut self.deps);
+        let (track, here) = (self.track, self.declars.len() as u32);
         let start = dense.len();
         while let Some(w) = bytes[s..].first_chunk::<{ scan::WIN }>()
             && w[2] == b'a'
-            && let Some((e, f, a, j)) = scan::app(w, usize::MAX)
+            && let Some((e, fa, aa, j)) = scan::app(w, usize::MAX)
             && e as usize == dense.len()
             && dense.len() < dense.capacity()
-            && let Some(&Some(f)) = dense.get(f as usize)
-            && let Some(&Some(a)) = dense.get(a as usize)
+            && let Some(&Some(f)) = dense.get(fa as usize)
+            && let Some(&Some(a)) = dense.get(aa as usize)
         {
+            if track {
+                deps.foreign(fa, here);
+                deps.foreign(aa, here);
+                deps.range.push(here);
+            }
             let (node, nlb) = mk::app(f, a);
             dense.push(Some(ExprPtr::new(arena.alloc(node), nlb)));
             s += j + 1;
         }
         let k = dense.len() - start;
         self.exprs.dense = dense;
+        self.deps = deps;
         (s, k)
     }
 
@@ -224,8 +284,40 @@ impl<'a> Importer<'a> {
         self.levels.get(i)
     }
 
-    pub(super) fn expr(&self, i: u32) -> Result<ExprPtr<'a>> {
+    #[inline(always)]
+    pub(super) fn expr(&mut self, i: u32) -> Result<ExprPtr<'a>> {
+        self.deps.foreign(i, self.declars.len() as u32);
         self.exprs.get(i)
+    }
+
+    #[inline(always)]
+    fn ranged(&mut self, i: u32) {
+        if !self.track {
+            return;
+        }
+        if self.deps.range.len() == i as usize {
+            self.deps.range.push(self.declars.len() as u32);
+        } else {
+            self.track = false;
+        }
+    }
+
+    #[inline]
+    fn uses(&mut self, n: NamePtr<'a>) {
+        if !self.track {
+            return;
+        }
+        let here = self.declars.len() as u32;
+        match n.decl_idx() {
+            Some(j) => self.deps.mark(j, here),
+            None => self.deps.pending.push(n),
+        }
+    }
+
+    pub(super) fn flush_deps(&mut self) {
+        if self.track {
+            self.deps.flush();
+        }
     }
 
     fn add_name(&mut self, i: u32, n: Name<'a>) -> Result<()> {
@@ -278,12 +370,16 @@ impl<'a> Importer<'a> {
 
     pub(super) fn alias(&mut self, i: u32, e: u32) -> Result<()> {
         let e = self.expr(e)?;
-        self.exprs.put(i, e)
+        self.exprs.put(i, e)?;
+        self.ranged(i);
+        Ok(())
     }
 
     fn add_expr(&mut self, i: u32, node: (Expr<'a>, Meta)) -> Result<()> {
         let p = self.intern(node);
-        self.exprs.put(i, p)
+        self.exprs.put(i, p)?;
+        self.ranged(i);
+        Ok(())
     }
 
     pub(super) fn do_bvar(&mut self, i: u32, v: u64) -> Result<()> {
@@ -301,6 +397,7 @@ impl<'a> Importer<'a> {
     pub(super) fn do_const(&mut self, i: u32, n: u32, us: &[u32]) -> Result<()> {
         let n = self.name(n)?;
         let us = self.level_list(us)?;
+        self.uses(n);
         self.add_expr(i, mk::konst(n, us))
     }
 
@@ -362,6 +459,7 @@ impl<'a> Importer<'a> {
     pub(super) fn do_proj(&mut self, i: u32, n: u32, idx: u64, e: u32) -> Result<()> {
         let n = self.name(n)?;
         let e = self.expr(e)?;
+        self.uses(n);
         let Ok(idx) = u16::try_from(idx) else {
             return unsupported("projection index too large");
         };
@@ -520,6 +618,11 @@ impl<'a> Importer<'a> {
                 return invalid(format!("reserved quotient name {n}"));
             }
         }
+        let deps = (self.track
+            && self.deps.range.len() == self.exprs.dense.len()
+            && self.deps.out.ends.len() == self.declars.len()
+            && self.exprs.sparse.is_empty())
+        .then_some(self.deps.out);
         let store = Store {
             dag: self.dag,
             anon: self.anon,
@@ -528,6 +631,7 @@ impl<'a> Importer<'a> {
             blocks: self.blocks,
             names,
             stats: self.stats,
+            deps,
         };
         super::primitives::check(&store)?;
         Ok(store)

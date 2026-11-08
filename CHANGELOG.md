@@ -7,6 +7,8 @@
 - Add arena-order Init and Std benches exported with `lean4export`.
 - Abort on panic, safe since nothing catches unwinding panics.
 - Decode only the selected declarations' cone with `--olean`.
+- Overlap export reads with parsing.
+- Check large exports near each declaration's dependencies, keeping tables warm.
 
 ## 0.3.2 (2026-11-05)
 

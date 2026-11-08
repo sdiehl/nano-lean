@@ -14,10 +14,11 @@ use importer::Importer;
 use scan::Batch;
 use std::fs::File;
 use std::io::{self, Read};
+use std::mem::replace;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 use std::thread;
 
 type Result<T> = std::result::Result<T, ExportError>;
@@ -175,7 +176,76 @@ fn import_lines<'a>(
 
 const CHUNK: usize = 16 << 20;
 
-pub fn import_reader(arena: &Arena, mut r: impl Read, len: usize) -> Result<Store<'_>> {
+/// Large or unsized inputs are read on a second thread, so read syscalls and disk waits
+/// overlap with parsing instead of sitting on its path.
+pub fn import_reader(arena: &Arena, r: impl Read + Send, len: usize) -> Result<Store<'_>> {
+    if len != 0 && len <= 2 * CHUNK {
+        return import_serial(arena, r, len);
+    }
+    let mut im = Importer::new(arena, len);
+    let (full_tx, full) = mpsc::sync_channel(READ_AHEAD);
+    let (spent, spent_rx) = mpsc::channel();
+    thread::scope(|s| {
+        s.spawn(move || read_blocks(r, &full_tx, &spent_rx));
+        let mut n = 0;
+        for block in full {
+            let (buf, end): (Vec<u8>, usize) = block?;
+            im.lines(&buf[..end], &mut n)?;
+            spent.send(buf).ok();
+        }
+        im.finish_lines(n)
+    })
+}
+
+const READ_AHEAD: usize = 2;
+
+/// Sends blocks cut at line ends, carrying each partial last line into the next buffer.
+fn read_blocks(
+    mut r: impl Read,
+    full: &mpsc::SyncSender<io::Result<(Vec<u8>, usize)>>,
+    spent: &mpsc::Receiver<Vec<u8>>,
+) {
+    let mut cur = vec![0u8; CHUNK];
+    let mut filled = 0;
+    loop {
+        if filled == cur.len() {
+            cur.resize(2 * cur.len(), 0);
+        }
+        let k = match r.read(&mut cur[filled..]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                full.send(Err(e)).ok();
+                return;
+            }
+            Ok(k) => k,
+        };
+        filled += k;
+        if k == 0 {
+            if filled > 0 {
+                full.send(Ok((cur, filled))).ok();
+            }
+            return;
+        }
+        if filled < cur.len() {
+            continue;
+        }
+        let Some(p) = memchr::memrchr(b'\n', &cur[..filled]) else {
+            continue;
+        };
+        let tail = filled - (p + 1);
+        let mut next = spent.try_recv().unwrap_or_default();
+        if next.len() < CHUNK.max(2 * tail) {
+            next.resize(CHUNK.max(2 * tail), 0);
+        }
+        next[..tail].copy_from_slice(&cur[p + 1..filled]);
+        if full.send(Ok((replace(&mut cur, next), p + 1))).is_err() {
+            return;
+        }
+        filled = tail;
+    }
+}
+
+fn import_serial(arena: &Arena, mut r: impl Read, len: usize) -> Result<Store<'_>> {
     let mut im = Importer::new(arena, len);
     let mut buf = vec![0u8; CHUNK];
     let (mut filled, mut n) = (0, 0);
