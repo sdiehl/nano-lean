@@ -25,6 +25,20 @@ toolchain() { # NAME MODULE [CONSTANT]
   olean-export "${args[@]}" && echo "$1"
 }
 
+# The arena exports with lean4export, whose declaration order differs from olean-export's
+LEAN4EXPORT_REV=df81913
+lean4export() { # NAME MODULE
+  local src=$root/.local/lean4export/$LEAN4EXPORT_REV
+  if [[ ! -x $src/.lake/build/bin/lean4export ]]; then
+    mkdir -p "$src"
+    git clone -q https://github.com/leanprover/lean4export "$src"
+    git -C "$src" checkout -q "$LEAN4EXPORT_REV"
+    echo "$LEAN" >"$src/lean-toolchain"
+    (cd "$src" && lake build -q)
+  fi
+  (cd "$src" && lake env .lake/build/bin/lean4export "$2") >"$out/$1.ndjson" && echo "$1"
+}
+
 mathlib() { # NAME CONSTANT
   if [[ -n ${MATHLIB:-} ]]; then
     (cd "$MATHLIB" && lake env olean-export -q Mathlib -c "$2" -f blean -o "$out/$1.blean") && echo "$1"
@@ -45,6 +59,8 @@ arena() { # NAME
 
 toolchain init Init
 toolchain std Std
+lean4export init-arena Init
+lean4export std-arena Std
 toolchain char-succ Init '_private.Init.Data.Char.Ordinal.0.Char.succ?_eq._proof_1_10'
 toolchain int32-size Init _private.Init.Data.Range.Polymorphic.SInt.0.Int32.instRxcHasSize_eq
 toolchain prev-aux Init String.Slice.Pos.prevAuxGo_le_self

@@ -61,8 +61,20 @@ kind = "all"
 reps = 3
 
 [[bench]]
+name = "corpus/init-arena"
+file = "fixtures/init-arena.ndjson"
+kind = "all"
+reps = 3
+
+[[bench]]
 name = "corpus/std"
 file = "fixtures/std.blean"
+kind = "all"
+reps = 3
+
+[[bench]]
+name = "corpus/std-arena"
+file = "fixtures/std-arena.ndjson"
 kind = "all"
 reps = 3
 
