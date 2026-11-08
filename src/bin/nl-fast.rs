@@ -45,6 +45,9 @@ struct Cli {
     steps: Option<u64>,
     #[arg(long, value_name = "MIB")]
     arena_mib: Option<u32>,
+    /// Keep a worker's tables until its session arena passes MIB
+    #[arg(long, value_name = "MIB")]
+    session_mib: Option<u32>,
     /// Stop after import
     #[arg(long)]
     import_only: bool,
@@ -111,6 +114,7 @@ fn options() -> Options {
     });
     c.steps = cli.steps.or(c.steps);
     c.arena_mib = cli.arena_mib.or(c.arena_mib);
+    c.session_mib = cli.session_mib.or(c.session_mib);
     c.term_core = Some(cli.term_core || c.term_core == Some(true));
     c.fallback = Some(cli.fallback || c.fallback == Some(true));
     c.cache_audit = Some(cli.cache_audit || c.cache_audit == Some(true));

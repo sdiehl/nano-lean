@@ -25,7 +25,7 @@ const WORKER_STACK_BYTES: usize = 256 << 20;
 const FAILURES_SHOWN: usize = 30;
 const TICK: Duration = Duration::from_millis(250);
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
-const SESSION_BYTES: usize = 64 << 20;
+pub const DEFAULT_SESSION_MIB: u32 = 64;
 
 /// The same settings as the `nl-fast` flags, which override them.
 #[derive(Default, Deserialize)]
@@ -35,6 +35,7 @@ pub struct Config {
     pub import_threads: Option<u16>,
     pub steps: Option<u64>,
     pub arena_mib: Option<u32>,
+    pub session_mib: Option<u32>,
     pub fallback: Option<bool>,
     pub term_core: Option<bool>,
     pub prelude: Option<PathBuf>,
@@ -94,6 +95,7 @@ impl Config {
             cache_audit: self.cache_audit == Some(true),
             core: self.core(),
             limits: self.limits(),
+            session_bytes: self.session_mib.unwrap_or(DEFAULT_SESSION_MIB) as usize * MIB,
         }
     }
 }
@@ -116,6 +118,8 @@ pub struct Checks {
     pub cache_audit: bool,
     pub core: Core,
     pub limits: Limits,
+    /// Session arena size past which a worker drops its tables and starts afresh.
+    pub session_bytes: usize,
 }
 
 impl Checks {
@@ -270,7 +274,7 @@ impl Checks {
                                 }
                                 if o.core == Core::Term
                                     || r.is_err()
-                                    || session.arena().allocated_bytes() > SESSION_BYTES
+                                    || session.arena().allocated_bytes() > o.session_bytes
                                 {
                                     #[cfg(feature = "vstats")]
                                     value_checker::RESETS.fetch_add(1, Relaxed);
