@@ -2,7 +2,7 @@ use clap::{Parser, value_parser};
 use nano_lean::export::ExportError;
 use nano_lean::fast::{self, Checks, Config, MAX_THREADS};
 use nano_lean::import::{self, blean};
-use nano_lean::term::{arena::Arena, intern::Store};
+use nano_lean::term::{arena::Arena, decl::Declar, intern::Store};
 use std::collections::HashSet;
 use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
@@ -51,6 +51,9 @@ struct Cli {
     /// Check in export order instead of near each declaration's dependencies
     #[arg(long)]
     no_reorder: bool,
+    /// Check what a module view imports too, instead of taking it as given
+    #[arg(long)]
+    check_imports: bool,
     /// Stop after import
     #[arg(long)]
     import_only: bool,
@@ -90,6 +93,7 @@ struct Options {
     only: Option<HashSet<String>>,
     limit: usize,
     import_only: bool,
+    check_imports: bool,
     reorder: bool,
     import_threads: usize,
     prelude: Option<PathBuf>,
@@ -130,6 +134,7 @@ fn options() -> Options {
         only: cli.only.as_deref().map(names),
         limit: cli.limit.unwrap_or(usize::MAX),
         import_only: cli.import_only,
+        check_imports: cli.check_imports,
         reorder: !cli.no_reorder && cli.limit.is_none(),
         import_threads: cli.import_threads.or(c.import_threads).unwrap_or(1).into(),
         checks: c.checks(
@@ -238,8 +243,21 @@ fn main() {
     if let Some(a) = &o.axioms {
         import::check_axioms(&store, a).unwrap_or_else(|e| exit_on(&e));
     }
+    let own = if o.check_imports { 0 } else { store.own };
+    // Reordering moves declarations, so the view's imports are found again by name.
+    let given: Vec<_> = store.declars[..own as usize]
+        .iter()
+        .map(Declar::name)
+        .collect();
     if o.reorder {
         nano_lean::reorder::reorder(&mut store);
+    }
+    let mut imported = vec![false; if own > 0 { store.declars.len() } else { 0 }];
+    for i in given.iter().filter_map(|n| n.decl_idx()) {
+        imported[i as usize] = true;
+    }
+    if own > 0 && !o.quiet {
+        eprintln!("view takes {own} imported declarations as given");
     }
     if o.import_only {
         process::exit(0);
@@ -249,12 +267,13 @@ fn main() {
         .declars
         .iter()
         .enumerate()
-        .filter(|(_, d)| {
-            !filtered || {
-                let name = d.name().to_string();
-                o.selected.as_ref().is_none_or(|s| name == *s)
-                    && o.only.as_ref().is_none_or(|set| set.contains(&name))
-            }
+        .filter(|&(i, d)| {
+            imported.get(i) != Some(&true)
+                && (!filtered || {
+                    let name = d.name().to_string();
+                    o.selected.as_ref().is_none_or(|s| name == *s)
+                        && o.only.as_ref().is_none_or(|set| set.contains(&name))
+                })
         })
         .take(o.limit)
         .map(|(i, d)| match store.blocks.get(&d.name()) {

@@ -18,6 +18,7 @@ impl<'a> Importer<'a> {
             return invalid("expected object");
         };
         if first {
+            self.imported = v[META]["view"]["imported"].as_u64().unwrap_or(0);
             return metadata(v, o);
         }
         if let Some(id) = v.get(Ref::Name.key()) {
@@ -33,7 +34,8 @@ impl<'a> Importer<'a> {
             return invalid("malformed declaration entry");
         }
         let (kind, d) = o.iter().next().expect("length checked above");
-        self.declaration(kind, d)
+        self.declaration(kind, d)?;
+        self.seen()
     }
 
     fn name_entry(&mut self, i: u32, v: &Value, o: &Map<String, Value>) -> Result<()> {

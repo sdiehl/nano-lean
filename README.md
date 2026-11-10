@@ -31,6 +31,9 @@ nl-fast --prelude init.blean FILE.blean
 # Skip declarations a previous run accepted
 nl-fast --cache FILE.accepted FILE.blean
 
+# Check one module over its imports' interfaces, from `olean-export join -m`
+nl-fast VIEW.blean [--check-imports]
+
 # Check one declaration straight from oleans, decoding only the proofs it needs
 nl-fast --olean Init --declaration Nat.add_comm
 

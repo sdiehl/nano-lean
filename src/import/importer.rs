@@ -29,6 +29,8 @@ pub(super) struct Importer<'a> {
     scratch: Vec<u32>,
     deps: Recorder<'a>,
     track: bool,
+    pub(super) imported: u64,
+    own: u32,
 }
 
 /// Records which earlier declarations each declaration's lines reach. Every node keeps a summary
@@ -240,6 +242,8 @@ impl<'a> Importer<'a> {
                 ..Recorder::default()
             },
             track: bytes == 0 || bytes >= RECORD_BYTES,
+            imported: 0,
+            own: 0,
         }
     }
 
@@ -595,8 +599,11 @@ impl<'a> Importer<'a> {
     fn listed(&mut self, l: Line, us: &[u32]) -> Result<()> {
         match l {
             Line::Const(i, n) => self.do_const(i, n, us),
-            Line::Thm(n, ty, val) => self.do_thm(n, us, ty, val),
-            Line::Def(n, ty, val, h) => self.do_def(n, us, ty, val, h, "safe"),
+            Line::Thm(n, ty, val) => self.do_thm(n, us, ty, val).and_then(|()| self.seen()),
+            Line::Def(n, ty, val, h) => {
+                self.do_def(n, us, ty, val, h, "safe")?;
+                self.seen()
+            }
             _ => unreachable!("only listed lines carry a universe list"),
         }
     }
@@ -642,7 +649,19 @@ impl<'a> Importer<'a> {
         }
     }
 
+    /// Called after each declaration record, the first `imported` of which are a view's imports.
+    pub(super) fn seen(&mut self) -> Result<()> {
+        if self.imported > 0 {
+            self.imported -= 1;
+            self.own = self.declars.len() as u32;
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(mut self) -> Result<Store<'a>> {
+        if self.imported > 0 {
+            return invalid("view imports more declarations than the export holds");
+        }
         self.stats.expressions = self.exprs.filled();
         self.names = Table::new(Vec::new());
         self.levels = Table::new(Vec::new());
@@ -667,6 +686,7 @@ impl<'a> Importer<'a> {
             anon: self.anon,
             zero: self.zero,
             declars: self.declars,
+            own: self.own,
             blocks: self.blocks,
             names,
             stats: self.stats,

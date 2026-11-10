@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Check only a module's own declarations in an `olean-export join -m` view.
+- Add `--check-imports` to check a view's imported declarations too.
+
 ## 0.3.3 (2026-11-09)
 
 - Update `olean-export` dependency to latest version.

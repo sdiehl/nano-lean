@@ -350,6 +350,8 @@ pub struct Store<'a> {
     pub anon: NamePtr<'a>,
     pub zero: LevelPtr<'a>,
     pub declars: Vec<Declar<'a>>,
+    /// Where a module's own declarations start in a view, after those its imports gave it.
+    pub own: u32,
     pub blocks: FxHashMap<NamePtr<'a>, Block>,
     pub names: Names<'a>,
     pub stats: Stats,
