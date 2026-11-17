@@ -380,7 +380,12 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     pub(crate) fn nat(&mut self, n: BigUint) -> V<'t> {
         stat!(self, nat_req);
-        if let Some(&v) = self.t.nats.get(&n) {
+        let h = nat::hash(&n);
+        if let Some(&(_, v)) = self
+            .t
+            .nats
+            .find(h, |&(g, v)| g == h && matches!(v.k, K::Nat(p) if *p == n))
+        {
             return v;
         }
         bytes!(
@@ -388,9 +393,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             b_nat,
             size_of::<Val>() + size_of::<BigUint>() + n.bits().div_ceil(64) as usize * 8
         );
-        let p = self.ctx.arena.alloc_nat(n.clone());
+        let p = self.ctx.arena.alloc_nat(n);
         let v = &*self.ctx.arena.alloc(Val::new(K::Nat(p), false));
-        self.t.nats.insert(n, v);
+        self.t.nats.insert_unique(h, (h, v), |e| e.0);
         v
     }
 
@@ -414,13 +419,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.apply(f, &[out])
     }
 
-    fn nat_val(&mut self, v: V<'t>) -> R<Option<BigUint>> {
+    fn nat_val(&mut self, v: V<'t>) -> R<Option<&'t BigUint>> {
         let w = self.whnf(v)?;
         Ok(match w.k {
-            K::Nat(n) => Some(n.clone()),
-            K::Neu(Head::Const(n, _), []) if Some(n) == self.names.nat_zero => {
-                Some(BigUint::zero())
-            }
+            K::Nat(n) => Some(n),
+            K::Neu(Head::Const(n, _), []) if Some(n) == self.names.nat_zero => Some(&nat::ZERO),
             _ => None,
         })
     }

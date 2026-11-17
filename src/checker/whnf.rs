@@ -413,11 +413,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Ok(self.ctx.app(f, out))
     }
 
-    fn nat_val(&mut self, e: ExprPtr<'t>) -> R<Option<BigUint>> {
+    fn nat_val(&mut self, e: ExprPtr<'t>) -> R<Option<&'t BigUint>> {
         let w = self.whnf(e)?;
         Ok(match *w {
-            Expr::NatLit { n, .. } => Some(n.as_ref().clone()),
-            Expr::Const { name, .. } if Some(name) == self.names.nat_zero => Some(BigUint::zero()),
+            Expr::NatLit { n, .. } => Some(n.as_ref()),
+            Expr::Const { name, .. } if Some(name) == self.names.nat_zero => Some(&nat::ZERO),
             _ => None,
         })
     }

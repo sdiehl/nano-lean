@@ -143,7 +143,7 @@ In `nano-lean.toml`, `cache = "mathlib.accepted"` turns it on and `--no-cache` t
 ```toml
 threads = 10
 steps = 200000000
-arena_mib = 3072
+arena_mib = 4096
 session_mib = 64
 fallback = false
 term_core = false

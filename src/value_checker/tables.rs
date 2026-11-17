@@ -4,7 +4,6 @@ use crate::term::FxHashMap;
 use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
 use hashbrown::HashTable;
 use hashbrown::hash_table::Entry;
-use num_bigint::BigUint;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Borrow;
 use std::cell::RefCell;
@@ -134,7 +133,8 @@ pub(super) struct Tables<'t> {
     pub(super) prunes: Lossy<(usize, u32), Env<'t>, 12>,
     pub(super) frames: [Logged<&'t Ptrs<'t>, Env<'t>>; 2],
     pub(super) lazies: [Set<'t, Lazy<'t>>; 2],
-    pub(super) nats: FxHashMap<BigUint, V<'t>>,
+    /// Literals with their hashes, keyed by the arena's copy.
+    pub(super) nats: HashTable<(u64, V<'t>)>,
 }
 
 impl<'t> Tables<'t> {
@@ -237,10 +237,14 @@ impl Tables<'_> {
             rules,
             support,
             arg_support,
-            nats,
             infer_closed.0[0],
             infer_closed.0[1]
         );
+        if nats.len() > keep {
+            *nats = HashTable::new();
+        } else {
+            nats.clear();
+        }
         for l in [eq_cache, fail_cache, neq_cache] {
             l.empty(keep);
         }

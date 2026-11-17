@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-17)
 
-- Check only a module's own declarations in an `olean-export join -m` view.
-- Add `--check-imports` to check a view's imported declarations too.
+- Check only a module's own declarations in `join -m` views.
+- Add `--check-imports` to check imported declarations too.
+- Store each big `Nat` literal once, halving memory.
+- Hash big `Nat` literals in one pass.
+- Skip zero limbs in long by short `Nat` multiplication.
+- Raise the default arena budget to 4096 MiB.
+- Retry in a fresh session only after a warm one.
 
 ## 0.3.3 (2026-11-09)
 

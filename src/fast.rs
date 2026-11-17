@@ -20,7 +20,8 @@ use std::{fs, io::ErrorKind};
 const PROGRESS_TEMPLATE: &str = "{spinner:.green} [{elapsed_precise}] {wide_bar:.cyan/blue} {pos}/{len} {per_sec} ETA {eta_precise} {msg}";
 pub const CONFIG: &str = "nano-lean.toml";
 pub const DEFAULT_STEPS: u64 = 200_000_000;
-pub const DEFAULT_ARENA_MIB: u32 = 3072;
+pub const DEFAULT_ARENA_MIB: u32 = 4096;
+const WARM_SHARE: usize = 16;
 pub const MAX_THREADS: i64 = 64;
 const MIB: usize = 1 << 20;
 const WORKER_STACK_BYTES: usize = 256 << 20;
@@ -252,7 +253,9 @@ impl Checks {
                                 if o.trace {
                                     eprintln!("start {idx} {}", store.declars[idx as usize].name());
                                 }
-                                let warm = session.arena().used_bytes() > 0;
+                                // A fresh session only rescues a declaration the warm one starved.
+                                let warm = session.arena().used_bytes()
+                                    > o.limits.arena_bytes / WARM_SHARE;
                                 let mut r = o.core.check(
                                     store,
                                     &mut session,
