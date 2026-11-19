@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 (2026-11-19)
+
+- Hash big `Nat` literals and multiply sparse ones faster.
+
 ## 0.4.0 (2026-11-17)
 
 - Check only a module's own declarations in `join -m` views.
