@@ -236,7 +236,7 @@ fn main() {
             load(&arena, path, threads)
         }
     };
-    fast::release_import_memory();
+    fast::release_import_memory(o.checks.threads);
     let s = store.stats;
     if !o.quiet {
         eprintln!(

@@ -258,7 +258,7 @@ impl Watch {
         };
         let arena = Arena::new();
         let store = import::from_env(&arena, env).map_err(|e| e.to_string())?;
-        fast::release_import_memory();
+        fast::release_import_memory(self.checks.threads);
         if let Some(p) = &self.config.prelude {
             let arena = Arena::new();
             let reference = import::import(&arena, p).map_err(|e| e.to_string())?;

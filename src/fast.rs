@@ -109,13 +109,18 @@ fn budget_exhausted<T>(r: &Result<T, Failure>) -> bool {
     matches!(r, Err(Failure::Declined(Decline::Exhausted(Budget::Arena))))
 }
 
-/// Returns freed import buffers to the OS, and keeps later frees mapped for reuse.
-pub fn release_import_memory() {
+/// Returns freed import buffers to the OS. Up to `KEEP_FREED_THREADS` workers, later frees stay
+/// mapped for reuse, which saves instructions; beyond that, each worker would keep its peak
+/// declaration resident, so frees are purged as usual.
+pub fn release_import_memory(threads: usize) {
     const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+    const KEEP_FREED_THREADS: usize = 16;
     // SAFETY: plain mimalloc calls, and -1 disables the purge delay.
     unsafe {
         libmimalloc_sys::mi_collect(true);
-        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, -1);
+        if threads <= KEEP_FREED_THREADS {
+            libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, -1);
+        }
     }
 }
 
