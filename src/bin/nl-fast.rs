@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Instant;
 use std::{fs, process};
 
+const BIG_EXPORT: u64 = 16 << 30;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -28,7 +30,8 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(short = 'j', long, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     threads: Option<u16>,
-    /// Threads importing ndjson, one builder plus scanners. 1, the default, reads serially
+    /// Threads importing ndjson, one builder plus scanners. By default 2 for exports over 16 GiB
+    /// when checking with more than one thread, otherwise 1, which reads serially
     #[arg(long, value_name = "N", value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     import_threads: Option<u16>,
     /// Check only this declaration
@@ -95,7 +98,7 @@ struct Options {
     import_only: bool,
     check_imports: bool,
     reorder: bool,
-    import_threads: usize,
+    import_threads: Option<usize>,
     prelude: Option<PathBuf>,
     axioms: Option<Vec<String>>,
     cache: Option<PathBuf>,
@@ -136,7 +139,7 @@ fn options() -> Options {
         import_only: cli.import_only,
         check_imports: cli.check_imports,
         reorder: !cli.no_reorder && cli.limit.is_none(),
-        import_threads: cli.import_threads.or(c.import_threads).unwrap_or(1).into(),
+        import_threads: cli.import_threads.or(c.import_threads).map(usize::from),
         checks: c.checks(
             cli.threads.or(c.threads).unwrap_or(1).into(),
             cli.trace,
@@ -220,7 +223,18 @@ fn main() {
             )
             .unwrap_or_else(|e| exit_on(&e))
         }
-        None => load(&arena, o.path.as_deref().map(Path::new), o.import_threads),
+        None => {
+            let path = o.path.as_deref().map(Path::new);
+            // Scanning helpers cost instructions, so only exports too big to read serially get them.
+            let big = || {
+                path.and_then(|p| p.metadata().ok())
+                    .is_some_and(|m| m.len() > BIG_EXPORT)
+            };
+            let threads = o
+                .import_threads
+                .unwrap_or(if o.checks.threads > 1 && big() { 2 } else { 1 });
+            load(&arena, path, threads)
+        }
     };
     fast::release_import_memory();
     let s = store.stats;

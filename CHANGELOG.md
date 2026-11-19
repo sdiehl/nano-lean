@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Import exports over 16 GiB with two threads by default.
+- Allow up to 1024 checking threads.
+
 ## 0.4.1 (2026-11-19)
 
 - Hash big `Nat` literals and multiply sparse ones faster.
