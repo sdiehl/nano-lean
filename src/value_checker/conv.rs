@@ -5,6 +5,7 @@ use crate::term::decl::{Declar, Hint};
 use crate::term::expr::Expr;
 use crate::term::level::Level;
 use crate::term::ptr::{ExprPtr, LevelPtr};
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::ptr;
 use std::rc::Rc;
@@ -14,6 +15,8 @@ const PROBE_BUDGET: u64 = 16384;
 /// Under a head that unfolds cheaply, such as a projection, a probe gives up sooner: unfolding
 /// usually settles it, and the probes that do succeed nearly all finish well within this.
 const CHEAP_PROBE_BUDGET: u64 = 1024;
+/// Forms lazy delta keeps from the side it unfolds, to meet the other side on a shared head.
+const PAST: usize = 4;
 
 const SAME_FUEL: u32 = 512;
 
@@ -36,6 +39,16 @@ fn zero(l: LevelPtr<'_>) -> bool {
 #[inline]
 fn same_code(a: Clo<'_>, b: Clo<'_>) -> bool {
     a.body == b.body && a.typed == b.typed && a.sub == b.sub
+}
+
+#[inline]
+fn remember<'t>(past: &mut SmallVec<[(bool, V<'t>); PAST]>, right: bool, v: V<'t>, h: Hint) {
+    if past.len() < PAST
+        && matches!(h, Hint::Regular(_))
+        && matches!(v.k, K::Neu(Head::Const(..), args) if !args.is_empty())
+    {
+        past.push((right, v));
+    }
 }
 
 #[inline]
@@ -491,6 +504,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     #[allow(clippy::type_complexity)]
     fn lazy_delta(&mut self, mut t: V<'t>, mut s: V<'t>) -> R<Result<bool, (V<'t>, V<'t>)>> {
+        let mut past: SmallVec<[(bool, V<'t>); PAST]> = SmallVec::new();
         loop {
             if let Some(r) = self.offset(t, s)? {
                 return Ok(Ok(r));
@@ -503,13 +517,23 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                     return Ok(Ok(self.def_eq_core(t, sv)?));
                 }
             }
-            match (self.delta_hint(t), self.delta_hint(s)) {
+            let (ht, hs) = (self.delta_hint(t), self.delta_hint(s));
+            if !past.is_empty() && self.met_past(t, s, &past)? {
+                return Ok(Ok(true));
+            }
+            match (ht, hs) {
                 (None, None) => return Ok(Err((t, s))),
                 (Some(_), None) => t = self.unfold_core(t)?,
                 (None, Some(_)) => s = self.unfold_core(s)?,
                 (Some(ht), Some(hs)) => match unfold_order(ht, hs) {
-                    Ordering::Less => t = self.unfold_core(t)?,
-                    Ordering::Greater => s = self.unfold_core(s)?,
+                    Ordering::Less => {
+                        remember(&mut past, false, t, ht);
+                        t = self.unfold_core(t)?;
+                    }
+                    Ordering::Greater => {
+                        remember(&mut past, true, s, hs);
+                        s = self.unfold_core(s)?;
+                    }
                     Ordering::Equal => {
                         if let (K::Neu(Head::Const(a, la), ta), K::Neu(Head::Const(b, lb), sa)) =
                             (t.k, s.k)
@@ -531,6 +555,25 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 return Ok(Ok(r));
             }
         }
+    }
+
+    /// A side that lands on a head the other side unfolded through meets that earlier form,
+    /// which reduces to the other side, so equal arguments there settle the comparison.
+    #[cold]
+    #[inline(never)]
+    fn met_past(&mut self, t: V<'t>, s: V<'t>, past: &[(bool, V<'t>)]) -> R<bool> {
+        for &(right, p) in past {
+            let cur = if right { t } else { s };
+            if let (K::Neu(Head::Const(a, la), ca), K::Neu(Head::Const(b, lb), pa)) = (cur.k, p.k)
+                && a == b
+                && ca.len() == pa.len()
+                && self.levels_eq(la, lb)?
+                && self.probe_args(cur, p, PROBE_BUDGET)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn heads_eq(&mut self, a: Head<'t>, b: Head<'t>) -> R<bool> {
