@@ -1,6 +1,7 @@
 .DS_Store
 /target
 /.local
-/scripts/
+/scripts/*
+!/scripts/pgo.sh
 /reports/
 /benches/fixtures/

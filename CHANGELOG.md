@@ -5,6 +5,8 @@
 - Import exports over 16 GiB with two threads by default.
 - Allow up to 1024 checking threads.
 - Return freed memory to the OS above 16 threads.
+- Meet earlier unfoldings in lazy delta, fixing `loop-unfolded-once`.
+- Add `scripts/pgo.sh`, training on a released Init export.
 
 ## 0.4.1 (2026-11-19)
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds target/release/nl-fast with a profile from checking Init, an export kept as a release asset.
 set -eu
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 TAG=pgo-data-1
 SHA=be43e8fc8fa3f9212f6bf005a924834af5cbfdb2ec6b7524fc85efbaf5c6a76e
@@ -20,6 +20,7 @@ fi
 
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 PROFDATA=$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-profdata
+[ -x "$PROFDATA" ] || PROFDATA=llvm-profdata
 RAW=$(mktemp -d "$D/raw.XXXXXX")
 
 RUSTFLAGS="$FLAGS -Cprofile-generate=$PWD/$RAW" cargo build --release --locked --bin nl-fast
