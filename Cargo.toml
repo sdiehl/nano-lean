@@ -1,6 +1,6 @@
 [package]
 name = "nano-lean"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 default-run = "nl-ref"
 description = "A small dependent type checker built with unbound"

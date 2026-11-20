@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (2026-11-20)
 
 - Import exports over 16 GiB with two threads by default.
 - Allow up to 1024 checking threads.
