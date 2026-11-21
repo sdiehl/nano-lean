@@ -4,7 +4,7 @@
 
 # nano-lean
 
-A minimalist (but complete) parallel Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders.
+A minimalist (but complete) parallel Lean type checker in Rust built on [unbound](https://github.com/sdiehl/unbound), using de Bruijn indices for binders. Designed for checking enormous proofs at the AI frontier like Fermat's Last Theorem, the Riemann Hypothesis, Navier-Stokes, the Classification of Finite Simple Groups, etc. in reasonable time and space complexity on stock hardware.
 
 We built it on NbE (normalization by evaluation), in the Berger and Schwichtenberg tradition which is why it's so fast, because beta reduction is just an environment push and every value remembers its own normal form.
 
