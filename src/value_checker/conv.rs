@@ -20,6 +20,9 @@ const PAST: usize = 4;
 
 const SAME_FUEL: u32 = 512;
 
+/// A decision, or the two sides lazy delta stopped at.
+type Delta<'t> = Result<bool, (V<'t>, V<'t>)>;
+
 fn probe_budget(h: Hint) -> u64 {
     match h {
         Hint::Regular(_) => PROBE_BUDGET,
@@ -367,10 +370,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.probe_outer = Some(outer);
         let r = self.args_eq(t, s);
         let used = budget - self.steps_left;
-        #[cfg(feature = "vstats")]
-        {
-            self.stats.probe_ticks += used;
-        }
+        stat!(self, probe_ticks, used);
         self.steps_left = outer - used;
         self.probe_outer = None;
         if r.is_err() {
@@ -502,8 +502,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    fn lazy_delta(&mut self, mut t: V<'t>, mut s: V<'t>) -> R<Result<bool, (V<'t>, V<'t>)>> {
+    fn lazy_delta(&mut self, mut t: V<'t>, mut s: V<'t>) -> R<Delta<'t>> {
         let mut past: SmallVec<[(bool, V<'t>); PAST]> = SmallVec::new();
         loop {
             if let Some(r) = self.offset(t, s)? {

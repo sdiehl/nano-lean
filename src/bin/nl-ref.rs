@@ -121,9 +121,5 @@ fn finish(result: Result<(), Box<dyn Error>>) -> ExitCode {
 
 fn print_report(report: &Report) -> ExitCode {
     println!("{report}");
-    ExitCode::from(match report {
-        Report::Checked { .. } | Report::ShardChecked(_) => 0,
-        Report::Rejected { .. } => 1,
-        Report::Unsupported { .. } => 2,
-    })
+    ExitCode::from(report.exit_code())
 }

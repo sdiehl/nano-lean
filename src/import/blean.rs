@@ -1,7 +1,7 @@
 //! Blean reader. Rare metadata and declaration records are rendered as NDJSON to share its validation.
 
 use super::importer::{BYTES_PER_LINE, Importer};
-use super::{ExportError, Result, invalid};
+use crate::error::{ExportError, Result, invalid};
 use crate::term::arena::Arena;
 use crate::term::intern::Store;
 use memmap2::{Advice, Mmap};
@@ -48,11 +48,11 @@ const U64_BYTES: usize = 10;
 const U64_LAST: u8 = 0x01;
 
 fn corrupt(e: impl Display) -> ExportError {
-    ExportError::Invalid(format!("blean: {e}"))
+    invalid(format!("blean: {e}"))
 }
 
 fn truncated<T>() -> Result<T> {
-    invalid("blean: truncated record")
+    Err(invalid("blean: truncated record"))
 }
 
 fn line(r: &Record<'_>, buf: &mut Vec<u8>) -> Result<Value> {
@@ -93,7 +93,7 @@ impl<'b> Cur<'b> {
                 return Ok(v);
             }
         }
-        invalid("blean: bad varint")
+        Err(invalid("blean: bad varint"))
     }
 
     #[inline(always)]
@@ -110,7 +110,7 @@ impl<'b> Cur<'b> {
         match self.byte()? {
             0 => Ok(false),
             1 => Ok(true),
-            _ => invalid("blean: bad bool"),
+            _ => Err(invalid("blean: bad bool")),
         }
     }
 
@@ -125,12 +125,12 @@ impl<'b> Cur<'b> {
     fn str(&mut self) -> Result<&'b str> {
         let n = self.u32()? as usize;
         let s = self.take(n)?;
-        str::from_utf8(s).or_else(|_| invalid("blean: bad utf-8"))
+        str::from_utf8(s).map_err(|_| invalid("blean: bad utf-8"))
     }
 
     fn binding(&mut self) -> Result<(u32, u32, u32)> {
         if self.u32()? >= BINDERS {
-            return invalid("blean: bad binder");
+            return Err(invalid("blean: bad binder"));
         }
         Ok((self.u32()?, self.u32()?, self.u32()?))
     }
@@ -178,10 +178,10 @@ pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
         let start = cur.at;
         let t = cur.u32()?;
         if n == 0 && t != tag::META {
-            return invalid("missing export metadata");
+            return Err(invalid("missing export metadata"));
         }
         let done = match t {
-            tag::META if n > 0 => invalid("metadata after the first record"),
+            tag::META if n > 0 => Err(invalid("metadata after the first record")),
             tag::META | tag::DECL => {
                 let r = cur.record(start)?;
                 line(&r, &mut buf).and_then(|v| im.general(&v, n == 0))
@@ -189,7 +189,7 @@ pub(super) fn read<'a>(arena: &'a Arena, bytes: &[u8]) -> Result<Importer<'a>> {
             tag::END => {
                 let end: Counts = postcard::from_bytes(cur.take(END_BYTES)?).map_err(corrupt)?;
                 if end != next || cur.at != cur.b.len() {
-                    return invalid("blean: bad end record");
+                    return Err(invalid("blean: bad end record"));
                 }
                 return Ok(im);
             }
@@ -257,20 +257,20 @@ impl<'a> Records<'a> {
     /// The store, or the first error a record raised.
     pub fn finish(self) -> Result<Store<'a>> {
         self.done
-            .unwrap_or_else(|| invalid("export ended without an end record"))
+            .unwrap_or_else(|| Err(invalid("export ended without an end record")))
     }
 
     fn take(&mut self, r: &Record<'_>) -> Result<()> {
         let Some(im) = self.im.as_mut() else {
-            return invalid("record after the end record");
+            return Err(invalid("record after the end record"));
         };
         let (n, i) = (self.n, self.next.assign(r).unwrap_or_default());
         self.n += 1;
         if n == 0 && !matches!(r, Record::Meta(_)) {
-            return invalid("missing export metadata");
+            return Err(invalid("missing export metadata"));
         }
         match r {
-            Record::Meta(_) if n > 0 => invalid("metadata after the first record"),
+            Record::Meta(_) if n > 0 => Err(invalid("metadata after the first record")),
             Record::Meta(_) | Record::Decl(_) => {
                 line(r, &mut self.buf).and_then(|v| im.general(&v, n == 0))
             }
@@ -360,7 +360,7 @@ fn expr(im: &mut Importer<'_>, cur: &mut Cur<'_>, us: &mut Vec<u32>, t: u32, i: 
             im.do_proj(i, n, idx, cur.u32()?)
         }
         tag::MDATA => im.alias(i, cur.u32()?),
-        _ => invalid("blean: unknown record"),
+        _ => Err(invalid("blean: unknown record")),
     }
 }
 

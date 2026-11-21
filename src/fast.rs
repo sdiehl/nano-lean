@@ -1,12 +1,14 @@
 //! The parallel checking loop behind `nl-fast` and `nl-watch`.
 
 use crate::cache::Cache;
-use crate::checker::{Adapter, CheckPath, Limits};
+use crate::checker::{Adapter, CheckPath, Core, Limits};
+use crate::error::ExportError;
+use crate::import;
 use crate::resource::Budget;
+use crate::term::arena::Arena;
 use crate::term::intern::Store;
 use crate::term::outcome::{Decline, Failure};
 use crate::value_checker::{self, Session};
-use crate::verdict::Core;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::io::{self, IsTerminal, Write};
@@ -39,12 +41,15 @@ pub struct Config {
     pub steps: Option<u64>,
     pub arena_mib: Option<u32>,
     pub session_mib: Option<u32>,
-    pub fallback: Option<bool>,
-    pub term_core: Option<bool>,
+    #[serde(default)]
+    pub fallback: bool,
+    #[serde(default)]
+    pub term_core: bool,
     pub prelude: Option<PathBuf>,
     pub axioms: Option<Vec<String>>,
     pub cache: Option<PathBuf>,
-    pub cache_audit: Option<bool>,
+    #[serde(default)]
+    pub cache_audit: bool,
 }
 
 impl Config {
@@ -74,8 +79,21 @@ impl Config {
         Ok(c)
     }
 
+    /// Rejects `store` unless its primitives match the trusted prelude and it declares only
+    /// permitted axioms.
+    pub fn admit(&self, store: &Store<'_>) -> Result<(), ExportError> {
+        if let Some(p) = &self.prelude {
+            let arena = Arena::new();
+            import::check_prelude(store, &import::import(&arena, p)?)?;
+        }
+        if let Some(a) = &self.axioms {
+            import::check_axioms(store, a)?;
+        }
+        Ok(())
+    }
+
     pub fn core(&self) -> Core {
-        if self.term_core == Some(true) {
+        if self.term_core {
             Core::Term
         } else {
             Core::Value
@@ -94,12 +112,24 @@ impl Config {
             threads,
             trace,
             quiet,
-            native_only: self.fallback != Some(true),
-            cache_audit: self.cache_audit == Some(true),
+            native_only: !self.fallback,
+            cache_audit: self.cache_audit,
             core: self.core(),
             limits: self.limits(),
             session_bytes: self.session_mib.unwrap_or(DEFAULT_SESSION_MIB) as usize * MIB,
         }
+    }
+}
+
+/// Installs `handler` for SIGINT and SIGTERM.
+///
+/// # Safety
+///
+/// `handler` must be async-signal-safe.
+pub unsafe fn on_signals(handler: extern "C" fn(libc::c_int)) {
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: the caller guarantees the handler is async-signal-safe.
+        unsafe { libc::signal(sig, handler as *const () as libc::sighandler_t) };
     }
 }
 
@@ -143,12 +173,7 @@ impl Checks {
         path: &Path,
     ) -> io::Result<Option<Cache<'a>>> {
         let t = Instant::now();
-        let core = if self.core == Core::Term {
-            "term"
-        } else {
-            "value"
-        };
-        let c = Cache::open(store, path, core, self.cache_audit)?;
+        let c = Cache::open(store, path, self.core, self.cache_audit)?;
         if !self.quiet {
             eprintln!("cache keys {:.2?}", t.elapsed());
         }

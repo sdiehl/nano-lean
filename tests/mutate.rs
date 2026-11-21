@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use clap::ValueEnum;
 use nano_lean::{
     checker::Limits,
     mutate::{self, Operator, Rng},
@@ -20,7 +21,7 @@ fn seeded_sweep_finds_nothing() {
     for name in ["ordinary.ndjson", "mutual.ndjson", "primitives.ndjson"] {
         let lines = fixture(name);
         let baseline = mutate::check(&lines, Limits::default());
-        for op in Operator::ALL {
+        for &op in Operator::value_variants() {
             let mut candidates = mutate::mutants(&lines, op);
             while candidates.len() > 8 {
                 candidates.swap_remove(rng.below(candidates.len()));

@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod checker;
 pub mod emit;
+mod error;
 pub mod export;
 pub mod fast;
 pub mod import;
@@ -14,7 +15,7 @@ pub mod parser;
 mod profile;
 pub mod reorder;
 mod resource;
-pub mod schema;
+mod schema;
 pub mod syntax;
 pub mod term;
 pub mod value_checker;
@@ -22,3 +23,5 @@ pub mod verdict;
 
 pub use kernel::{Environment, Error};
 pub use resource::Budget;
+pub(crate) use term::hash64;
+pub(crate) use term::outcome::{ensure, reject};

@@ -1,7 +1,7 @@
 use super::intern::Ptrs;
 use super::tables::{Mode, fx, fx_at};
 use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
-use super::{R, Vc, bytes, stat};
+use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::resource::stack_exhausted;
 use crate::term::decl::Declar;
@@ -32,10 +32,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, push_req);
         let k = (key(v), env.key());
         let open = v.open || env.open();
-        #[cfg(feature = "vstats")]
-        {
-            self.stats.push_open_req += u64::from(open);
-        }
+        stat!(self, push_open_req, open);
         let h = match self.t.envs[usize::from(open)].probe_hashed(fx_at(self.fxk, &k), &k) {
             Ok(&e) => return e,
             Err(h) => h,
@@ -47,11 +44,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     fn push_new(&mut self, env: Env<'t>, v: V<'t>, open: bool, h: u64) -> Env<'t> {
         let k = (key(v), env.key());
         stat!(self, push_new);
-        #[cfg(feature = "vstats")]
-        {
-            self.stats.push_open_new += u64::from(open);
-        }
-        bytes!(self, b_env, size_of::<EnvObj>());
+        stat!(self, push_open_new, open);
+        stat!(self, b_env, size_of::<EnvObj>());
         let (base, depth) = match env.view() {
             View::Node(n) => (n.base, n.depth),
             _ => (env, 0),
@@ -327,7 +321,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         {
             return d;
         }
-        bytes!(self, b_lazy, size_of::<Lazy>());
+        stat!(self, b_lazy, size_of::<Lazy>());
         let d = &*self.ctx.arena.alloc(Lazy {
             env,
             sub,
@@ -534,7 +528,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Err(h) => h,
         };
         stat!(self, frame_new);
-        bytes!(self, b_frame, size_of::<EnvObj>() + size_of_val(vals));
+        stat!(self, b_frame, size_of::<EnvObj>() + size_of_val(vals));
         let vals: &'t [V<'t>] = self.ctx.arena.alloc_slice_copy(vals);
         let f = Env::new(self.ctx.arena.alloc(EnvObj::Frame(Frame { vals, open })));
         self.t.frames[o].insert_new(h, Ptrs::new(vals), f);
@@ -609,14 +603,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 K::Neu(h, sp) => {
                     stat!(self, beta_neu);
                     let rest = &args[i..];
-                    #[cfg(feature = "vstats")]
-                    {
-                        self.stats.spine_old += sp.len() as u64;
-                        self.stats.spine_new_args += rest.len() as u64;
-                        if sp.is_empty() {
-                            self.stats.spine_empty_prefix += 1;
-                        }
-                    }
+                    stat!(self, spine_old, sp.len());
+                    stat!(self, spine_new_args, rest.len());
+                    stat!(self, spine_empty_prefix, sp.is_empty());
                     return Ok(self.neu(h, sp, rest));
                 }
                 _ => reject!(self, "expected a function"),
@@ -680,7 +669,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         slots.sort_unstable();
         slots.dedup();
-        bytes!(self, b_sup, size_of_val(&slots[..]));
+        stat!(self, b_sup, size_of_val(&slots[..]));
         (slots.len() <= EXACT).then(|| &*self.ctx.arena.alloc_slice_copy(&slots))
     }
 

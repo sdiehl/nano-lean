@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Narrow crate-internal visibility.
+- Share export errors via `error.rs`.
+- Merge big-stack thread helpers.
+- Share trust checks across binaries.
+- Fold vstats counters into `stat!`.
+- Report every table in vstats footprint.
+- Derive clap `ValueEnum` for operators.
+
 ## 0.4.2 (2026-11-20)
 
 - Import exports over 16 GiB with two threads by default.

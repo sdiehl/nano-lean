@@ -71,7 +71,6 @@ impl std::hash::Hasher for MixHasher {
     }
 }
 
-#[macro_export]
 macro_rules! hash64 {
     ($($x:expr),* $(,)?) => {{
         use std::hash::{Hash, Hasher};
@@ -80,3 +79,5 @@ macro_rules! hash64 {
         h.finish()
     }};
 }
+
+pub(crate) use hash64;

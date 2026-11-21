@@ -1,7 +1,7 @@
 use super::derive::HOT;
 use super::tables::Hot;
 use super::value::{Head, K, V, Val};
-use super::{R, Vc, bytes, stat};
+use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::checker::nat::{self, NatValue};
 use crate::reject;
@@ -388,7 +388,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         {
             return v;
         }
-        bytes!(
+        stat!(
             self,
             b_nat,
             size_of::<Val>() + size_of::<BigUint>() + n.bits().div_ceil(64) as usize * 8

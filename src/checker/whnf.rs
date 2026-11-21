@@ -11,7 +11,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    pub fn whnf_core(&mut self, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
+    pub(crate) fn whnf_core(&mut self, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
         self.tick()?;
         if !matches!(*e, Expr::App { .. } | Expr::Let { .. } | Expr::Proj { .. }) {
             if let Expr::Local { id, .. } = *e
@@ -127,7 +127,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
     }
 
-    pub fn whnf(&mut self, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
+    pub(crate) fn whnf(&mut self, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
         if matches!(
             *e,
             Expr::Var { .. }

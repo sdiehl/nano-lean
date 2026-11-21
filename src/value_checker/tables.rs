@@ -722,40 +722,69 @@ impl<T> Footprint for HashTable<T> {
 
 #[cfg(feature = "vstats")]
 impl Tables<'_> {
+    /// Exhaustive, so a new table has to be reported here.
     pub(super) fn footprint(&self) -> Vec<(&'static str, usize, usize)> {
+        let Tables {
+            conv_locals,
+            eval_memo,
+            eval_closed,
+            delta,
+            derived: _,
+            const_ty,
+            rules,
+            support,
+            arg_support,
+            infer_closed,
+            infer_open,
+            eval_proj,
+            infer_proj,
+            eq_cache,
+            fail_cache,
+            neq_cache,
+            hc,
+            neus,
+            envs,
+            insts,
+            prunes,
+            frames,
+            lazies,
+            nats,
+        } = self;
         macro_rules! rows {
             ($($n:literal $f:expr),* $(,)?) => {
                 vec![$({ let (l, b) = $f.footprint(); ($n, l, b) }),*]
             };
         }
-        let v = rows!(
-            "conv_locals" self.conv_locals,
-            "eval_memo" self.eval_memo,
-            "eval_closed" self.eval_closed,
-            "delta" self.delta,
-            "const_ty" self.const_ty,
-            "rules" self.rules,
-            "support" self.support,
-            "arg_support" self.arg_support,
-            "infer_closed0" self.infer_closed[Mode::Check],
-            "infer_closed1" self.infer_closed[Mode::Only],
-            "infer_open0" self.infer_open[Mode::Check],
-            "infer_open1" self.infer_open[Mode::Only],
-            "eq_cache" self.eq_cache,
-            "fail_cache" self.fail_cache,
-            "neq_cache" self.neq_cache,
-            "hc_closed" self.hc[0],
-            "hc_open" self.hc[1],
-            "neus" self.neus,
-            "envs_closed" self.envs[0],
-            "envs_open" self.envs[1],
-            "prunes" self.prunes,
-            "frames_closed" self.frames[0],
-            "frames_open" self.frames[1],
-            "lazies_closed" self.lazies[0],
-            "lazies_open" self.lazies[1],
-            "nats" self.nats,
-        );
-        v
+        rows!(
+            "conv_locals" conv_locals,
+            "eval_memo" eval_memo,
+            "eval_closed" eval_closed,
+            "delta" delta,
+            "const_ty" const_ty,
+            "rules" rules,
+            "support" support,
+            "arg_support" arg_support,
+            "infer_closed0" infer_closed[Mode::Check],
+            "infer_closed1" infer_closed[Mode::Only],
+            "infer_open0" infer_open[Mode::Check],
+            "infer_open1" infer_open[Mode::Only],
+            "eval_proj" eval_proj,
+            "infer_proj" infer_proj,
+            "eq_cache" eq_cache,
+            "fail_cache" fail_cache,
+            "neq_cache" neq_cache,
+            "hc_closed" hc[0],
+            "hc_open" hc[1],
+            "neus" neus,
+            "envs_closed" envs[0],
+            "envs_open" envs[1],
+            "insts" insts,
+            "prunes" prunes,
+            "frames_closed" frames[0],
+            "frames_open" frames[1],
+            "lazies_closed" lazies[0],
+            "lazies_open" lazies[1],
+            "nats" nats,
+        )
     }
 }

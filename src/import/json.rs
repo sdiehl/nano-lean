@@ -1,9 +1,7 @@
 use super::importer::Importer;
-use super::{Result, invalid, unsupported};
-use crate::export::FORMAT_VERSION;
-use crate::export::json::{array, boolean, string};
+use crate::error::{Result, invalid, unsupported};
 use crate::hash64;
-use crate::schema::{ExprKind, META, Ref};
+use crate::schema::{ExprKind, FORMAT_VERSION, META, Ref, array, boolean, string};
 use crate::term::FxHashSet;
 use crate::term::decl::{Constructor, Declar, Hint, Inductive, Info, RecRule, Recursor};
 use crate::term::intern::Block;
@@ -15,7 +13,7 @@ use serde_json::{Map, Value};
 impl<'a> Importer<'a> {
     pub(super) fn general(&mut self, v: &Value, first: bool) -> Result<()> {
         let Some(o) = v.as_object() else {
-            return invalid("expected object");
+            return Err(invalid("expected object"));
         };
         if first {
             self.imported = v[META]["view"]["imported"].as_u64().unwrap_or(0);
@@ -31,7 +29,7 @@ impl<'a> Importer<'a> {
             return self.expr_entry(idx(id)?, v, o);
         }
         if o.len() != 1 {
-            return invalid("malformed declaration entry");
+            return Err(invalid("malformed declaration entry"));
         }
         let (kind, d) = o.iter().next().expect("length checked above");
         self.declaration(kind, d)?;
@@ -40,23 +38,23 @@ impl<'a> Importer<'a> {
 
     fn name_entry(&mut self, i: u32, v: &Value, o: &Map<String, Value>) -> Result<()> {
         if o.len() != 2 {
-            return invalid("malformed name entry");
+            return Err(invalid("malformed name entry"));
         }
         if let Some(n) = v.get("str") {
             self.do_str(i, idx(&n["pre"])?, string(&n["str"])?)
         } else if let Some(n) = v.get("num") {
             let Some(k) = n["i"].as_u64() else {
-                return invalid("invalid numeric name");
+                return Err(invalid("invalid numeric name"));
             };
             self.do_num(i, idx(&n["pre"])?, k)
         } else {
-            invalid("unknown name entry")
+            Err(invalid("unknown name entry"))
         }
     }
 
     fn level_entry(&mut self, i: u32, v: &Value, o: &Map<String, Value>) -> Result<()> {
         if o.len() != 2 {
-            return invalid("malformed level entry");
+            return Err(invalid("malformed level entry"));
         }
         if let Some(p) = v.get("param") {
             return self.do_param(i, idx(p)?);
@@ -67,21 +65,21 @@ impl<'a> Importer<'a> {
         let (args, imax) = match (v.get("max"), v.get("imax")) {
             (Some(a), _) => (a, false),
             (_, Some(a)) => (a, true),
-            _ => return invalid("unknown level entry"),
+            _ => return Err(invalid("unknown level entry")),
         };
         let [a, b] = array(args)? else {
-            return invalid("level operator arity");
+            return Err(invalid("level operator arity"));
         };
         self.do_max(i, idx(a)?, idx(b)?, imax)
     }
 
     fn expr_entry(&mut self, i: u32, v: &Value, o: &Map<String, Value>) -> Result<()> {
         if o.len() != 2 {
-            return invalid("malformed expression entry");
+            return Err(invalid("malformed expression entry"));
         }
         if let Some(x) = v.get(ExprKind::BVar.key()) {
             let Some(x) = x.as_u64() else {
-                return invalid("expected nonnegative index");
+                return Err(invalid("expected nonnegative index"));
             };
             return self.do_bvar(i, x);
         }
@@ -103,7 +101,7 @@ impl<'a> Importer<'a> {
         }
         if let Some(p) = v.get(ExprKind::Proj.key()) {
             let Some(k) = p["idx"].as_u64() else {
-                return invalid("expected nonnegative index");
+                return Err(invalid("expected nonnegative index"));
             };
             return self.do_proj(i, idx(&p["typeName"])?, k, idx(&p["struct"])?);
         }
@@ -135,12 +133,12 @@ impl<'a> Importer<'a> {
         if let Some(m) = v.get(ExprKind::MData.key()) {
             return self.alias(i, idx(&m["expr"])?);
         }
-        unsupported(format!(
+        Err(unsupported(format!(
             "expression {}",
             o.keys()
                 .find(|k| *k != Ref::Expr.key())
                 .map_or("<empty>", String::as_str)
-        ))
+        )))
     }
 
     fn declaration(&mut self, kind: &str, d: &Value) -> Result<()> {
@@ -168,7 +166,9 @@ impl<'a> Importer<'a> {
             }
             "axiom" | "opaque" => {
                 if boolean(&d["isUnsafe"])? {
-                    return invalid("unsafe declaration is not permitted in a safe proof export");
+                    return Err(invalid(
+                        "unsafe declaration is not permitted in a safe proof export",
+                    ));
                 }
                 self.check_group(d)?;
                 let info = self.info_of(d)?;
@@ -185,17 +185,17 @@ impl<'a> Importer<'a> {
                     "ctor" => QUOT_MK,
                     "lift" => QUOT_LIFT,
                     "ind" => QUOT_IND,
-                    _ => return invalid("invalid quotient kind"),
+                    _ => return Err(invalid("invalid quotient kind")),
                 };
                 let actual = self.name(idx(&d["name"])?)?;
                 if self.dag.lookup(self.anon, expected) != Some(actual) {
-                    return invalid("quotient kind and name disagree");
+                    return Err(invalid("quotient kind and name disagree"));
                 }
                 let info = self.info_of(d)?;
                 self.add_declar(Declar::Quot(info))
             }
             "inductive" => self.inductive(d),
-            _ => unsupported(format!("declaration kind {kind}")),
+            _ => Err(unsupported(format!("declaration kind {kind}"))),
         }
     }
 
@@ -219,7 +219,7 @@ impl<'a> Importer<'a> {
                 ty: self.expr(ty)?,
             })
         } else {
-            invalid("duplicate universe parameter")
+            Err(invalid("duplicate universe parameter"))
         }
     }
 
@@ -234,7 +234,7 @@ impl<'a> Importer<'a> {
     fn add_declar(&mut self, d: Declar<'a>) -> Result<()> {
         let n = d.name();
         if n.decl_idx().is_some() {
-            return invalid(format!("duplicate declaration {n}"));
+            return Err(invalid(format!("duplicate declaration {n}")));
         }
         n.set_decl_idx(self.declars.len() as u32);
         self.declars.push(d);
@@ -254,7 +254,7 @@ impl<'a> Importer<'a> {
             .collect::<Result<Vec<_>>>()?;
         let distinct = all.iter().collect::<FxHashSet<_>>().len() == all.len();
         if !all.contains(&own) || !distinct {
-            return invalid("invalid declaration group metadata");
+            return Err(invalid("invalid declaration group metadata"));
         }
         Ok(())
     }
@@ -272,11 +272,11 @@ impl<'a> Importer<'a> {
         match safety {
             "safe" => {}
             "unsafe" | "partial" => {
-                return invalid(
+                return Err(invalid(
                     "unsafe or partial definition is not permitted in a safe proof export",
-                );
+                ));
             }
-            _ => return invalid("invalid definition safety"),
+            _ => return Err(invalid("invalid definition safety")),
         }
         let info = self.info(name, uparams, ty)?;
         let val = self.expr(val)?;
@@ -305,7 +305,7 @@ impl<'a> Importer<'a> {
             self.add_declar(Declar::Ind(ind))?;
         }
         if types.is_empty() {
-            return invalid("empty inductive block");
+            return Err(invalid("empty inductive block"));
         }
         let types_end = self.declars.len() as u32;
         for c in array(&d["ctors"])? {
@@ -382,10 +382,10 @@ impl<'a> Importer<'a> {
 
 fn metadata(v: &Value, o: &Map<String, Value>) -> Result<()> {
     if o.len() != 1 || v.get(META).is_none() {
-        return invalid("missing export metadata");
+        return Err(invalid("missing export metadata"));
     }
     if v[META]["format"]["version"] != FORMAT_VERSION {
-        return unsupported("export format version");
+        return Err(unsupported("export format version"));
     }
     Ok(())
 }
@@ -400,14 +400,16 @@ fn hint(h: &Value) -> Result<Hint> {
             .and_then(|n| u32::try_from(n).ok())
         {
             Some(n) => Hint::Regular(n),
-            None => return invalid("invalid reducibility hint"),
+            None => return Err(invalid("invalid reducibility hint")),
         },
     })
 }
 
 fn safe_member(v: &Value) -> Result<()> {
     if boolean(&v["isUnsafe"])? {
-        return invalid("unsafe inductive declaration is not permitted in a safe proof export");
+        return Err(invalid(
+            "unsafe inductive declaration is not permitted in a safe proof export",
+        ));
     }
     Ok(())
 }
@@ -415,14 +417,14 @@ fn safe_member(v: &Value) -> Result<()> {
 fn idx(v: &Value) -> Result<u32> {
     match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
         Some(n) => Ok(n),
-        None => invalid("expected nonnegative index"),
+        None => Err(invalid("expected nonnegative index")),
     }
 }
 
 fn small(v: &Value) -> Result<u16> {
     match v.as_u64().and_then(|n| u16::try_from(n).ok()) {
         Some(n) => Ok(n),
-        None => invalid("expected small nonnegative count"),
+        None => Err(invalid("expected small nonnegative count")),
     }
 }
 

@@ -1,9 +1,8 @@
 use crate::Error;
-use crate::export::FORMAT_VERSION;
 use crate::kernel::{Expr, Level};
 use crate::kernel::{InductiveBlock, quotient_primitives};
 use crate::parser::Declaration;
-use crate::schema::{ExprKind, META, Ref};
+use crate::schema::{ExprKind, FORMAT_VERSION, META, Ref};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fmt::Write;

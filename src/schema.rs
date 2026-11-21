@@ -1,3 +1,7 @@
+use crate::error::{Result, invalid};
+use serde_json::Value;
+
+pub const FORMAT_VERSION: &str = "3.1.0";
 pub const META: &str = "meta";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,4 +68,18 @@ impl ExprKind {
             Self::StrVal => "strVal",
         }
     }
+}
+
+pub(crate) fn array(v: &Value) -> Result<&[Value]> {
+    v.as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| invalid("expected array"))
+}
+
+pub(crate) fn string(v: &Value) -> Result<&str> {
+    v.as_str().ok_or_else(|| invalid("expected string"))
+}
+
+pub(crate) fn boolean(v: &Value) -> Result<bool> {
+    v.as_bool().ok_or_else(|| invalid("expected boolean"))
 }

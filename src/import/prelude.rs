@@ -2,7 +2,7 @@
 //! definition bodies, with a trusted export, as Lean's comparator does. Theorem and opaque
 //! values are checked, never unfolded, so only their types are compared.
 
-use super::{Result, invalid};
+use crate::error::{Result, invalid};
 use crate::term::FxHashSet;
 use crate::term::decl::{Declar, Info};
 use crate::term::expr::Expr;
@@ -188,7 +188,7 @@ pub(super) fn compare(target: &Store<'_>, reference: &Store<'_>) -> Result<()> {
             continue;
         };
         let Some(b) = b else {
-            return invalid(format!("{path} is not in the trusted prelude"));
+            return Err(invalid(format!("{path} is not in the trusted prelude")));
         };
         c.konst(a, b);
     }
@@ -198,14 +198,14 @@ pub(super) fn compare(target: &Store<'_>, reference: &Store<'_>) -> Result<()> {
             continue;
         };
         let Some(j) = b.decl_idx() else {
-            return invalid(format!("{a} is not in the trusted prelude"));
+            return Err(invalid(format!("{a} is not in the trusted prelude")));
         };
         let (x, y) = (
             c.target.declars[i as usize],
             c.reference.declars[j as usize],
         );
         if !c.declar(x, y) {
-            return invalid(format!("{a} differs from the trusted prelude"));
+            return Err(invalid(format!("{a} differs from the trusted prelude")));
         }
     }
     Ok(())

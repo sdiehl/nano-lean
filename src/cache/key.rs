@@ -3,6 +3,7 @@
 //! closure. Units are hashed on first use, by whichever check worker needs them.
 
 use super::Key;
+use crate::resource::on_stack;
 use crate::term::FxHashMap;
 use crate::term::decl::{Declar, Hint, Info};
 use crate::term::expr::Expr;
@@ -11,7 +12,6 @@ use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::thread;
 
 const STACK_BYTES: usize = 256 << 20;
 
@@ -75,14 +75,7 @@ impl<'a> Keys<'a> {
     /// Covers every declaration the checkers reach by name rather than by reference. Runs on its
     /// own stack, since it hashes the closure of the primitives.
     pub fn environment(&self) -> Option<Key> {
-        thread::scope(|sc| {
-            thread::Builder::new()
-                .stack_size(STACK_BYTES)
-                .spawn_scoped(sc, || self.environment_here())
-                .expect("spawn key thread")
-                .join()
-                .unwrap_or_else(|p| std::panic::resume_unwind(p))
-        })
+        on_stack(STACK_BYTES, || self.environment_here())
     }
 
     fn environment_here(&self) -> Option<Key> {

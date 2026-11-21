@@ -24,7 +24,7 @@ use crate::term::ops::LEVEL_FORM;
 use crate::term::outcome::{Decline, Failure, R, Stop};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
-use crate::value_checker::RecChecker;
+use crate::value_checker::{RecChecker, Session};
 use crate::{ensure, reject};
 use env::{Decls, strip_pis};
 use std::cell::Cell;
@@ -42,6 +42,43 @@ impl Default for Limits {
         Self {
             steps: 100_000_000,
             arena_bytes: 256 << 20,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Core {
+    Term,
+    Value,
+}
+
+impl Core {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Term => "term",
+            Self::Value => "value",
+        }
+    }
+
+    pub fn check<'a>(
+        self,
+        store: &'a Store<'a>,
+        session: &mut Session<'a>,
+        idx: u32,
+        limits: Limits,
+        adapter: &mut Adapter<'a>,
+        native_only: bool,
+    ) -> Result<CheckPath, Failure> {
+        match self {
+            Self::Value => session.check(idx, limits, Some(adapter), native_only),
+            Self::Term => check_with_adapter(
+                store,
+                session.arena_mut(),
+                idx,
+                limits,
+                Some(adapter),
+                native_only,
+            ),
         }
     }
 }
@@ -83,7 +120,7 @@ pub fn check_with_adapter<'a>(
     }
 }
 
-pub fn check_shared<'a>(
+pub(crate) fn check_shared<'a>(
     store: &'a Store<'a>,
     arena: &Arena,
     idx: u32,
@@ -97,9 +134,9 @@ pub fn check_shared<'a>(
     (result, tc.steps_left)
 }
 
-pub fn check_existing_only<'a>(
+pub(crate) fn check_existing_only<'a>(
     store: &'a Store<'a>,
-    arena: &mut Arena,
+    arena: &Arena,
     idx: u32,
     limits: Limits,
     adapter: Option<&mut Adapter<'a>>,
@@ -113,8 +150,8 @@ pub fn check_existing_only<'a>(
 type ContextKey<'t> = (ExprPtr<'t>, Vec<ExprPtr<'t>>);
 type RecKey<'t> = (NamePtr<'t>, LevelsPtr<'t>, Vec<ExprPtr<'t>>);
 
-pub struct Tc<'t, 'a: 't> {
-    pub ctx: Ctx<'t, 'a>,
+pub(crate) struct Tc<'t, 'a: 't> {
+    pub(crate) ctx: Ctx<'t, 'a>,
     pub(crate) names: Names<'t>,
     pub(crate) uparams: LevelsPtr<'t>,
     pub(crate) limit: u32,
@@ -147,7 +184,7 @@ pub struct Tc<'t, 'a: 't> {
 }
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    pub fn new(store: &'a Store<'a>, arena: &'t Arena) -> Self {
+    pub(crate) fn new(store: &'a Store<'a>, arena: &'t Arena) -> Self {
         let ctx = Ctx::new(store, arena);
         let uparams = ctx
             .store
@@ -186,12 +223,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         }
     }
 
-    pub fn with_adapter(mut self, adapter: Option<&'t mut Adapter<'a>>) -> Self {
+    pub(crate) fn with_adapter(mut self, adapter: Option<&'t mut Adapter<'a>>) -> Self {
         self.adapter = adapter;
         self
     }
 
-    pub fn with_limits(mut self, limits: Limits) -> Self {
+    pub(crate) fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self.steps_left = limits.steps;
         self
@@ -223,7 +260,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Failure::escaped(&mut self.fail)
     }
 
-    pub fn check(&mut self, idx: u32) -> Result<(), Failure> {
+    pub(crate) fn check(&mut self, idx: u32) -> Result<(), Failure> {
         self.check_in(idx).map_err(|_| self.failure())
     }
 
@@ -426,7 +463,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Ok(())
     }
 
-    pub fn infer(&mut self, e: ExprPtr<'t>, only: bool) -> R<ExprPtr<'t>> {
+    pub(crate) fn infer(&mut self, e: ExprPtr<'t>, only: bool) -> R<ExprPtr<'t>> {
         self.tick()?;
         let hit = match self.infer_cache[0].get(&e) {
             None if only => self.infer_cache[1].get(&e),

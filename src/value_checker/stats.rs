@@ -1,46 +1,43 @@
-#[cfg(feature = "vstats")]
 use super::Vc;
-#[cfg(feature = "vstats")]
 use crate::checker;
-#[cfg(feature = "vstats")]
 use std::env;
-#[cfg(feature = "vstats")]
 use std::sync::Mutex;
-#[cfg(feature = "vstats")]
 use std::sync::atomic::AtomicU64;
-#[cfg(feature = "vstats")]
 use std::sync::atomic::Ordering::Relaxed;
+
+/// Interned value shapes, counted apart by `mk`.
+#[derive(Clone, Copy)]
+pub(super) enum Mk {
+    Sort,
+    PiOpen,
+    PiClosed,
+    LamOpen,
+    LamClosed,
+    NeuOpen,
+    NeuClosed,
+    Str,
+}
 
 macro_rules! stats {
     ($($f:ident),*) => {
-        #[cfg(feature = "vstats")]
-        #[derive(Default, Clone, Copy, Debug)]
+                #[derive(Default, Clone, Copy, Debug)]
         pub struct Stats {
             $(pub $f: u64,)*
         }
 
-        #[cfg(feature = "vstats")]
-        impl Stats {
-            pub(super) fn mk_kind(&mut self, kind: usize, hit: bool) {
-                let f = match (kind, hit) {
-                    (0, true) => &mut self.mk_sort_hit,
-                    (0, false) => &mut self.mk_sort_miss,
-                    (1, true) => &mut self.mk_pi_open_hit,
-                    (1, false) => &mut self.mk_pi_open_miss,
-                    (2, true) => &mut self.mk_pi_closed_hit,
-                    (2, false) => &mut self.mk_pi_closed_miss,
-                    (3, true) => &mut self.mk_lam_open_hit,
-                    (3, false) => &mut self.mk_lam_open_miss,
-                    (4, true) => &mut self.mk_lam_closed_hit,
-                    (4, false) => &mut self.mk_lam_closed_miss,
-                    (5, true) => &mut self.mk_neu0_open_hit,
-                    (5, false) => &mut self.mk_neu0_open_miss,
-                    (6, true) => &mut self.mk_str_hit,
-                    (6, false) => &mut self.mk_str_miss,
-                    (_, true) => &mut self.mk_neu0_closed_hit,
-                    (_, false) => &mut self.mk_neu0_closed_miss,
+                impl Stats {
+            pub(super) fn mk_kind(&mut self, kind: Mk, hit: bool) {
+                let [h, m] = match kind {
+                    Mk::Sort => [&mut self.mk_sort_hit, &mut self.mk_sort_miss],
+                    Mk::PiOpen => [&mut self.mk_pi_open_hit, &mut self.mk_pi_open_miss],
+                    Mk::PiClosed => [&mut self.mk_pi_closed_hit, &mut self.mk_pi_closed_miss],
+                    Mk::LamOpen => [&mut self.mk_lam_open_hit, &mut self.mk_lam_open_miss],
+                    Mk::LamClosed => [&mut self.mk_lam_closed_hit, &mut self.mk_lam_closed_miss],
+                    Mk::NeuOpen => [&mut self.mk_neu0_open_hit, &mut self.mk_neu0_open_miss],
+                    Mk::NeuClosed => [&mut self.mk_neu0_closed_hit, &mut self.mk_neu0_closed_miss],
+                    Mk::Str => [&mut self.mk_str_hit, &mut self.mk_str_miss],
                 };
-                *f += 1;
+                *if hit { h } else { m } += 1;
             }
 
             pub(super) fn add(&mut self, o: &Self) {
@@ -142,19 +139,14 @@ stats!(
     inst_miss
 );
 
-#[cfg(feature = "vstats")]
 const ENV: &str = "NL_VSTATS";
 
-#[cfg(feature = "vstats")]
 const TOP_UNFOLDS: usize = 15;
 
-#[cfg(feature = "vstats")]
 pub static TOTAL: Mutex<Option<Stats>> = Mutex::new(None);
 
-#[cfg(feature = "vstats")]
 pub static RESETS: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(feature = "vstats")]
 pub fn report() {
     if env::var_os(ENV).is_none() {
         return;
@@ -172,7 +164,6 @@ pub fn report() {
     }
 }
 
-#[cfg(feature = "vstats")]
 impl Vc<'_, '_> {
     pub(super) fn report_declaration(&self, idx: u32) {
         if env::var_os(ENV).is_none() {
@@ -216,23 +207,3 @@ impl Vc<'_, '_> {
         }
     }
 }
-
-macro_rules! bytes {
-    ($s:expr, $f:ident, $n:expr) => {
-        #[cfg(feature = "vstats")]
-        {
-            $s.stats.$f += ($n) as u64;
-        }
-    };
-}
-pub(crate) use bytes;
-
-macro_rules! stat {
-    ($s:expr, $f:ident) => {
-        #[cfg(feature = "vstats")]
-        {
-            $s.stats.$f += 1;
-        }
-    };
-}
-pub(crate) use stat;

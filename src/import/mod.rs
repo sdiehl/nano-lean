@@ -5,7 +5,7 @@ mod prelude;
 mod primitives;
 mod scan;
 
-use crate::export::ExportError;
+use crate::error::{Result, invalid};
 use crate::term::FxHashMap;
 use crate::term::arena::Arena;
 use crate::term::decl::Declar;
@@ -24,16 +24,6 @@ use std::thread;
 const PAR_CHUNK: usize = 4 << 20;
 const CHUNK: usize = 16 << 20;
 const READ_AHEAD: usize = 2;
-
-type Result<T> = std::result::Result<T, ExportError>;
-
-fn invalid<T>(s: impl Into<String>) -> Result<T> {
-    Err(ExportError::Invalid(s.into()))
-}
-
-fn unsupported<T>(s: impl Into<String>) -> Result<T> {
-    Err(ExportError::Unsupported(s.into()))
-}
 
 pub fn import(arena: &Arena, path: impl AsRef<Path>) -> Result<Store<'_>> {
     import_with(arena, path, 1)
@@ -299,7 +289,7 @@ pub fn olean<'a>(
             olean_export::Env::load_cone(search, roots, t, jobs, &|_, _| {})
         }
     }
-    .map_err(|e| ExportError::Invalid(format!("olean: {e}")))?;
+    .map_err(|e| invalid(format!("olean: {e}")))?;
     export(arena, &env, targets)
 }
 
@@ -327,7 +317,7 @@ fn export<'a>(
         .and_then(|()| body(&mut ex))
         .and_then(|()| ex.finish());
     if let Err(e) = out {
-        sink.fail(ExportError::Invalid(format!("olean: {e}")));
+        sink.fail(invalid(format!("olean: {e}")));
     }
     sink.finish()
 }
@@ -343,7 +333,7 @@ pub fn check_axioms(store: &Store<'_>, permitted: &[String]) -> Result<()> {
         if let Declar::Axiom(i) = d {
             let name = i.name.to_string();
             if !permitted.contains(&name) {
-                return invalid(format!("axiom {name} is not permitted"));
+                return Err(invalid(format!("axiom {name} is not permitted")));
             }
         }
     }

@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nano_lean::checker::Limits;
 use nano_lean::mutate::{self, Expect, Operator, Rng};
 use nano_lean::verdict::Verdicts;
@@ -123,7 +123,8 @@ const AFTER_HELP: &str =
 
 fn main() -> ExitCode {
     let o = Options::parse();
-    let ops = o.op.map_or_else(|| Operator::ALL.to_vec(), |op| vec![op]);
+    let ops =
+        o.op.map_or_else(|| Operator::value_variants().to_vec(), |op| vec![op]);
     let lines = match fs::read_to_string(&o.path)
         .map_err(|e| e.to_string())
         .and_then(|s| mutate::parse(&s).map_err(|e| e.to_string()))
@@ -150,7 +151,7 @@ fn main() -> ExitCode {
         .map_or_else(|| "export".into(), |s| s.to_string_lossy().into_owned());
     let mut rng = Rng::new(o.seed);
     let (mut tried, mut findings, mut declined) = (0, 0, 0);
-    let mut tally: BTreeMap<(&str, String), usize> = BTreeMap::new();
+    let mut tally: BTreeMap<(String, String), usize> = BTreeMap::new();
     for &op in &ops {
         let mut candidates = mutate::mutants(&lines, op);
         while candidates.len() > o.per_op {
@@ -162,7 +163,7 @@ fn main() -> ExitCode {
             let started = Instant::now();
             let verdicts = mutate::check(&mutant, limits);
             *tally
-                .entry((op.name(), mutate::signature(&verdicts)))
+                .entry((op.to_string(), mutate::signature(&verdicts)))
                 .or_default() += 1;
             let slow = m.expect == Expect::Same && started.elapsed() > budget;
             let Some(why) = judge(oracle, op, m.expect, &baseline, &mutant, &verdicts)

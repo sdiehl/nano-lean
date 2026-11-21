@@ -1,9 +1,11 @@
-use crate::checker::{self, Adapter, CheckPath, Limits};
-use crate::export::{ExportError, check_export};
+use crate::checker::{Adapter, Core, Limits};
+use crate::error::ExportError;
+use crate::export::check_export;
 use crate::import;
-use crate::term::{arena::Arena, intern::Store, outcome::Failure};
+use crate::resource::on_stack;
+use crate::term::{arena::Arena, outcome::Failure};
 use crate::value_checker::Session;
-use std::{fmt, thread};
+use std::fmt;
 
 const STACK_BYTES: usize = 256 << 20;
 
@@ -45,6 +47,16 @@ impl From<Failure> for Verdict {
     }
 }
 
+impl From<ExportError> for Verdict {
+    fn from(e: ExportError) -> Self {
+        match e {
+            ExportError::Invalid(s) => Self::Rejected(s),
+            ExportError::Unsupported(s) => Self::Unsupported(s),
+            ExportError::Internal(s) => Self::Internal(s),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Verdicts {
     pub reference: Verdict,
@@ -78,53 +90,7 @@ impl fmt::Display for Verdicts {
 }
 
 fn reference(source: &str) -> Verdict {
-    match check_export(source.as_bytes()) {
-        Ok(_) => Verdict::Accepted,
-        Err(ExportError::Invalid(s)) => Verdict::Rejected(s),
-        Err(ExportError::Unsupported(s)) => Verdict::Unsupported(s),
-        Err(ExportError::Internal(s)) => Verdict::Internal(s),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Core {
-    Term,
-    Value,
-}
-
-impl Core {
-    pub fn check<'a>(
-        self,
-        store: &'a Store<'a>,
-        session: &mut Session<'a>,
-        idx: u32,
-        limits: Limits,
-        adapter: &mut Adapter<'a>,
-        native_only: bool,
-    ) -> Result<CheckPath, Failure> {
-        match self {
-            Self::Value => session.check(idx, limits, Some(adapter), native_only),
-            Self::Term => checker::check_with_adapter(
-                store,
-                session.arena_mut(),
-                idx,
-                limits,
-                Some(adapter),
-                native_only,
-            ),
-        }
-    }
-}
-
-fn deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
-    thread::scope(|s| {
-        thread::Builder::new()
-            .stack_size(STACK_BYTES)
-            .spawn_scoped(s, f)
-            .expect("spawn checker thread")
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p))
-    })
+    check_export(source.as_bytes()).map_or_else(Verdict::from, |_| Verdict::Accepted)
 }
 
 /// Checks declarations in order until `visit` returns false. With `persist` the session
@@ -140,16 +106,8 @@ fn walk(
     let arena = Arena::new();
     let store = match import::import_reader(&arena, source.as_bytes(), source.len()) {
         Ok(store) => store,
-        Err(ExportError::Invalid(s)) => {
-            visit(Verdict::Rejected(s));
-            return;
-        }
-        Err(ExportError::Unsupported(s)) => {
-            visit(Verdict::Unsupported(s));
-            return;
-        }
-        Err(ExportError::Internal(s)) => {
-            visit(Verdict::Internal(s));
+        Err(e) => {
+            visit(e.into());
             return;
         }
     };
@@ -186,7 +144,7 @@ fn fast(source: &str, limits: Limits, core: Core) -> Verdict {
 /// The verdict of every declaration in turn, continuing past failures so the session is
 /// also exercised after a rejection.
 pub fn each(source: &str, limits: Limits, core: Core, persist: bool) -> Vec<Verdict> {
-    deep(|| {
+    on_stack(STACK_BYTES, || {
         let mut out = Vec::new();
         walk(source, limits, core, persist, |v| {
             out.push(v);
@@ -197,7 +155,7 @@ pub fn each(source: &str, limits: Limits, core: Core, persist: bool) -> Vec<Verd
 }
 
 pub fn check(source: &str, limits: Limits) -> Verdicts {
-    deep(|| Verdicts {
+    on_stack(STACK_BYTES, || Verdicts {
         reference: reference(source),
         fast: fast(source, limits, Core::Term),
         value: fast(source, limits, Core::Value),

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use nano_lean::cache::Cache;
+use nano_lean::checker::Core;
 use nano_lean::import;
 use nano_lean::term::arena::Arena;
 use nano_lean::term::decl::Declar;
@@ -130,7 +131,7 @@ fn audit_catches_a_recorded_rejection() {
         let idx = (0..store.declars.len() as u32)
             .find(|&i| store.declars[i as usize].name().to_string() == "bad")
             .unwrap();
-        let c = Cache::open(&store, &cache, "value", false)
+        let c = Cache::open(&store, &cache, Core::Value, false)
             .unwrap()
             .unwrap();
         c.record(&[c.lookup(idx).0.unwrap()]);
@@ -214,7 +215,7 @@ fn keys_match_the_reference() {
             continue;
         };
         let missing = dir.path().join("none");
-        let Some(cache) = big_stack(|| Cache::open(&store, &missing, "value", false).unwrap())
+        let Some(cache) = big_stack(|| Cache::open(&store, &missing, Core::Value, false).unwrap())
         else {
             continue;
         };

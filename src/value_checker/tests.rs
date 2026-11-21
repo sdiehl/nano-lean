@@ -1,9 +1,37 @@
+use super::session::{arena_exhausted, bridged};
 use super::*;
 use crate::checker::{self, Adapter, CheckPath};
 use crate::import::import_bytes;
 use crate::resource::Budget;
 use crate::term::outcome::{Decline, Failure};
 use std::fmt::Write;
+
+/// The one-shot path the session must agree with.
+fn check<'a>(
+    store: &'a Store<'a>,
+    arena: &mut Arena,
+    idx: u32,
+    limits: Limits,
+    adapter: Option<&mut Adapter<'a>>,
+    native_only: bool,
+) -> Result<CheckPath, Failure> {
+    if bridged(store.declars[idx as usize]) {
+        return checker::check_with_adapter(store, arena, idx, limits, adapter, native_only);
+    }
+    let mut vc = Vc::new(store, arena, limits);
+    let result = vc.check(idx);
+    let rest = Limits {
+        steps: vc.steps_left,
+        ..limits
+    };
+    drop(vc);
+    if arena_exhausted(&result, native_only) {
+        arena.reset();
+        return checker::check_existing_only(store, arena, idx, rest, adapter)
+            .map(|()| CheckPath::Fallback);
+    }
+    result.map(|()| CheckPath::Primary)
+}
 
 macro_rules! fixtures {
     ($($f:literal),*) => { [$((concat!($f), include_bytes!(concat!("../../tests/fixtures/", $f)).as_slice())),*] };

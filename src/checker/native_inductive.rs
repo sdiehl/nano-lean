@@ -1,6 +1,5 @@
 use super::Tc;
 use super::env::Decls;
-use crate::kernel;
 use crate::term::FxHashSet;
 use crate::term::decl::{Constructor, Declar, Inductive, Recursor};
 use crate::term::expr::Expr;
@@ -356,7 +355,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Ok(b)
     }
 
-    fn positive(&mut self, f: &Family<'t>, ty: ExprPtr<'t>) -> R<()> {
+    fn check_positivity(&mut self, f: &Family<'t>, ty: ExprPtr<'t>) -> R<()> {
         let ty = self.whnf(ty)?;
         if !f.occurs(ty) {
             return Ok(());
@@ -366,7 +365,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 ensure!(self, !f.occurs(d), "negative inductive occurrence");
                 let x = self.fresh_local(d);
                 let b = self.inst1(body, x)?;
-                self.positive(f, b)
+                self.check_positivity(f, b)
             }
             _ => {
                 ensure!(
@@ -402,11 +401,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         self.ctx.memo.reserve(BLOCK_EXPRS);
         let Members { types, ctors, recs } = self.block_members(b)?;
         let ups = types[0].info.uparams;
-        ensure!(
-            self,
-            kernel::InductiveType::distinct_params(&ups[..]),
-            "duplicate universe parameter"
-        );
+        ensure!(self, ups.distinct_params(), "duplicate universe parameter");
         self.uparams = ups;
         self.limit = b.start;
         let (mut fam, result_level, mut indices) = self.check_types(&types)?;
@@ -644,7 +639,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 );
             }
             self.tick()?;
-            self.positive(fam, ty)?;
+            self.check_positivity(fam, ty)?;
             let has = fam.occurs(ty);
             cs.recursive |= has;
             cs.reflexive |= has && ty.is_pi();

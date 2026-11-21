@@ -259,14 +259,7 @@ impl Watch {
         let arena = Arena::new();
         let store = import::from_env(&arena, env).map_err(|e| e.to_string())?;
         fast::release_import_memory(self.checks.threads);
-        if let Some(p) = &self.config.prelude {
-            let arena = Arena::new();
-            let reference = import::import(&arena, p).map_err(|e| e.to_string())?;
-            import::check_prelude(&store, &reference).map_err(|e| e.to_string())?;
-        }
-        if let Some(a) = &self.config.axioms {
-            import::check_axioms(&store, a).map_err(|e| e.to_string())?;
-        }
+        self.config.admit(&store).map_err(|e| e.to_string())?;
         let path = self.config.cache.as_deref().unwrap_or(Path::new(CACHE));
         let cache = self
             .checks
@@ -323,10 +316,8 @@ fn main() {
         usize::from,
     );
     let checks = config.checks(threads, false, true);
-    for sig in [libc::SIGINT, libc::SIGTERM] {
-        // SAFETY: the handler only stores to an atomic.
-        unsafe { libc::signal(sig, quit as *const () as libc::sighandler_t) };
-    }
+    // SAFETY: the handler only stores to an atomic.
+    unsafe { fast::on_signals(quit) };
     let search = lake_path();
     let mut w = Watch {
         cli,

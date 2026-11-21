@@ -11,15 +11,15 @@ pub type R<T> = Result<T, Stop>;
 
 const PROBE_ESCAPED: &str = "probe exhaustion escaped its probe";
 
-#[macro_export]
 macro_rules! reject {
     ($s:expr, $($a:tt)+) => { return ::std::result::Result::Err($s.reject(::std::format_args!($($a)+))) };
 }
 
-#[macro_export]
 macro_rules! ensure {
     ($s:expr, $c:expr, $($a:tt)+) => { if !$c { $crate::reject!($s, $($a)+) } };
 }
+
+pub(crate) use {ensure, reject};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Decline {

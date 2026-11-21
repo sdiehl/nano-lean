@@ -2,7 +2,7 @@
 //! declarations behind those names must have the types the reductions assume. Bodies are
 //! trusted, exactly as in Lean.
 
-use super::{Result, invalid};
+use crate::error::{Result, invalid};
 use crate::term::expr::Expr;
 use crate::term::intern::{Names, Store};
 use crate::term::level::Level;
@@ -128,7 +128,7 @@ pub(super) fn check(store: &Store<'_>) -> Result<()> {
             u: uparams.first().copied(),
         };
         if uparams.len() != params || !cx.fits(d.ty(), &shape) {
-            return invalid(format!("reserved primitive name {}", d.name()));
+            return Err(invalid(format!("reserved primitive name {}", d.name())));
         }
     }
     Ok(())

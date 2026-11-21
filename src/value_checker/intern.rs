@@ -1,6 +1,8 @@
+#[cfg(feature = "vstats")]
+use super::stats::Mk;
 use super::tables::fx;
 use super::value::{Clo, Head, K, Lazy, Sub, V, Val, key};
-use super::{Vc, bytes, stat};
+use super::{Vc, stat};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use rustc_hash::FxBuildHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -91,7 +93,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         // Pi values rarely recur, so probing for them only costs.
         if matches!(k, K::Pi(..)) {
             stat!(self, vals);
-            bytes!(self, b_val, size_of::<Val>());
+            stat!(self, b_val, size_of::<Val>());
             return self.ctx.arena.alloc(Val::new(k, open));
         }
         match k {
@@ -103,14 +105,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         stat!(self, mk_req);
         #[cfg(feature = "vstats")]
         let kind = match (&hk, open) {
-            (HKey::Sort(_), _) => 0,
-            (HKey::Pi(..), true) => 1,
-            (HKey::Pi(..), false) => 2,
-            (HKey::Lam(..), true) => 3,
-            (HKey::Lam(..), false) => 4,
-            (HKey::Str(..), _) => 6,
-            (_, true) => 5,
-            (_, false) => 7,
+            (HKey::Sort(_), _) => Mk::Sort,
+            (HKey::Pi(..), true) => Mk::PiOpen,
+            (HKey::Pi(..), false) => Mk::PiClosed,
+            (HKey::Lam(..), true) => Mk::LamOpen,
+            (HKey::Lam(..), false) => Mk::LamClosed,
+            (HKey::Str(..), _) => Mk::Str,
+            (_, true) => Mk::NeuOpen,
+            (_, false) => Mk::NeuClosed,
         };
         let hc = &mut self.t.hc[usize::from(open)];
         let h = fx(&hk);
@@ -123,7 +125,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.stats.mk_kind(kind, false);
         let v = self.ctx.arena.alloc(Val::new(k, open));
         hc.insert(h, v);
-        bytes!(self, b_val, size_of::<Val>());
+        stat!(self, b_val, size_of::<Val>());
         stat!(self, vals);
         v
     }
@@ -137,14 +139,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let h = fx(&hk);
         if let Some(v) = hc.find(h, |v| hkey(v.k) == hk) {
             #[cfg(feature = "vstats")]
-            self.stats.mk_kind(2 - usize::from(open), true);
+            self.stats
+                .mk_kind(if open { Mk::PiOpen } else { Mk::PiClosed }, true);
             return v;
         }
         #[cfg(feature = "vstats")]
-        self.stats.mk_kind(2 - usize::from(open), false);
+        self.stats
+            .mk_kind(if open { Mk::PiOpen } else { Mk::PiClosed }, false);
         let v = self.ctx.arena.alloc(Val::new(k, open));
         hc.insert(h, v);
-        bytes!(self, b_val, size_of::<Val>());
+        stat!(self, b_val, size_of::<Val>());
         stat!(self, vals);
         v
     }
@@ -161,12 +165,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 && Ptrs::new(&a[..m]) == Ptrs::new(sp) && Ptrs::new(&a[m..]) == Ptrs::new(rest))
         };
         if let Some(&(_, v)) = self.t.neus.find(hash, same) {
-            #[cfg(feature = "vstats")]
-            if v.open {
-                self.stats.neu_open_hit += 1;
-            } else {
-                self.stats.neu_closed_hit += 1;
-            }
+            stat!(self, if v.open => neu_open_hit, neu_closed_hit);
             return v;
         }
         self.neu_new(h, sp, rest, hash)
@@ -180,12 +179,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             Head::Const(..) => false,
             Head::Proj(_, _, x) => x.open,
         } || sp.iter().chain(rest).any(|a| a.open);
-        #[cfg(feature = "vstats")]
-        if open {
-            self.stats.neu_open_miss += 1;
-        } else {
-            self.stats.neu_closed_miss += 1;
-        }
+        stat!(self, if open => neu_open_miss, neu_closed_miss);
         let all: &'t [V<'t>] = if sp.is_empty() {
             self.ctx.arena.alloc_slice_copy(rest)
         } else {
@@ -194,14 +188,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
                 .arena
                 .alloc_slice_fill_with(n, |i| if i < m { sp[i] } else { rest[i - m] })
         };
-        #[cfg(feature = "vstats")]
-        {
-            self.stats.spine_new += 1;
-            self.stats.spine_copied += n as u64;
-        }
+        stat!(self, spine_new);
+        stat!(self, spine_copied, n);
         stat!(self, vals);
-        bytes!(self, b_val, size_of::<Val>());
-        bytes!(self, b_spine, size_of_val(all));
+        stat!(self, b_val, size_of::<Val>());
+        stat!(self, b_spine, size_of_val(all));
         let v = self.ctx.arena.alloc(Val::new(K::Neu(h, all), open));
         self.t.neus.insert_unique(hash, (hash, v), |&(g, _)| g);
         v

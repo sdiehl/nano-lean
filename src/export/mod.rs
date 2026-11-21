@@ -1,10 +1,11 @@
 mod check;
-pub(crate) mod json;
+mod json;
 mod prepass;
 
-use crate::Error;
+pub use crate::error::ExportError;
+use crate::error::{Result, invalid};
+use crate::resource::on_stack;
 use crate::schema::{META, Ref};
-use json::invalid;
 use prepass::count_uses;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,59 +13,14 @@ use sha2::{Digest, Sha256};
 use std::{
     fmt,
     fs::File,
-    io::{self, BufRead, BufReader, Seek},
+    io::{BufRead, BufReader, Seek},
     path::Path,
-    thread,
 };
 
-pub const FORMAT_VERSION: &str = "3.1.0";
+pub use crate::schema::FORMAT_VERSION;
 pub const TRACE_VAR: &str = "NANO_LEAN_TRACE";
 const STACK_BYTES: usize = 64 * 1024 * 1024;
 const EXPRESSION: &str = Ref::Expr.key();
-
-#[derive(Debug, thiserror::Error)]
-pub enum ExportError {
-    #[error("invalid export: {0}")]
-    Invalid(String),
-    #[error("unsupported: {0}")]
-    Unsupported(String),
-    #[error("internal: {0}")]
-    Internal(String),
-}
-
-impl ExportError {
-    pub(crate) fn at(self, unit: &str, n: usize) -> Self {
-        match self {
-            Self::Invalid(s) => Self::Invalid(format!("{unit} {}: {s}", n + 1)),
-            Self::Unsupported(s) => Self::Unsupported(format!("{unit} {}: {s}", n + 1)),
-            Self::Internal(s) => Self::Internal(format!("{unit} {}: {s}", n + 1)),
-        }
-    }
-}
-
-impl From<io::Error> for ExportError {
-    fn from(e: io::Error) -> Self {
-        Self::Invalid(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for ExportError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Invalid(e.to_string())
-    }
-}
-
-impl From<Error> for ExportError {
-    fn from(e: Error) -> Self {
-        match e {
-            Error::Rejected(s) => Self::Invalid(s),
-            Error::Unsupported(s) => Self::Unsupported(s),
-            Error::Internal(s) => Self::Internal(s),
-            e => Self::Unsupported(e.to_string()),
-        }
-    }
-}
-type Result<T> = std::result::Result<T, ExportError>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -175,6 +131,16 @@ impl From<ExportError> for Report {
     }
 }
 
+impl Report {
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Checked { .. } | Self::ShardChecked(_) => 0,
+            Self::Rejected { .. } => 1,
+            Self::Unsupported { .. } => 2,
+        }
+    }
+}
+
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&serde_json::to_string(self).map_err(|_| fmt::Error)?)
@@ -236,7 +202,7 @@ pub fn check_export_file_shard(
         shard: Some((shard, workers)),
         ..Default::default()
     };
-    let report = deep(|| check::run(reader, counts, &mut plan))?;
+    let report = on_stack(STACK_BYTES, || check::run(reader, counts, &mut plan))?;
     Ok(ShardReport {
         shard,
         workers,
@@ -251,18 +217,8 @@ fn check_with_counts(
     reader: impl BufRead + Send,
     counts: Option<Vec<u32>>,
 ) -> Result<ExportReport> {
-    deep(|| check::run(reader, counts, &mut CheckPlan::default()))
-}
-
-/// Run `f` on a thread whose stack fits the reference kernel's recursion.
-fn deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
-    thread::scope(|s| {
-        thread::Builder::new()
-            .stack_size(STACK_BYTES)
-            .spawn_scoped(s, f)
-            .expect("spawn export thread")
-            .join()
-            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    on_stack(STACK_BYTES, || {
+        check::run(reader, counts, &mut CheckPlan::default())
     })
 }
 

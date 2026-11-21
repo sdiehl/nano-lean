@@ -1,5 +1,5 @@
 use super::scan::{self, Batch, Line};
-use super::{Result, invalid, unsupported};
+use crate::error::{Result, invalid, unsupported};
 use crate::hash64;
 use crate::term::FxHashMap;
 use crate::term::arena::Arena;
@@ -166,7 +166,7 @@ impl<T: Copy> Table<T> {
     fn get_sparse(&self, i: u32) -> Result<T> {
         match self.sparse.get(&i) {
             Some(x) => Ok(*x),
-            None => invalid("unknown or forward reference"),
+            None => Err(invalid("unknown or forward reference")),
         }
     }
 
@@ -192,7 +192,7 @@ impl<T: Copy> Table<T> {
             return self.put_sparse(i, x);
         }
         if self.dense.get(k).is_some_and(Option::is_some) {
-            return invalid("duplicate index");
+            return Err(invalid("duplicate index"));
         }
         self.place(k, x);
         Ok(())
@@ -203,7 +203,7 @@ impl<T: Copy> Table<T> {
     fn put_sparse(&mut self, i: u32, x: T) -> Result<()> {
         let k = i as usize;
         if self.sparse.contains_key(&i) || self.dense.get(k).is_some_and(Option::is_some) {
-            return invalid("duplicate index");
+            return Err(invalid("duplicate index"));
         }
         if self.fits(k) {
             self.place(k, x);
@@ -311,7 +311,7 @@ impl<'a> Importer<'a> {
 
     pub(super) fn finish_lines(self, n: usize) -> Result<Store<'a>> {
         if n == 0 {
-            return invalid("empty export");
+            return Err(invalid("empty export"));
         }
         self.finish()
     }
@@ -428,7 +428,7 @@ impl<'a> Importer<'a> {
     pub(super) fn do_bvar(&mut self, i: u32, v: u64) -> Result<()> {
         match u16::try_from(v) {
             Ok(v) if v < BVAR_LIMIT => self.add_expr(i, mk::var(v)),
-            _ => unsupported("bound variable index too large"),
+            _ => Err(unsupported("bound variable index too large")),
         }
     }
 
@@ -504,20 +504,20 @@ impl<'a> Importer<'a> {
         let e = self.expr(e)?;
         self.uses(n);
         let Ok(idx) = u16::try_from(idx) else {
-            return unsupported("projection index too large");
+            return Err(unsupported("projection index too large"));
         };
         self.add_expr(i, mk::proj(n, idx, e))
     }
 
     pub(super) fn do_nat(&mut self, i: u32, digits: &str) -> Result<()> {
         if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
-            return invalid("invalid natural literal");
+            return Err(invalid("invalid natural literal"));
         }
         if digits.len() > MAX_NAT_DIGITS {
-            return unsupported("natural literal too long");
+            return Err(unsupported("natural literal too long"));
         }
         let Some(n) = BigUint::parse_bytes(digits.as_bytes(), 10) else {
-            return invalid("invalid natural literal");
+            return Err(invalid("invalid natural literal"));
         };
         let n = self.dag.intern_nat(self.arena, n);
         self.add_expr(i, mk::nat(n))
@@ -618,7 +618,7 @@ impl<'a> Importer<'a> {
                 end,
             } => match std::str::from_utf8(&b[start as usize..end as usize]) {
                 Ok(s) => self.do_str(id, pre, s),
-                Err(_) => invalid("invalid string"),
+                Err(_) => Err(invalid("invalid string")),
             },
             Line::Num(i, pre, n) => self.do_num(i, pre, n),
             Line::Succ(i, l) => self.do_succ(i, l),
@@ -660,7 +660,9 @@ impl<'a> Importer<'a> {
 
     pub(super) fn finish(mut self) -> Result<Store<'a>> {
         if self.imported > 0 {
-            return invalid("view imports more declarations than the export holds");
+            return Err(invalid(
+                "view imports more declarations than the export holds",
+            ));
         }
         self.stats.expressions = self.exprs.filled();
         self.names = Table::new(Vec::new());
@@ -673,7 +675,7 @@ impl<'a> Importer<'a> {
             if let Some(i) = n.decl_idx()
                 && !matches!(self.declars[i as usize], Declar::Quot(_))
             {
-                return invalid(format!("reserved quotient name {n}"));
+                return Err(invalid(format!("reserved quotient name {n}")));
             }
         }
         let deps = (self.track

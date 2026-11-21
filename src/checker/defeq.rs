@@ -23,7 +23,7 @@ impl Drop for ConversionScope {
 }
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
-    pub fn def_eq(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
+    pub(crate) fn def_eq(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
         self.tick()?;
         if t == s || self.eq_cache.contains(&(t, s)) {
             #[cfg(feature = "memocheck")]

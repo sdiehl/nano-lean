@@ -1,5 +1,5 @@
 use crate::kernel::Error;
-use std::fmt;
+use std::{fmt, thread};
 
 const STACK_RED_ZONE: usize = 1 << 20;
 
@@ -27,6 +27,18 @@ pub(crate) fn stack_floor() -> usize {
         (base as usize + size, size)
     };
     top - size + STACK_RED_ZONE.min(size / 2)
+}
+
+/// Run `f` on a fresh thread with a `bytes` stack, for recursion deeper than the caller's.
+pub(crate) fn on_stack<T: Send>(bytes: usize, f: impl FnOnce() -> T + Send) -> T {
+    thread::scope(|s| {
+        thread::Builder::new()
+            .stack_size(bytes)
+            .spawn_scoped(s, f)
+            .expect("spawn deep stack thread")
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
 }
 
 /// Whether the caller's frame has reached `floor`.

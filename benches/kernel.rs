@@ -4,11 +4,10 @@
 
 use clap::Parser;
 use libmimalloc_sys::{mi_collect, mi_option_set, mi_option_t};
-use nano_lean::checker::{Adapter, Limits};
+use nano_lean::checker::{Adapter, Core, Limits};
 use nano_lean::fast::Config;
 use nano_lean::term::{arena::Arena, intern::Store};
 use nano_lean::value_checker::Session;
-use nano_lean::verdict::Core;
 use nano_lean::{emit, import, parser};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

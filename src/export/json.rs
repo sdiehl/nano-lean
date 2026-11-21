@@ -1,33 +1,11 @@
-use super::{ExportError, Result};
+use crate::error::{Result, invalid};
 use serde_json::Value;
 use std::collections::HashMap;
-
-pub(super) fn invalid(s: impl Into<String>) -> ExportError {
-    ExportError::Invalid(s.into())
-}
-
-pub(super) fn unsupported(s: impl Into<String>) -> ExportError {
-    ExportError::Unsupported(s.into())
-}
 
 pub(super) fn index(v: &Value) -> Result<usize> {
     v.as_u64()
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| invalid("expected nonnegative index"))
-}
-
-pub(crate) fn array(v: &Value) -> Result<&[Value]> {
-    v.as_array()
-        .map(Vec::as_slice)
-        .ok_or_else(|| invalid("expected array"))
-}
-
-pub(crate) fn string(v: &Value) -> Result<&str> {
-    v.as_str().ok_or_else(|| invalid("expected string"))
-}
-
-pub(crate) fn boolean(v: &Value) -> Result<bool> {
-    v.as_bool().ok_or_else(|| invalid("expected boolean"))
 }
 
 pub(super) fn lookup<'a, T>(items: &'a HashMap<usize, T>, v: &Value) -> Result<&'a T> {

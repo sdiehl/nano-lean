@@ -2,7 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use nano_lean::{checker::Limits, emit, parser, verdict, verdict::Core};
+use nano_lean::{
+    checker::{Core, Limits},
+    emit, parser, verdict,
+};
 use std::{
     fs,
     path::{Path, PathBuf},

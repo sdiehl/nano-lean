@@ -7,11 +7,12 @@ mod intern;
 #[cfg(feature = "memocheck")]
 mod memocheck;
 mod session;
+#[cfg(feature = "vstats")]
 mod stats;
 mod tables;
 #[cfg(test)]
 mod tests;
-pub mod value;
+mod value;
 mod whnf;
 
 use crate::checker::Limits;
@@ -31,7 +32,6 @@ use crate::{ensure, reject};
 use smallvec::SmallVec;
 #[cfg(feature = "vstats")]
 use stats::Stats;
-use stats::{bytes, stat};
 use std::fmt;
 use std::mem::take;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
@@ -39,7 +39,7 @@ use tables::{POOL, Tables};
 use value::{Head, K, Memo, Sub, V, Val};
 
 pub(crate) use decl::{RecCheck, RecChecker};
-pub use session::{BRIDGED, Session, check};
+pub use session::{BRIDGED, Session};
 #[cfg(feature = "vstats")]
 pub use stats::{RESETS, TOTAL, report};
 
@@ -48,8 +48,35 @@ const INCLUDED_MAX: usize = 8;
 
 static EPOCH: AtomicU32 = AtomicU32::new(0);
 
+/// Bumps a vstats counter by one or by `n`, or one of two counters by a condition.
+macro_rules! stat {
+    ($s:expr, $f:ident) => {
+        #[cfg(feature = "vstats")]
+        {
+            $s.stats.$f += 1;
+        }
+    };
+    ($s:expr, $f:ident, $n:expr) => {
+        #[cfg(feature = "vstats")]
+        {
+            $s.stats.$f += ($n) as u64;
+        }
+    };
+    ($s:expr, if $c:expr => $a:ident, $b:ident) => {
+        #[cfg(feature = "vstats")]
+        {
+            if $c {
+                $s.stats.$a += 1;
+            } else {
+                $s.stats.$b += 1;
+            }
+        }
+    };
+}
+pub(crate) use stat;
+
 struct Vc<'t, 'a: 't> {
-    pub ctx: Ctx<'t, 'a>,
+    ctx: Ctx<'t, 'a>,
     names: Names<'t>,
     uparams: LevelsPtr<'t>,
     limit: u32,
@@ -77,9 +104,9 @@ struct Vc<'t, 'a: 't> {
     #[cfg(feature = "memocheck")]
     audit: memocheck::Audit,
     #[cfg(feature = "vstats")]
-    pub stats: Stats,
+    stats: Stats,
     #[cfg(feature = "vstats")]
-    pub unfolded: FxHashMap<NamePtr<'t>, u64>,
+    unfolded: FxHashMap<NamePtr<'t>, u64>,
 }
 
 impl Drop for Vc<'_, '_> {
@@ -279,7 +306,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let id = self.next_local;
         // Ids are never reused, so interning could only miss.
         stat!(self, vals);
-        bytes!(self, b_val, size_of::<Val>());
+        stat!(self, b_val, size_of::<Val>());
         self.ctx
             .arena
             .alloc(Val::new(K::Neu(Head::Local(id, ty, val), &[]), true))

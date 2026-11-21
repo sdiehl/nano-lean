@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 pub static BRIDGED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
-fn bridged(d: Declar<'_>) -> bool {
+pub(super) fn bridged(d: Declar<'_>) -> bool {
     let k = match d {
         Declar::Quot(_) => 0,
         Declar::Ind(_) => 1,
@@ -27,36 +27,8 @@ fn bridged(d: Declar<'_>) -> bool {
     true
 }
 
-fn arena_exhausted<T>(r: &Result<T, Failure>, native_only: bool) -> bool {
+pub(super) fn arena_exhausted<T>(r: &Result<T, Failure>, native_only: bool) -> bool {
     !native_only && matches!(r, Err(Failure::Declined(Decline::Exhausted(Budget::Arena))))
-}
-
-pub fn check<'a>(
-    store: &'a Store<'a>,
-    arena: &mut Arena,
-    idx: u32,
-    limits: Limits,
-    adapter: Option<&mut Adapter<'a>>,
-    native_only: bool,
-) -> Result<CheckPath, Failure> {
-    if bridged(store.declars[idx as usize]) {
-        return checker::check_with_adapter(store, arena, idx, limits, adapter, native_only);
-    }
-    let mut vc = Vc::new(store, arena, limits);
-    let result = vc.check(idx);
-    #[cfg(feature = "vstats")]
-    vc.report_declaration(idx);
-    let rest = Limits {
-        steps: vc.steps_left,
-        ..limits
-    };
-    drop(vc);
-    if arena_exhausted(&result, native_only) {
-        arena.reset();
-        return checker::check_existing_only(store, arena, idx, rest, adapter)
-            .map(|()| CheckPath::Fallback);
-    }
-    result.map(|()| CheckPath::Primary)
 }
 
 /// Fresh tables restart local ids long before they could wrap.
@@ -144,7 +116,7 @@ impl<'a> Session<'a> {
         adapter: Option<&mut Adapter<'a>>,
     ) -> Result<CheckPath, Failure> {
         self.reset();
-        checker::check_existing_only(self.store, &mut self.arena, idx, rest, adapter)
+        checker::check_existing_only(self.store, &self.arena, idx, rest, adapter)
             .map(|()| CheckPath::Fallback)
     }
 

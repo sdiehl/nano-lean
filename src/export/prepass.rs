@@ -1,6 +1,7 @@
-use super::json::{array, index, invalid, unsupported};
+use super::json::index;
 use super::{EXPRESSION, ExportError, Kind, Result, current_format};
-use crate::schema::{ExprKind, META, Ref};
+use crate::error::{invalid, unsupported};
+use crate::schema::{ExprKind, META, Ref, array};
 use serde_json::{Map, Value};
 use std::io::BufRead;
 

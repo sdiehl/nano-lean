@@ -7,6 +7,7 @@
 
 mod key;
 
+use crate::checker::Core;
 use crate::term::intern::Store;
 use key::Keys;
 use memmap2::Mmap;
@@ -38,7 +39,7 @@ impl<'a> Cache<'a> {
     pub fn open(
         store: &'a Store<'a>,
         path: &Path,
-        core: &str,
+        core: Core,
         audit: bool,
     ) -> io::Result<Option<Self>> {
         let keys = Keys::new(store);
@@ -48,7 +49,7 @@ impl<'a> Cache<'a> {
         let tag = *blake3::Hasher::new()
             .update(MAGIC)
             .update(BUILD.as_bytes())
-            .update(core.as_bytes())
+            .update(core.as_str().as_bytes())
             .update(&env)
             .finalize()
             .as_bytes();

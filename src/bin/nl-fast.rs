@@ -99,9 +99,7 @@ struct Options {
     check_imports: bool,
     reorder: bool,
     import_threads: Option<usize>,
-    prelude: Option<PathBuf>,
-    axioms: Option<Vec<String>>,
-    cache: Option<PathBuf>,
+    config: Config,
     checks: Checks,
 }
 
@@ -126,9 +124,12 @@ fn options() -> Options {
     c.steps = cli.steps.or(c.steps);
     c.arena_mib = cli.arena_mib.or(c.arena_mib);
     c.session_mib = cli.session_mib.or(c.session_mib);
-    c.term_core = Some(cli.term_core || c.term_core == Some(true));
-    c.fallback = Some(cli.fallback || c.fallback == Some(true));
-    c.cache_audit = Some(cli.cache_audit || c.cache_audit == Some(true));
+    c.term_core |= cli.term_core;
+    c.fallback |= cli.fallback;
+    c.cache_audit |= cli.cache_audit;
+    c.prelude = cli.prelude.or(c.prelude);
+    c.axioms = cli.axioms.or(c.axioms);
+    c.cache = cli.cache.or(c.cache).filter(|_| !cli.no_cache);
     Options {
         path: cli.path.filter(|p| p != "-"),
         olean: cli.olean,
@@ -145,18 +146,13 @@ fn options() -> Options {
             cli.trace,
             cli.quiet,
         ),
-        prelude: cli.prelude.or(c.prelude),
-        axioms: cli.axioms.or(c.axioms),
-        cache: cli.cache.or(c.cache).filter(|_| !cli.no_cache),
+        config: c,
     }
 }
 
 fn exit_on(e: &ExportError) -> ! {
     println!("{e}");
-    process::exit(match e {
-        ExportError::Invalid(_) => 1,
-        ExportError::Unsupported(_) | ExportError::Internal(_) => 2,
-    })
+    process::exit(e.exit_code().into())
 }
 
 fn load<'a>(arena: &'a Arena, path: Option<&Path>, threads: usize) -> Store<'a> {
@@ -190,17 +186,11 @@ extern "C" fn interrupt(_: libc::c_int) {
     }
 }
 
-fn on_interrupt() {
-    for sig in [libc::SIGINT, libc::SIGTERM] {
-        // SAFETY: the handler only touches atomics and calls _exit.
-        unsafe { libc::signal(sig, interrupt as *const () as libc::sighandler_t) };
-    }
-}
-
 fn main() {
     let o = options();
-    if o.cache.is_some() {
-        on_interrupt();
+    if o.config.cache.is_some() {
+        // SAFETY: the handler only touches atomics and calls _exit.
+        unsafe { fast::on_signals(interrupt) };
     }
     let t = Instant::now();
     let arena = Arena::new();
@@ -249,14 +239,7 @@ fn main() {
             s.levels
         );
     }
-    if let Some(p) = &o.prelude {
-        let arena = Arena::new();
-        let reference = load(&arena, Some(p), 1);
-        import::check_prelude(&store, &reference).unwrap_or_else(|e| exit_on(&e));
-    }
-    if let Some(a) = &o.axioms {
-        import::check_axioms(&store, a).unwrap_or_else(|e| exit_on(&e));
-    }
+    o.config.admit(&store).unwrap_or_else(|e| exit_on(&e));
     let own = if o.check_imports { 0 } else { store.own };
     // Reordering moves declarations, so the view's imports are found again by name.
     let given: Vec<_> = store.declars[..own as usize]
@@ -302,7 +285,7 @@ fn main() {
         process::exit(2);
     }
     let code = {
-        let cache = o.cache.as_deref().map(|p| {
+        let cache = o.config.cache.as_deref().map(|p| {
             o.checks.open_cache(&store, p).unwrap_or_else(|e| {
                 eprintln!("{}: {e}", p.display());
                 process::exit(2)
@@ -315,7 +298,7 @@ fn main() {
             cache.as_ref().and_then(Option::as_ref),
             &STOP,
         );
-        if let (Some(p), Some(Some(c))) = (&o.cache, &cache) {
+        if let (Some(p), Some(Some(c))) = (&o.config.cache, &cache) {
             let keep = filtered || o.limit != usize::MAX || STOP.load(Relaxed);
             match c.save(p, keep) {
                 Ok(k) if !o.quiet => {

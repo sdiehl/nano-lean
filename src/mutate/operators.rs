@@ -1,13 +1,13 @@
 use super::table::{Ref, defines, id_at, is_declaration, refs};
 use super::{Edit, Expect, Mutant};
 use crate::schema::ExprKind;
+use clap::ValueEnum;
 use num_bigint::BigUint;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt::{self, Write};
-use std::str::FromStr;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Operator {
     LooseBvar,
     DanglingRef,
@@ -27,62 +27,10 @@ pub enum Operator {
     QuotAxiom,
 }
 
-impl Operator {
-    pub const ALL: [Self; 16] = [
-        Self::LooseBvar,
-        Self::DanglingRef,
-        Self::DuplicateDecl,
-        Self::InductiveCount,
-        Self::InductiveFlag,
-        Self::Unsafe,
-        Self::Reorder,
-        Self::DropDecl,
-        Self::SwapDecls,
-        Self::RetargetExpr,
-        Self::Unfold,
-        Self::LevelOp,
-        Self::NatLiteral,
-        Self::Hints,
-        Self::ThmToDef,
-        Self::QuotAxiom,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::LooseBvar => "loose-bvar",
-            Self::DanglingRef => "dangling-ref",
-            Self::DuplicateDecl => "duplicate-decl",
-            Self::InductiveCount => "inductive-count",
-            Self::InductiveFlag => "inductive-flag",
-            Self::Unsafe => "unsafe",
-            Self::Reorder => "reorder",
-            Self::DropDecl => "drop-decl",
-            Self::SwapDecls => "swap-decls",
-            Self::RetargetExpr => "retarget-expr",
-            Self::Unfold => "unfold",
-            Self::LevelOp => "level-op",
-            Self::NatLiteral => "nat-literal",
-            Self::Hints => "hints",
-            Self::ThmToDef => "thm-to-def",
-            Self::QuotAxiom => "quot-axiom",
-        }
-    }
-}
-
 impl fmt::Display for Operator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-impl FromStr for Operator {
-    type Err = String;
-
-    fn from_str(name: &str) -> Result<Self, String> {
-        Self::ALL
-            .into_iter()
-            .find(|op| op.name() == name)
-            .ok_or_else(|| format!("unknown operator {name}"))
+        self.to_possible_value()
+            .map_or(Ok(()), |v| f.write_str(v.get_name()))
     }
 }
 
