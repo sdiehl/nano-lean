@@ -9,6 +9,7 @@ use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::{replace, swap, take, transmute};
+use std::num::NonZeroUsize;
 use std::ops::{Deref, Index, IndexMut};
 use std::ptr;
 use std::rc::Rc;
@@ -127,7 +128,8 @@ pub(super) struct Tables<'t> {
     pub(super) hc: [Set<'t, Val<'t>>; 2],
     /// Neutrals with their hashes, so a rehash never walks a spine.
     pub(super) neus: HashTable<(u64, V<'t>)>,
-    pub(super) envs: [Lossy<(usize, usize), Env<'t>, 16>; 2],
+    /// Keyed by a nonzero address so a slot is four words, half a cache line.
+    pub(super) envs: [Lossy<(NonZeroUsize, usize), Env<'t>, 16>; 2],
     /// Codomains by the Pi value and argument they instantiate.
     pub(super) insts: Lossy<(usize, usize), V<'t>, 16>,
     /// Trimmed environments by source and support mask.
@@ -488,6 +490,8 @@ impl<K, V, const BITS: u32> Default for Lossy<K, V, BITS> {
         }
     }
 }
+
+const _: () = assert!(size_of::<(u32, Option<((NonZeroUsize, usize), Env<'_>)>)>() == 32);
 
 const LOSSY_MIN: usize = 1 << 10;
 const LOSSY_KEEP: usize = 1 << 16;

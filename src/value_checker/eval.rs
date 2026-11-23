@@ -1,6 +1,6 @@
 use super::intern::Ptrs;
 use super::tables::{Mode, fx, fx_at};
-use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
+use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, addr, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::resource::stack_exhausted;
@@ -12,6 +12,7 @@ use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ptr;
 use std::slice::Iter;
 
@@ -30,7 +31,7 @@ const EXACT: usize = 256;
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn push(&mut self, env: Env<'t>, v: V<'t>) -> Env<'t> {
         stat!(self, push_req);
-        let k = (key(v), env.key());
+        let k = (addr(v), env.key());
         let open = v.open || env.open();
         stat!(self, push_open_req, open);
         let h = match self.t.envs[usize::from(open)].probe_hashed(fx_at(self.fxk, &k), &k) {
@@ -42,7 +43,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     #[inline(never)]
     fn push_new(&mut self, env: Env<'t>, v: V<'t>, open: bool, h: u64) -> Env<'t> {
-        let k = (key(v), env.key());
+        let k = (addr(v), env.key());
         stat!(self, push_new);
         stat!(self, push_open_new, open);
         stat!(self, b_env, size_of::<EnvObj>());
@@ -73,7 +74,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         v: V<'t>,
         open: bool,
         h: u64,
-        k: (usize, usize),
+        k: (NonZeroUsize, usize),
     ) -> Env<'t> {
         let buf: Vec<V<'t>> = std::iter::once(v).chain(env.iter()).collect();
         let e = self.frame_in(&buf, open);
