@@ -649,27 +649,31 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn support_in(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         stat!(self, sup_wide_new);
-        let mut slots = Vec::new();
+        let mut slots = SmallVec::<[u16; 64]>::new();
+        let under = |s: Slots<'t>| s.filter_map(|i| i.checked_sub(1));
         match *e {
             Expr::Var { idx, .. } => slots.push(idx),
             Expr::App { fun, arg, .. } => {
-                slots.extend(self.slots(fun)?);
-                slots.extend(self.slots(arg)?);
+                let (f, a) = (self.slots(fun)?, self.slots(arg)?);
+                union(&mut slots, f, a);
             }
             Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-                slots.extend(self.slots(ty)?);
-                slots.extend(self.slots(body)?.filter_map(|i| i.checked_sub(1)));
+                let (t, b) = (self.slots(ty)?, self.slots(body)?);
+                union(&mut slots, t, under(b));
             }
             Expr::Let { data, .. } => {
-                slots.extend(self.slots(data.ty)?);
-                slots.extend(self.slots(data.val)?);
-                slots.extend(self.slots(data.body)?.filter_map(|i| i.checked_sub(1)));
+                let (t, v, b) = (
+                    self.slots(data.ty)?,
+                    self.slots(data.val)?,
+                    self.slots(data.body)?,
+                );
+                let mut outer = SmallVec::<[u16; 64]>::new();
+                union(&mut outer, t, v);
+                union(&mut slots, outer.into_iter(), under(b));
             }
             Expr::Proj { e, .. } => slots.extend(self.slots(e)?),
             _ => {}
         }
-        slots.sort_unstable();
-        slots.dedup();
         stat!(self, b_sup, size_of_val(&slots[..]));
         (slots.len() <= EXACT).then(|| &*self.ctx.arena.alloc_slice_copy(&slots))
     }
@@ -755,6 +759,38 @@ impl Iterator for Slots<'_> {
             }),
             Slots::Wide(it) => it.next().copied(),
         }
+    }
+}
+
+/// Merges two strictly increasing runs into `out`, keeping one of each slot.
+fn union(
+    out: &mut SmallVec<[u16; 64]>,
+    a: impl Iterator<Item = u16>,
+    b: impl Iterator<Item = u16>,
+) {
+    let (mut a, mut b) = (a.peekable(), b.peekable());
+    loop {
+        let x = match (a.peek(), b.peek()) {
+            (Some(&x), Some(&y)) => {
+                if x <= y {
+                    a.next();
+                }
+                if y <= x {
+                    b.next();
+                }
+                x.min(y)
+            }
+            (Some(&x), None) => {
+                a.next();
+                x
+            }
+            (None, Some(&y)) => {
+                b.next();
+                y
+            }
+            (None, None) => return,
+        };
+        out.push(x);
     }
 }
 
