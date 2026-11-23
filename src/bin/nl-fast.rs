@@ -30,8 +30,9 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(short = 'j', long, value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     threads: Option<u16>,
-    /// Threads importing ndjson, one builder plus scanners. By default 2 for exports over 16 GiB
-    /// when checking with more than one thread, otherwise 1, which reads serially
+    /// Threads importing ndjson, one builder plus scanners, and with any scanner one more that
+    /// records dependencies. By default 2 for exports over 16 GiB when checking with more than
+    /// one thread, otherwise 1, which reads serially
     #[arg(long, value_name = "N", value_parser = value_parser!(u16).range(1..=MAX_THREADS))]
     import_threads: Option<u16>,
     /// Check only this declaration

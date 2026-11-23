@@ -1,4 +1,4 @@
-use super::scan::{self, Batch, Line};
+use super::scan::{self, Batch, Line, Scanned};
 use crate::error::{Result, invalid, unsupported};
 use crate::hash64;
 use crate::term::FxHashMap;
@@ -13,6 +13,25 @@ use num_bigint::BigUint;
 use serde_json::Value;
 
 pub(super) const BYTES_PER_LINE: usize = 56;
+/// How many scanned lines ahead the builder starts loading what a line will read. The tables
+/// and the arena are far larger than any cache, so these loads otherwise stall it one by one.
+const AHEAD_SLOTS: usize = 16;
+const AHEAD_NODES: usize = 8;
+
+/// Hints that `p` will be read soon. A hint reads nothing, so any address is allowed.
+#[inline(always)]
+fn prefetch<T>(p: *const T) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `prfm` is a hint that never faults and changes no state.
+    unsafe {
+        std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly));
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch hint never faults and changes no state.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(p.cast::<i8>(), std::arch::x86_64::_MM_HINT_T0);
+    }
+}
 const BVAR_LIMIT: u16 = NLB_MASK - 1;
 
 pub(super) struct Importer<'a> {
@@ -28,6 +47,8 @@ pub(super) struct Importer<'a> {
     pub(super) stats: Stats,
     scratch: Vec<u32>,
     deps: Recorder<'a>,
+    /// Set while a recording thread holds `deps`, which then gets the events instead.
+    log: Option<Log<'a>>,
     track: bool,
     pub(super) imported: u64,
     own: u32,
@@ -37,7 +58,7 @@ pub(super) struct Importer<'a> {
 /// of the constants under it: none, one declaration, or many, standing for the declaration that
 /// follows the node, which uses it and so reaches all of them.
 #[derive(Default)]
-struct Recorder<'a> {
+pub(super) struct Recorder<'a> {
     /// Per expression id, 0, `j + 1` for declaration `j` alone, or `MANY | d`.
     sum: Vec<u32>,
     /// Summary of the node being built.
@@ -48,6 +69,8 @@ struct Recorder<'a> {
     stamp: Vec<u32>,
     /// Constants not yet declared, which only a declaration's own block may name.
     pending: Vec<NamePtr<'a>>,
+    /// Set by a replay that met an id out of order, which ends the record as it does inline.
+    broken: bool,
     out: Deps<'a>,
 }
 
@@ -100,6 +123,12 @@ impl<'a> Recorder<'a> {
         }
     }
 
+    #[inline(always)]
+    fn undeclared(&mut self, n: NamePtr<'a>) {
+        self.acc = MANY;
+        self.pending.push(n);
+    }
+
     fn flush(&mut self) {
         self.stamp.push(0);
         self.out.names.append(&mut self.pending);
@@ -107,6 +136,137 @@ impl<'a> Recorder<'a> {
         self.out.ends.push(ends);
         self.start = self.sum.len() as u32;
         self.acc = 0;
+    }
+
+    /// Replays a batch. Lines the builder logged take their events from `ev`, and the others,
+    /// plain expressions, are read off the scanned lines. `here` carries between batches.
+    pub(super) fn replay(&mut self, lines: &[Scanned], ev: &Events<'a>, here: &mut u32) {
+        let (mut args, mut names) = (ev.args.iter().copied(), ev.names.iter().copied());
+        let mut arg = || args.next().unwrap_or(0);
+        let mut next = 0;
+        for &op in &ev.ops {
+            if self.broken {
+                return;
+            }
+            match op {
+                LINE => {
+                    let k = arg() as usize;
+                    let Some(before) = lines.get(next..k) else {
+                        self.broken = true;
+                        return;
+                    };
+                    self.plain(before, *here);
+                    next = k + 1;
+                }
+                CHILD => self.child(arg(), *here),
+                NODE => self.ranged(arg(), *here),
+                CONSTANT => self.constant(arg(), *here),
+                UNDECLARED => names.next().into_iter().for_each(|n| self.undeclared(n)),
+                HERE => *here = arg(),
+                _ => self.flush(),
+            }
+        }
+        match lines.get(next..) {
+            Some(rest) => self.plain(rest, *here),
+            None => self.broken = true,
+        }
+    }
+
+    /// What the builder's `expr` and `ranged` calls record for lines it applied without logging.
+    fn plain(&mut self, lines: &[Scanned], here: u32) {
+        for (k, &(_, _, l)) in lines.iter().enumerate() {
+            if self.broken {
+                return;
+            }
+            // A summary is read at random from a table far larger than any cache.
+            if let Some(&(_, _, Some(l))) = lines.get(k + AHEAD_SLOTS)
+                && let Some((x, y)) = Importer::children(l)
+            {
+                prefetch(self.sum.as_ptr().wrapping_add(x as usize));
+                prefetch(self.sum.as_ptr().wrapping_add(y as usize));
+            }
+            let (i, children) = match l {
+                Some(Line::App(i, f, a)) => (i, [f, a, NONE]),
+                Some(Line::Binder { id, ty, body, .. }) => (id, [ty, body, NONE]),
+                Some(Line::Let {
+                    id, ty, val, body, ..
+                }) => (id, [ty, val, body]),
+                Some(Line::Bvar(i, _) | Line::Sort(i, _)) => (i, [NONE; 3]),
+                _ => continue,
+            };
+            for c in children {
+                self.child(c, here);
+            }
+            self.ranged(i, here);
+        }
+    }
+
+    #[inline(always)]
+    fn ranged(&mut self, i: u32, here: u32) {
+        if self.sum.len() == i as usize {
+            self.node(here);
+        } else {
+            self.broken = true;
+        }
+    }
+}
+
+/// No expression has this id, `child` ignores ids past the summaries, so it stands for no child.
+const NONE: u32 = u32::MAX;
+
+const LINE: u8 = 0;
+const CHILD: u8 = 1;
+const NODE: u8 = 2;
+const CONSTANT: u8 = 3;
+const UNDECLARED: u8 = 4;
+const HERE: u8 = 5;
+const FLUSH: u8 = 6;
+
+/// What a batch's lines record beyond what the scanned lines show: the constants they name and
+/// the declarations they add, each line's events after its index. A summary lookup stalls on
+/// memory and the builder is the one thread a threaded import waits on, so another replays them.
+#[derive(Default)]
+pub(super) struct Events<'a> {
+    ops: Vec<u8>,
+    args: Vec<u32>,
+    names: Vec<NamePtr<'a>>,
+}
+
+struct Log<'a> {
+    ev: Events<'a>,
+    /// Off while the builder applies a line the replay reads off the scan.
+    on: bool,
+    /// The declaration count the replay holds.
+    here: u32,
+}
+
+impl<'a> Log<'a> {
+    /// Logs an event of a line that has `here` declarations before it at this point.
+    #[inline(always)]
+    fn op(&mut self, op: u8, arg: u32, here: u32) {
+        self.at(here);
+        self.ev.ops.push(op);
+        self.ev.args.push(arg);
+    }
+
+    #[inline(always)]
+    fn at(&mut self, here: u32) {
+        if self.here != here {
+            self.here = here;
+            self.ev.ops.push(HERE);
+            self.ev.args.push(here);
+        }
+    }
+
+    fn uses(&mut self, n: NamePtr<'a>, here: u32) {
+        match n.decl_idx() {
+            Some(j) => self.op(CONSTANT, j, here),
+            None => {
+                self.at(here);
+                self.ev.ops.push(UNDECLARED);
+                self.ev.names.push(n);
+            }
+        }
     }
 }
 
@@ -241,6 +401,7 @@ impl<'a> Importer<'a> {
                 stamp: vec![0],
                 ..Recorder::default()
             },
+            log: None,
             track: bytes == 0 || bytes >= RECORD_BYTES,
             imported: 0,
             own: 0,
@@ -326,7 +487,12 @@ impl<'a> Importer<'a> {
 
     #[inline(always)]
     pub(super) fn expr(&mut self, i: u32) -> Result<ExprPtr<'a>> {
-        self.deps.child(i, self.declars.len() as u32);
+        let here = self.declars.len() as u32;
+        match &mut self.log {
+            Some(log) if log.on => log.op(CHILD, i, here),
+            Some(_) => {}
+            None => self.deps.child(i, here),
+        }
         self.exprs.get(i)
     }
 
@@ -335,10 +501,12 @@ impl<'a> Importer<'a> {
         if !self.track {
             return;
         }
-        if self.deps.sum.len() == i as usize {
-            self.deps.node(self.declars.len() as u32);
-        } else {
-            self.track = false;
+        let here = self.declars.len() as u32;
+        match &mut self.log {
+            Some(log) if log.on => log.op(NODE, i, here),
+            Some(_) => {}
+            None if self.deps.sum.len() == i as usize => self.deps.node(here),
+            None => self.track = false,
         }
     }
 
@@ -348,18 +516,76 @@ impl<'a> Importer<'a> {
             return;
         }
         let here = self.declars.len() as u32;
-        match n.decl_idx() {
-            Some(j) => self.deps.constant(j, here),
-            None => {
-                self.deps.acc = MANY;
-                self.deps.pending.push(n);
-            }
+        match (&mut self.log, n.decl_idx()) {
+            (Some(log), _) => log.uses(n, here),
+            (None, Some(j)) => self.deps.constant(j, here),
+            (None, None) => self.deps.undeclared(n),
         }
     }
 
     pub(super) fn flush_deps(&mut self) {
-        if self.track {
-            self.deps.flush();
+        if !self.track {
+            return;
+        }
+        match &mut self.log {
+            Some(log) => log.ev.ops.push(FLUSH),
+            None => self.deps.flush(),
+        }
+    }
+
+    /// Hands the recorder to a thread that replays each batch with what `logged` returns.
+    pub(super) fn record_apart(&mut self) -> Recorder<'a> {
+        self.log = Some(Log {
+            ev: Events::default(),
+            on: self.track,
+            here: 0,
+        });
+        let mut deps = std::mem::take(&mut self.deps);
+        deps.broken = !self.track;
+        deps
+    }
+
+    /// The events since the last call, leaving the emptied `spare` to fill.
+    pub(super) fn logged(&mut self, mut spare: Events<'a>) -> Events<'a> {
+        spare.ops.clear();
+        spare.args.clear();
+        spare.names.clear();
+        match &mut self.log {
+            Some(log) => std::mem::replace(&mut log.ev, spare),
+            None => spare,
+        }
+    }
+
+    /// Takes the recorder back once it has replayed every batch.
+    pub(super) fn recorded(&mut self, deps: Recorder<'a>) {
+        self.log = None;
+        self.track &= !deps.broken;
+        self.deps = deps;
+    }
+
+    /// Logs the line at `k` of a batch, or leaves it to the replay if its scan shows all it
+    /// records, which only holds for a line that is applied as scanned.
+    #[inline(always)]
+    fn log_line(&mut self, k: usize, plain: bool) {
+        if let Some(log) = &mut self.log
+            && self.track
+        {
+            log.on = !plain;
+            if !plain {
+                log.ev.ops.push(LINE);
+                log.ev.args.push(k as u32);
+            }
+        }
+    }
+
+    /// Ends a logged line, telling the replay of the declarations it added.
+    #[inline(always)]
+    fn log_end(&mut self) {
+        if let Some(log) = &mut self.log
+            && self.track
+        {
+            log.at(self.declars.len() as u32);
+            log.on = true;
         }
     }
 
@@ -567,9 +793,19 @@ impl<'a> Importer<'a> {
         let mut head = std::mem::take(carry);
         head.extend_from_slice(&b.buf[..first]);
         self.raw_line(&head, head.len(), n)?;
+        self.log_end();
         let mut us = &b.us[..];
-        for &(s, e, l) in &b.lines {
+        for (k, &(s, e, l)) in b.lines.iter().enumerate() {
+            if let Some(&(_, _, Some(l))) = b.lines.get(k + AHEAD_SLOTS) {
+                self.fetch_slots(l);
+            }
+            if let Some(&(_, _, Some(l))) = b.lines.get(k + AHEAD_NODES) {
+                self.fetch_nodes(l);
+            }
             let raw = &b.buf[s as usize..e as usize];
+            let plain =
+                *n != 0 && l.is_some_and(|l| !l.listed() && !matches!(l, Line::Proj { .. }));
+            self.log_line(k, plain);
             let r = match l {
                 Some(l) if l.listed() => {
                     let (now, rest) = us[1..].split_at(us[0] as usize);
@@ -588,12 +824,51 @@ impl<'a> Importer<'a> {
                 self.general(&v, *n == 0)
             });
             r.map_err(|e| e.at("line", *n))?;
+            if !plain {
+                self.log_end();
+            }
             *n += 1;
         }
+        // The line that straddles into the next batch is parsed there, unscanned.
+        self.log_end();
         head.clear();
         head.extend_from_slice(&b.buf[last + 1..]);
         *carry = head;
         Ok(())
+    }
+
+    /// The expressions a line reads. Nearly half of them sit millions of ids back.
+    #[inline(always)]
+    fn children(l: Line) -> Option<(u32, u32)> {
+        match l {
+            Line::App(_, f, a) => Some((f, a)),
+            Line::Binder { ty, body, .. } => Some((ty, body)),
+            _ => None,
+        }
+    }
+
+    /// Starts loading the table slots of a line still `AHEAD_SLOTS` away.
+    #[inline(always)]
+    fn fetch_slots(&self, l: Line) {
+        if let Some((x, y)) = Self::children(l) {
+            for i in [x, y] {
+                prefetch(self.exprs.dense.as_ptr().wrapping_add(i as usize));
+            }
+        }
+    }
+
+    /// Starts loading the open children of a line `AHEAD_NODES` away, whose support is read.
+    #[inline(always)]
+    fn fetch_nodes(&self, l: Line) {
+        if let Some((x, y)) = Self::children(l) {
+            for i in [x, y] {
+                if let Some(&Some(p)) = self.exprs.dense.get(i as usize)
+                    && !p.closed()
+                {
+                    prefetch(std::ptr::from_ref(p.as_ref()));
+                }
+            }
+        }
     }
 
     fn listed(&mut self, l: Line, us: &[u32]) -> Result<()> {
