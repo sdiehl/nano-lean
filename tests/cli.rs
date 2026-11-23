@@ -188,6 +188,7 @@ fn fast_checks_every_declaration_and_selected_blocks() {
         String::from_utf8(output.stderr).unwrap()
     };
     assert!(run(&[]).contains(": 7 attempted, 0 failures"));
+    assert!(run(&["-j", "2", "--table-bits", "10"]).contains(": 7 attempted, 0 failures"));
     let rec = run(&["--declaration", "Tree.rec"]);
     assert!(
         rec.contains(": 1 attempted, 0 failures") && rec.contains("ind 1"),
@@ -240,5 +241,7 @@ fn config_permits_axioms_and_flags_override_it() {
             .success()
     );
     std::fs::write(&config, "steps = 1\nthread = 2\n").unwrap();
+    assert_eq!(run(&[]).status.code(), Some(2));
+    std::fs::write(&config, "table_bits = 9\n").unwrap();
     assert_eq!(run(&[]).status.code(), Some(2));
 }

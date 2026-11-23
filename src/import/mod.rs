@@ -24,6 +24,8 @@ use std::thread;
 const PAR_CHUNK: usize = 4 << 20;
 const CHUNK: usize = 16 << 20;
 const READ_AHEAD: usize = 2;
+/// Batches of dependency events the builder may run ahead of their replay.
+const RECORD_AHEAD: usize = 4;
 
 pub fn import(arena: &Arena, path: impl AsRef<Path>) -> Result<Store<'_>> {
     import_with(arena, path, 1)
@@ -40,7 +42,7 @@ pub fn import_with(arena: &Arena, path: impl AsRef<Path>, threads: usize) -> Res
         return im.finish();
     }
     if threads > 1 && len > 2 * PAR_CHUNK {
-        return import_lines(arena, &file, len, threads - 1, PAR_CHUNK);
+        return import_lines(arena, &file, len, threads - 1, PAR_CHUNK, len);
     }
     import_reader(arena, file, len)
 }
@@ -103,13 +105,15 @@ impl Pipe {
     }
 }
 
-/// Scanners read and scan fixed chunks with positioned reads, this thread builds in order.
+/// Scanners read and scan fixed chunks with positioned reads, this thread builds in order, and
+/// one more replays the dependencies it logs. `hint` sizes the tables and is 0 for unknown.
 fn import_lines<'a>(
     arena: &'a Arena,
     file: &File,
     len: usize,
     scanners: usize,
     chunk: usize,
+    hint: usize,
 ) -> Result<Store<'a>> {
     let chunks = len.div_ceil(chunk);
     let pipe = Pipe {
@@ -125,9 +129,23 @@ fn import_lines<'a>(
     };
     let next = AtomicUsize::new(0);
     let failed = Mutex::new(None);
-    let mut im = Importer::new(arena, len);
+    let mut im = Importer::new(arena, hint);
     let mut carry = Vec::new();
+    let (events, replayed) = mpsc::sync_channel::<(Batch, _)>(RECORD_AHEAD);
+    let (spent, spares) = mpsc::channel();
+    let pipe = &pipe;
     let n = thread::scope(|s| {
+        let mut deps = im.record_apart();
+        let recorder = s.spawn(move || {
+            let mut here = 0;
+            for (b, ev) in replayed {
+                deps.replay(&b.lines, &ev, &mut here);
+                pipe.give(b);
+                // The builder may be gone, and then nothing is left to reuse the buffers.
+                drop(spent.send(ev));
+            }
+            deps
+        });
         for _ in 0..scanners {
             s.spawn(|| {
                 loop {
@@ -156,12 +174,23 @@ fn import_lines<'a>(
                 return Err(e.into());
             }
             im.batch(&b, &mut carry, &mut n)?;
-            pipe.give(b);
+            // A recorder that is gone has panicked, which the join below raises again.
+            drop(events.send((b, im.logged(spares.try_recv().unwrap_or_default()))));
             Ok(())
         });
         pipe.close();
-        r.and_then(|()| im.raw_line(&carry, carry.len(), &mut n))
-            .map(|()| n)
+        let r = r.and_then(|()| im.raw_line(&carry, carry.len(), &mut n));
+        // After an error the log holds part of a batch that was never sent, and nothing reads
+        // the record.
+        if r.is_ok() {
+            drop(events.send((Batch::default(), im.logged(Default::default()))));
+        }
+        drop(events);
+        match recorder.join() {
+            Ok(deps) => im.recorded(deps),
+            Err(e) => std::panic::resume_unwind(e),
+        }
+        r.map(|()| n)
     })?;
     im.finish_lines(n)
 }
@@ -400,7 +429,11 @@ mod tests {
                     .iter()
                     .map(|d| (d.name().to_string(), shape(d.ty(), &mut memo)))
                     .collect();
-                format!("{:?} {decls:?}", s.stats)
+                let deps = s.deps.as_ref().map(|d| {
+                    let names: Vec<_> = d.names.iter().map(ToString::to_string).collect();
+                    (&d.ends, &d.decls, names)
+                });
+                format!("{:?} {decls:?} {deps:?}", s.stats)
             }
             Err(e) => e.to_string(),
         }
@@ -410,12 +443,15 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(bytes).unwrap();
         let arena = Arena::new();
-        let want = summary(import_reader(&arena, bytes, bytes.len()));
-        for &chunk in chunks {
-            for scanners in 1..=3 {
-                let (arena, file) = (Arena::new(), File::open(f.path()).unwrap());
-                let got = import_lines(&arena, &file, bytes.len(), scanners, chunk);
-                assert_eq!(summary(got), want, "chunk {chunk} scanners {scanners}");
+        // A zero hint records dependencies whatever the size, as an unsized reader does.
+        for hint in [0, bytes.len()] {
+            let want = summary(import_serial(&arena, bytes, hint));
+            for &chunk in chunks {
+                for scanners in 1..=3 {
+                    let (arena, file) = (Arena::new(), File::open(f.path()).unwrap());
+                    let got = import_lines(&arena, &file, bytes.len(), scanners, chunk, hint);
+                    assert_eq!(summary(got), want, "chunk {chunk} scanners {scanners}");
+                }
             }
         }
     }
@@ -424,12 +460,17 @@ mod tests {
     fn chunked_scan_matches_sequential_reader() {
         let large = include_bytes!("../../tests/fixtures/let/nat-let-fold.ndjson");
         agree(large, &[4096, 65536]);
+        let recorded = summary(import_serial(&Arena::new(), &large[..], 0));
+        assert!(
+            recorded.contains("Some(("),
+            "dependencies were not compared"
+        );
         let small = include_bytes!("../../tests/fixtures/neutral.ndjson");
         agree(small, &[1, 7, 100, 1 << 20]);
         let mut cut = small.to_vec();
         let mid = cut.len() / 2;
         cut[mid..].iter_mut().take(40).for_each(|b| *b = b'x');
-        agree(&cut, &[7, 100]);
+        agree(&cut, &[7, 100, 4096, 1 << 20]);
         agree(&small[..small.len() - 1], &[13]);
     }
 }

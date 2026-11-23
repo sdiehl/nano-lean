@@ -12,6 +12,7 @@ use crate::value_checker::{self, Session};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 use std::io::{self, IsTerminal, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -31,6 +32,8 @@ const FAILURES_SHOWN: usize = 30;
 const TICK: Duration = Duration::from_millis(250);
 const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 pub const DEFAULT_SESSION_MIB: u32 = 64;
+/// The slot bits `table_bits` can cap the lossy memo tables at.
+pub const TABLE_BITS: RangeInclusive<i64> = 10..=16;
 
 /// The same settings as the `nl-fast` flags, which override them.
 #[derive(Default, Deserialize)]
@@ -41,6 +44,7 @@ pub struct Config {
     pub steps: Option<u64>,
     pub arena_mib: Option<u32>,
     pub session_mib: Option<u32>,
+    pub table_bits: Option<u32>,
     #[serde(default)]
     pub fallback: bool,
     #[serde(default)]
@@ -72,6 +76,11 @@ impl Config {
             .any(|&j| !(1..=MAX_THREADS).contains(&i64::from(j)))
         {
             return Err(fail(&format!("threads must be in 1..={MAX_THREADS}")));
+        }
+        if c.table_bits
+            .is_some_and(|b| !TABLE_BITS.contains(&i64::from(b)))
+        {
+            return Err(fail(&format!("table_bits must be in {TABLE_BITS:?}")));
         }
         let dir = path.parent().unwrap_or(Path::new(""));
         c.prelude = c.prelude.map(|p| dir.join(p));
@@ -117,6 +126,7 @@ impl Config {
             core: self.core(),
             limits: self.limits(),
             session_bytes: self.session_mib.unwrap_or(DEFAULT_SESSION_MIB) as usize * MIB,
+            table_bits: self.table_bits,
         }
     }
 }
@@ -164,6 +174,8 @@ pub struct Checks {
     pub limits: Limits,
     /// Session arena size past which a worker drops its tables and starts afresh.
     pub session_bytes: usize,
+    /// Slot bits every lossy memo table is capped at, below its own size.
+    pub table_bits: Option<u32>,
 }
 
 impl Checks {
@@ -193,6 +205,9 @@ impl Checks {
         stop: &AtomicBool,
     ) -> usize {
         let o = self;
+        if let Some(b) = o.table_bits {
+            value_checker::cap_tables(b);
+        }
         let t = Instant::now();
         let next = AtomicU32::new(0);
         let fails = AtomicUsize::new(0);

@@ -9,6 +9,8 @@
 - Fold vstats counters into `stat!`.
 - Report every table in vstats footprint.
 - Derive clap `ValueEnum` for operators.
+- Add `--table-bits` to cap the lossy memo tables below their default sizes.
+- With `--import-threads`, prefetch the far children of scanned ndjson lines and record dependencies on their own thread.
 
 ## 0.4.2 (2026-11-20)
 

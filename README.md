@@ -145,6 +145,7 @@ threads = 10
 steps = 200000000
 arena_mib = 4096
 session_mib = 64
+table_bits = 11
 fallback = false
 term_core = false
 prelude = "init.blean"

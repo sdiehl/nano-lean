@@ -215,11 +215,14 @@ impl<'b> Cur<'b> {
 /// The whole lines of one chunk, scanned off the importing thread. The bytes before
 /// the first and after the last newline belong to lines split across chunks. Universe
 /// lists of constants follow each other in `us`, each prefixed by its length.
+/// A line's byte range in its batch, and its scan unless it needs the general parser.
+pub type Scanned = (u32, u32, Option<Line>);
+
 #[derive(Default)]
 pub struct Batch {
     pub buf: Vec<u8>,
     pub body: Option<(usize, usize)>,
-    pub lines: Vec<(u32, u32, Option<Line>)>,
+    pub lines: Vec<Scanned>,
     pub us: Vec<u32>,
 }
 

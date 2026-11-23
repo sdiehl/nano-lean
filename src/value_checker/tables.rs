@@ -12,6 +12,7 @@ use std::mem::{replace, swap, take, transmute};
 use std::ops::{Deref, Index, IndexMut};
 use std::ptr;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 #[derive(Clone, Copy)]
 pub(super) enum Hot {
@@ -468,8 +469,8 @@ impl<K: Copy + Eq + Hash, V> Logged<K, V> {
 /// Direct mapped and bounded: a colliding insert evicts, so a long evaluation keeps recent
 /// results instead of growing a table of entries that are mostly never read again. Slots
 /// stamped with an older epoch are empty, so emptying a large table writes nothing. `BITS` caps
-/// the slot count, kept small since the tables persist across declarations and a large one
-/// misses the cache on every probe.
+/// the slot count, or `cap_tables` below it, kept small since the tables persist across
+/// declarations and a large one misses the cache on every probe.
 pub(super) struct Lossy<K, V, const BITS: u32> {
     slots: Vec<(u32, Option<(K, V)>)>,
     live: usize,
@@ -490,6 +491,15 @@ impl<K, V, const BITS: u32> Default for Lossy<K, V, BITS> {
 
 const LOSSY_MIN: usize = 1 << 10;
 const LOSSY_KEEP: usize = 1 << 16;
+
+/// A cap below `BITS` for every lossy table, read only when one grows.
+static TABLE_BITS: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Caps every lossy table at `2^bits` slots from its next growth on. Smaller tables recompute
+/// more but stay in cache, which can pay off when every core runs a worker.
+pub fn cap_tables(bits: u32) {
+    TABLE_BITS.store(bits, Relaxed);
+}
 
 impl<K: Copy + Eq + Hash, V: Copy, const BITS: u32> Lossy<K, V, BITS> {
     #[inline]
@@ -546,7 +556,8 @@ impl<K: Copy + Eq + Hash, V: Copy, const BITS: u32> Lossy<K, V, BITS> {
         let n = (self.slots.len() * 2).max(LOSSY_MIN);
         let old = replace(&mut self.slots, vec![(self.epoch.wrapping_sub(1), None); n]);
         self.live = 0;
-        self.grow_at = if n < 1 << BITS { n / 4 * 3 } else { usize::MAX };
+        let bits = BITS.min(TABLE_BITS.load(Relaxed));
+        self.grow_at = if n < 1 << bits { n / 4 * 3 } else { usize::MAX };
         for (e, kv) in old {
             if let (true, Some((k, v))) = (e == self.epoch, kv) {
                 let i = self.slot(fx(&k));
@@ -786,5 +797,24 @@ impl Tables<'_> {
             "lazies_open" lazies[1],
             "nats" nats,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_bits_caps_lossy_tables() {
+        let fill = || {
+            let mut t = Lossy::<usize, usize, 16>::default();
+            (0..1 << 14).for_each(|i| t.insert(i, i));
+            t.slots.len()
+        };
+        cap_tables(11);
+        let capped = fill();
+        cap_tables(u32::MAX);
+        assert_eq!(capped, 1 << 11);
+        assert_eq!(fill(), 1 << 14);
     }
 }
