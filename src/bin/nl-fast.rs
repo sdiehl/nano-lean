@@ -1,6 +1,6 @@
 use clap::{Parser, value_parser};
 use nano_lean::export::ExportError;
-use nano_lean::fast::{self, Checks, Config, MAX_THREADS};
+use nano_lean::fast::{self, Checks, Config, MAX_THREADS, TABLE_BITS};
 use nano_lean::import::{self, blean};
 use nano_lean::term::{arena::Arena, decl::Declar, intern::Store};
 use std::collections::HashSet;
@@ -52,6 +52,10 @@ struct Cli {
     /// Keep a worker's tables until its session arena passes MIB
     #[arg(long, value_name = "MIB")]
     session_mib: Option<u32>,
+    /// Cap every lossy memo table at 2^N slots. Smaller tables recompute more but stay in
+    /// cache, which can shorten a check that runs a worker on every core
+    #[arg(long, value_name = "N", value_parser = value_parser!(u32).range(TABLE_BITS))]
+    table_bits: Option<u32>,
     /// Check in export order instead of near each declaration's dependencies
     #[arg(long)]
     no_reorder: bool,
@@ -125,6 +129,7 @@ fn options() -> Options {
     c.steps = cli.steps.or(c.steps);
     c.arena_mib = cli.arena_mib.or(c.arena_mib);
     c.session_mib = cli.session_mib.or(c.session_mib);
+    c.table_bits = cli.table_bits.or(c.table_bits);
     c.term_core |= cli.term_core;
     c.fallback |= cli.fallback;
     c.cache_audit |= cli.cache_audit;

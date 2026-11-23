@@ -42,6 +42,7 @@ pub(crate) use decl::{RecCheck, RecChecker};
 pub use session::{BRIDGED, Session};
 #[cfg(feature = "vstats")]
 pub use stats::{RESETS, TOTAL, report};
+pub use tables::cap_tables;
 
 const ARENA_STRIDE_MASK: u64 = 1023;
 const INCLUDED_MAX: usize = 8;
