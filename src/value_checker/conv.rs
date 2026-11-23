@@ -63,26 +63,24 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     #[inline(always)]
     pub(crate) fn def_eq(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
         stat!(self, deq_calls);
-        if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
+        if ptr::eq(t, s) {
             stat!(self, deq_ptr_eq);
-            #[cfg(feature = "memocheck")]
-            if !ptr::eq(t, s) {
-                self.audit("equality", |c| c.def_eq_core(t, s));
-            }
             return Ok(true);
         }
-        self.def_eq_slow(t, s)
+        let known = self.t.verdicts.get(key(t), key(s));
+        if known == Some(true) {
+            stat!(self, deq_ptr_eq);
+            #[cfg(feature = "memocheck")]
+            self.audit("equality", |c| c.def_eq_core(t, s));
+            return Ok(true);
+        }
+        self.def_eq_slow(t, s, known.is_some())
     }
 
     #[inline(never)]
-    fn def_eq_slow(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+    fn def_eq_slow(&mut self, t: V<'t>, s: V<'t>, unequal: bool) -> R<bool> {
         self.tick()?;
-        let k = if key(t) < key(s) {
-            (key(t), key(s))
-        } else {
-            (key(s), key(t))
-        };
-        if self.t.neq_cache.contains(&k) {
+        if unequal {
             stat!(self, neq_hit);
             #[cfg(feature = "memocheck")]
             self.audit("inequality", |c| Ok(!c.def_eq_core(t, s)?));
@@ -95,10 +93,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
         self.guard()?;
         let r = same || self.def_eq_core(t, s)?;
-        if r {
-            self.t.eq_cache.insert_both(key(t), key(s));
-        } else if !self.deriving && !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..)) {
-            self.t.neq_cache.insert(k);
+        if r || (!self.deriving && !matches!(t.k, K::Lam(..)) && !matches!(s.k, K::Lam(..))) {
+            self.t.verdicts.insert(key(t), key(s), r);
         }
         Ok(r)
     }
@@ -170,7 +166,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     fn quick(&mut self, t: V<'t>, s: V<'t>) -> R<Option<bool>> {
-        if ptr::eq(t, s) || self.t.eq_cache.contains(&(key(t), key(s))) {
+        if ptr::eq(t, s) || self.t.verdicts.get(key(t), key(s)) == Some(true) {
             return Ok(Some(true));
         }
         Ok(match (t.k, s.k) {

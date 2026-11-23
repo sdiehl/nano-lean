@@ -119,10 +119,9 @@ pub(super) struct Tables<'t> {
     pub(super) eval_proj: Lossy<(ExprPtr<'t>, Sub<'t>), (Env<'t>, V<'t>), 14>,
     /// Open applications by the environment they were inferred in, matched on their support.
     pub(super) infer_proj: Lossy<(ExprPtr<'t>, Sub<'t>), Inferred<'t>, 14>,
-    pub(super) eq_cache: LoggedSet<(usize, usize)>,
+    /// Pairs decided equal or established unequal.
+    pub(super) verdicts: Verdicts,
     pub(super) fail_cache: LoggedSet<(usize, usize)>,
-    /// Pairs decided unequal, smaller key first.
-    pub(super) neq_cache: LoggedSet<(usize, usize)>,
     /// Interned values, closed at index 0 and open at 1. Both persist with the durable caches
     /// that compare them by pointer.
     pub(super) hc: [Set<'t, Val<'t>>; 2],
@@ -175,8 +174,7 @@ impl<'t> Tables<'t> {
             infer_open: _,
             eval_proj: _,
             infer_proj: _,
-            eq_cache: _,
-            neq_cache: _,
+            verdicts: _,
             hc: _,
             neus: _,
             envs: _,
@@ -220,9 +218,8 @@ impl Tables<'_> {
             infer_open,
             infer_proj,
             eval_proj,
-            eq_cache,
+            verdicts,
             fail_cache,
-            neq_cache,
             hc,
             neus,
             envs,
@@ -248,9 +245,8 @@ impl Tables<'_> {
         } else {
             nats.clear();
         }
-        for l in [eq_cache, fail_cache, neq_cache] {
-            l.empty(keep);
-        }
+        verdicts.empty(keep);
+        fail_cache.empty(keep);
         conv_locals.empty(keep);
         eval_memo.empty(keep);
         infer_open.0.iter_mut().for_each(|l| l.empty(keep));
@@ -672,6 +668,78 @@ impl LoggedSet<(usize, usize)> {
     }
 }
 
+/// Decided pairs of value addresses, smaller first, with the verdict in the spare low bit of
+/// the larger. One probe answers either way round, and a pair is stored once.
+#[derive(Default)]
+pub(super) struct Verdicts {
+    table: HashTable<(usize, usize)>,
+    log: Vec<(usize, usize)>,
+}
+
+const _: () = assert!(align_of::<Val<'_>>() >= 2);
+
+impl Verdicts {
+    #[inline(always)]
+    fn order(a: usize, b: usize) -> (usize, usize) {
+        if a < b { (a, b) } else { (b, a) }
+    }
+
+    #[inline]
+    pub(super) fn get(&self, a: usize, b: usize) -> Option<bool> {
+        let k = Self::order(a, b);
+        self.table
+            .find(fx(&k), |&(x, y)| x == k.0 && y & !1 == k.1)
+            .map(|&(_, y)| y & 1 != 0)
+    }
+
+    pub(super) fn insert(&mut self, a: usize, b: usize, equal: bool) {
+        let k = Self::order(a, b);
+        let e = (k.0, k.1 | usize::from(equal));
+        match self.table.entry(
+            fx(&k),
+            |&(x, y)| x == k.0 && y & !1 == k.1,
+            |&(x, y)| fx(&(x, y & !1)),
+        ) {
+            Entry::Occupied(mut o) => *o.get_mut() = e,
+            Entry::Vacant(v) => {
+                v.insert(e);
+                if self.log.len() < LOG {
+                    self.log.push(k);
+                }
+            }
+        }
+    }
+
+    fn empty(&mut self, keep: usize) {
+        if self.table.len() <= self.log.len() {
+            for k in &self.log {
+                if let Ok(e) = self
+                    .table
+                    .find_entry(fx(k), |&(x, y)| x == k.0 && y & !1 == k.1)
+                {
+                    e.remove();
+                }
+            }
+        } else if self.table.len() > keep {
+            self.table.clear();
+            self.table.shrink_to(keep, |&(x, y)| fx(&(x, y & !1)));
+        } else {
+            self.table.clear();
+        }
+        self.log.clear();
+    }
+}
+
+#[cfg(feature = "vstats")]
+impl Footprint for Verdicts {
+    fn footprint(&self) -> (usize, usize) {
+        (
+            self.table.len(),
+            self.table.capacity() * (size_of::<(usize, usize)>() + 1),
+        )
+    }
+}
+
 thread_local! {
     pub(super) static POOL: RefCell<Option<Spare>> = const { RefCell::new(None) };
 }
@@ -753,9 +821,8 @@ impl Tables<'_> {
             infer_open,
             eval_proj,
             infer_proj,
-            eq_cache,
+            verdicts,
             fail_cache,
-            neq_cache,
             hc,
             neus,
             envs,
@@ -785,9 +852,8 @@ impl Tables<'_> {
             "infer_open1" infer_open[Mode::Only],
             "eval_proj" eval_proj,
             "infer_proj" infer_proj,
-            "eq_cache" eq_cache,
+            "verdicts" verdicts,
             "fail_cache" fail_cache,
-            "neq_cache" neq_cache,
             "hc_closed" hc[0],
             "hc_open" hc[1],
             "neus" neus,
@@ -807,6 +873,19 @@ impl Tables<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verdicts_answer_either_way_round() {
+        let mut v = Verdicts::default();
+        v.insert(64, 16, true);
+        v.insert(16, 32, false);
+        assert_eq!(v.get(16, 64), Some(true));
+        assert_eq!(v.get(64, 16), Some(true));
+        assert_eq!(v.get(32, 16), Some(false));
+        assert_eq!(v.get(32, 64), None);
+        v.empty(0);
+        assert_eq!(v.get(16, 64), None);
+    }
 
     #[test]
     fn table_bits_caps_lossy_tables() {
