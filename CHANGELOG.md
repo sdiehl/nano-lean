@@ -9,8 +9,8 @@
 - Fold vstats counters into `stat!`.
 - Report every table in vstats footprint.
 - Derive clap `ValueEnum` for operators.
-- Add `--table-bits` to cap the lossy memo tables below their default sizes.
-- With `--import-threads`, prefetch the far children of scanned ndjson lines and record dependencies on their own thread.
+- Add `--table-bits` to cap memo tables.
+- Prefetch and record dependencies off-builder.
 - Accept export format 3.2.0.
 - Validate declared inductive feature flags.
 - Gate projections and eta on flags.
