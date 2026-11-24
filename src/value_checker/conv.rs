@@ -100,10 +100,13 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     /// Bounded structural equality on hash-consed values. False means unknown.
+    #[inline(always)]
     fn same(&self, a: V<'t>, b: V<'t>, fuel: &mut u32) -> bool {
-        if ptr::eq(a, b) {
-            return true;
-        }
+        ptr::eq(a, b) || self.same_apart(a, b, fuel)
+    }
+
+    #[inline(never)]
+    fn same_apart(&self, a: V<'t>, b: V<'t>, fuel: &mut u32) -> bool {
         if *fuel == 0 {
             return false;
         }

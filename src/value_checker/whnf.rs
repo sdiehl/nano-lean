@@ -26,6 +26,8 @@ fn opaque_nat(v: V<'_>) -> bool {
 }
 
 impl<'t, 'a: 't> Vc<'t, 'a> {
+    /// The exits that do no work return from the call site, leaving the frame to a miss.
+    #[inline]
     pub(crate) fn whnf_core(&mut self, v: V<'t>) -> R<V<'t>> {
         let K::Neu(h, args) = v.k else { return Ok(v) };
         if matches!(h, Head::Local(_, _, None)) {
@@ -41,6 +43,11 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             });
             return Ok(r);
         }
+        self.whnf_core_miss(v, h, args)
+    }
+
+    #[inline(never)]
+    fn whnf_core_miss(&mut self, v: V<'t>, h: Head<'t>, args: &'t [V<'t>]) -> R<V<'t>> {
         #[cfg(feature = "memocheck")]
         self.audit_entered();
         self.tick()?;

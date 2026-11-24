@@ -347,6 +347,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.zeta_val(s, t, &mut memo)
     }
 
+    #[inline(always)]
     fn zeta_val(
         &mut self,
         sub: &[(u32, V<'t>)],
@@ -356,6 +357,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if !t.open {
             return Ok(t);
         }
+        self.zeta_open(sub, t, memo)
+    }
+
+    #[inline(never)]
+    fn zeta_open(
+        &mut self,
+        sub: &[(u32, V<'t>)],
+        t: V<'t>,
+        memo: &mut FxHashMap<usize, V<'t>>,
+    ) -> R<V<'t>> {
         if let Some(&r) = memo.get(&key(t)) {
             return Ok(r);
         }
@@ -615,7 +626,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(f)
     }
 
-    /// None once a support passes `EXACT` slots.
+    /// None once a support passes `EXACT` slots. A mask answers inline, and only a wide support
+    /// pays for a call.
+    #[inline(always)]
     pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Option<Slots<'t>> {
         #[cfg(debug_assertions)]
         if e.sup() != WIDE
@@ -635,6 +648,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
+    #[inline(never)]
     fn support_of(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
