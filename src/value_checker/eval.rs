@@ -1,6 +1,6 @@
 use super::intern::Ptrs;
 use super::tables::{Mode, fx, fx_at};
-use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, key};
+use super::value::{Clo, Env, EnvNode, EnvObj, Frame, Head, K, Lazy, Sub, V, View, addr, key};
 use super::{R, Vc, stat};
 use crate::checker::env::Decls;
 use crate::resource::stack_exhausted;
@@ -12,6 +12,7 @@ use crate::{ensure, reject};
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ptr;
 use std::slice::Iter;
 
@@ -30,7 +31,7 @@ const EXACT: usize = 256;
 impl<'t, 'a: 't> Vc<'t, 'a> {
     pub(crate) fn push(&mut self, env: Env<'t>, v: V<'t>) -> Env<'t> {
         stat!(self, push_req);
-        let k = (key(v), env.key());
+        let k = (addr(v), env.key());
         let open = v.open || env.open();
         stat!(self, push_open_req, open);
         let h = match self.t.envs[usize::from(open)].probe_hashed(fx_at(self.fxk, &k), &k) {
@@ -42,7 +43,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     #[inline(never)]
     fn push_new(&mut self, env: Env<'t>, v: V<'t>, open: bool, h: u64) -> Env<'t> {
-        let k = (key(v), env.key());
+        let k = (addr(v), env.key());
         stat!(self, push_new);
         stat!(self, push_open_new, open);
         stat!(self, b_env, size_of::<EnvObj>());
@@ -73,7 +74,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         v: V<'t>,
         open: bool,
         h: u64,
-        k: (usize, usize),
+        k: (NonZeroUsize, usize),
     ) -> Env<'t> {
         let buf: Vec<V<'t>> = std::iter::once(v).chain(env.iter()).collect();
         let e = self.frame_in(&buf, open);
@@ -346,6 +347,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         self.zeta_val(s, t, &mut memo)
     }
 
+    #[inline(always)]
     fn zeta_val(
         &mut self,
         sub: &[(u32, V<'t>)],
@@ -355,6 +357,16 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if !t.open {
             return Ok(t);
         }
+        self.zeta_open(sub, t, memo)
+    }
+
+    #[inline(never)]
+    fn zeta_open(
+        &mut self,
+        sub: &[(u32, V<'t>)],
+        t: V<'t>,
+        memo: &mut FxHashMap<usize, V<'t>>,
+    ) -> R<V<'t>> {
         if let Some(&r) = memo.get(&key(t)) {
             return Ok(r);
         }
@@ -614,7 +626,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(f)
     }
 
-    /// None once a support passes `EXACT` slots.
+    /// None once a support passes `EXACT` slots. A mask answers inline, and only a wide support
+    /// pays for a call.
+    #[inline(always)]
     pub(crate) fn slots(&mut self, e: ExprPtr<'t>) -> Option<Slots<'t>> {
         #[cfg(debug_assertions)]
         if e.sup() != WIDE
@@ -634,6 +648,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         }
     }
 
+    #[inline(never)]
     fn support_of(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         if let Some(&s) = self.t.support.get(&e) {
             return s;
@@ -648,27 +663,31 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
 
     fn support_in(&mut self, e: ExprPtr<'t>) -> Option<&'t [u16]> {
         stat!(self, sup_wide_new);
-        let mut slots = Vec::new();
+        let mut slots = SmallVec::<[u16; 64]>::new();
+        let under = |s: Slots<'t>| s.filter_map(|i| i.checked_sub(1));
         match *e {
             Expr::Var { idx, .. } => slots.push(idx),
             Expr::App { fun, arg, .. } => {
-                slots.extend(self.slots(fun)?);
-                slots.extend(self.slots(arg)?);
+                let (f, a) = (self.slots(fun)?, self.slots(arg)?);
+                union(&mut slots, f, a);
             }
             Expr::Lam { ty, body, .. } | Expr::Pi { ty, body, .. } => {
-                slots.extend(self.slots(ty)?);
-                slots.extend(self.slots(body)?.filter_map(|i| i.checked_sub(1)));
+                let (t, b) = (self.slots(ty)?, self.slots(body)?);
+                union(&mut slots, t, under(b));
             }
             Expr::Let { data, .. } => {
-                slots.extend(self.slots(data.ty)?);
-                slots.extend(self.slots(data.val)?);
-                slots.extend(self.slots(data.body)?.filter_map(|i| i.checked_sub(1)));
+                let (t, v, b) = (
+                    self.slots(data.ty)?,
+                    self.slots(data.val)?,
+                    self.slots(data.body)?,
+                );
+                let mut outer = SmallVec::<[u16; 64]>::new();
+                union(&mut outer, t, v);
+                union(&mut slots, outer.into_iter(), under(b));
             }
             Expr::Proj { e, .. } => slots.extend(self.slots(e)?),
             _ => {}
         }
-        slots.sort_unstable();
-        slots.dedup();
         stat!(self, b_sup, size_of_val(&slots[..]));
         (slots.len() <= EXACT).then(|| &*self.ctx.arena.alloc_slice_copy(&slots))
     }
@@ -754,6 +773,38 @@ impl Iterator for Slots<'_> {
             }),
             Slots::Wide(it) => it.next().copied(),
         }
+    }
+}
+
+/// Merges two strictly increasing runs into `out`, keeping one of each slot.
+fn union(
+    out: &mut SmallVec<[u16; 64]>,
+    a: impl Iterator<Item = u16>,
+    b: impl Iterator<Item = u16>,
+) {
+    let (mut a, mut b) = (a.peekable(), b.peekable());
+    loop {
+        let x = match (a.peek(), b.peek()) {
+            (Some(&x), Some(&y)) => {
+                if x <= y {
+                    a.next();
+                }
+                if y <= x {
+                    b.next();
+                }
+                x.min(y)
+            }
+            (Some(&x), None) => {
+                a.next();
+                x
+            }
+            (None, Some(&y)) => {
+                b.next();
+                y
+            }
+            (None, None) => return,
+        };
+        out.push(x);
     }
 }
 

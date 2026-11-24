@@ -1,5 +1,6 @@
 #!/bin/sh
 # Builds target/release/nl-fast with a profile from checking Init, an export kept as a release asset.
+# NL_PGO_TRAIN names more exports to train on, separated by spaces.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -24,6 +25,8 @@ PROFDATA=$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-profdata
 RAW=$(mktemp -d "$D/raw.XXXXXX")
 
 RUSTFLAGS="$FLAGS -Cprofile-generate=$PWD/$RAW" cargo build --release --locked --bin nl-fast
-target/release/nl-fast -q -j 4 "$D/init.ndjson" > /dev/null
+for f in "$D/init.ndjson" ${NL_PGO_TRAIN:-}; do
+  target/release/nl-fast -q -j 4 "$f" > /dev/null
+done
 "$PROFDATA" merge -o "$RAW/merged.profdata" "$RAW"
 RUSTFLAGS="$FLAGS -Cprofile-use=$PWD/$RAW/merged.profdata" cargo build --release --locked --bin nl-fast

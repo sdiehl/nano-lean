@@ -1,6 +1,8 @@
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use num_bigint::BigUint;
 use std::cell::Cell;
+use std::num::NonZeroUsize;
+use std::ptr::NonNull;
 
 pub type V<'t> = &'t Val<'t>;
 
@@ -251,6 +253,12 @@ impl<'t> Env<'t> {
 #[inline]
 pub fn key(v: V<'_>) -> usize {
     v as *const Val as usize
+}
+
+/// `key` as a nonzero word, so an optional entry keyed by it needs no tag of its own.
+#[inline]
+pub fn addr(v: V<'_>) -> NonZeroUsize {
+    NonNull::from(v).addr()
 }
 
 const _: () = assert!(size_of::<EnvObj<'_>>() == 32);

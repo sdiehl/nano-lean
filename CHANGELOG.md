@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Decide equality with one table probe.
+- Merge sorted supports instead of sorting.
+- Return cheap exits before the frame.
+- Train `scripts/pgo.sh` on `NL_PGO_TRAIN` exports.
+
 ## 0.4.3 (2026-11-24)
 
 - Reduce Nat ops on open terms.
