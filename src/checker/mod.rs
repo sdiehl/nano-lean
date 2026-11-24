@@ -112,7 +112,9 @@ pub fn check_with_adapter<'a>(
     let (result, steps) = check_shared(store, arena, idx, limits, adapter.as_deref_mut());
     limits.steps = steps;
     match result {
-        Err(Failure::Declined(Decline::Exhausted(Budget::Arena))) if !native_only => {
+        Err(Failure::Declined(Decline::Exhausted(Budget::Arena)))
+            if !native_only && !store.flagged =>
+        {
             arena.reset();
             check_existing_only(store, arena, idx, limits, adapter).map(|()| CheckPath::Fallback)
         }
@@ -578,7 +580,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             reject!(self, "projection of a non-structure")
         };
         ensure!(self, iname == name, "projection type mismatch");
-        let Some((ind, ctor)) = self.single_ctor(name) else {
+        let Some((ind, ctor)) = self.projectable(name) else {
             reject!(self, "projection of a non-structure")
         };
         ensure!(

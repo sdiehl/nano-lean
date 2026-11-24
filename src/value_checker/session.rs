@@ -131,7 +131,7 @@ impl<'a> Session<'a> {
         if bridged(store.declars[idx as usize]) {
             let (r, steps) =
                 checker::check_shared(store, &self.arena, idx, limits, adapter.as_deref_mut());
-            if arena_exhausted(&r, native_only) {
+            if arena_exhausted(&r, native_only || store.flagged) {
                 return self.recheck(idx, Limits { steps, ..limits }, adapter);
             }
             if r.is_err() {
@@ -168,7 +168,7 @@ impl<'a> Session<'a> {
             ..limits
         };
         drop(vc);
-        if arena_exhausted(&result, native_only) {
+        if arena_exhausted(&result, native_only || store.flagged) {
             return self.recheck(idx, rest, adapter);
         }
         result.map(|()| CheckPath::Primary)

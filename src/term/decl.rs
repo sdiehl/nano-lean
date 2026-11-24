@@ -21,6 +21,32 @@ pub struct RecRule<'a> {
     pub rhs: ExprPtr<'a>,
 }
 
+/// Per-type feature flags of export format 3.2.0. They are inputs: the block check admits them
+/// or rejects the block, and reduction follows them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Flags(u8);
+
+impl Flags {
+    pub const IMPREDICATIVE: u8 = 1;
+    pub const K: u8 = 2;
+    pub const PROJECTIONS: u8 = 4;
+    pub const ETA: u8 = 8;
+    pub const LARGE_ELIM: u8 = 16;
+
+    pub const fn new(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn has(self, f: u8) -> bool {
+        self.0 & f != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Inductive<'a> {
     pub info: Info<'a>,
@@ -31,6 +57,8 @@ pub struct Inductive<'a> {
     pub num_indices: u16,
     pub all: &'a [NamePtr<'a>],
     pub ctors: &'a [NamePtr<'a>],
+    /// `None` for format 3.1.0, where the checkers derive them as Lean 4.35 did.
+    pub flags: Option<Flags>,
 }
 
 #[derive(Clone, Copy, Debug)]

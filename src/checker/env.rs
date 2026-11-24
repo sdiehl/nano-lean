@@ -1,4 +1,4 @@
-use crate::term::decl::{Constructor, Declar, Hint, Inductive, Recursor};
+use crate::term::decl::{Constructor, Declar, Flags, Hint, Inductive, Recursor};
 use crate::term::expr::Expr;
 use crate::term::intern::Names;
 use crate::term::level::Level;
@@ -45,8 +45,17 @@ pub(crate) trait Decls<'t> {
     }
 
     #[inline]
+    fn projectable(&self, n: NamePtr<'t>) -> Option<(Inductive<'t>, Constructor<'t>)> {
+        self.single_ctor(n)
+            .filter(|(i, _)| i.flags.is_none_or(|f| f.has(Flags::PROJECTIONS)))
+    }
+
+    #[inline]
     fn structure_like(&self, n: NamePtr<'t>) -> Option<(Inductive<'t>, Constructor<'t>)> {
-        self.single_ctor(n).filter(|(i, _)| !i.is_rec)
+        self.single_ctor(n).filter(|(i, _)| match i.flags {
+            Some(f) => f.has(Flags::ETA),
+            None => !i.is_rec,
+        })
     }
 
     #[inline]

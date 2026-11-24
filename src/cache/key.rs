@@ -360,6 +360,9 @@ impl<'a> Enc<'a> {
                         u32::from(x.num_indices),
                     ],
                 );
+                if let Some(f) = x.flags {
+                    self.record(tag::IND, &[u32::from(f.bits())]);
+                }
                 self.konsts(keys, x.all)?;
                 self.konsts(keys, x.ctors)
             }

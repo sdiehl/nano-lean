@@ -1,6 +1,6 @@
-use super::{Elim, Premises, Spec, Tc, local_ty};
+use super::{Elim, FLAG_REJECT, Premises, Spec, Tc, local_ty};
 use crate::kernel;
-use crate::term::decl::Recursor;
+use crate::term::decl::{Flags, Recursor};
 use crate::term::intern::Block;
 use crate::term::level::Level;
 use crate::term::outcome::{Failure, R, Stop};
@@ -15,15 +15,32 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         recs: &[Recursor<'t>],
         result_level: LevelPtr<'t>,
         zero: bool,
+        flags: Option<Flags>,
     ) -> R<Elim<'t>> {
         let (members, shapes, ups) = (spec.indices.len(), &spec.shapes, spec.fam.levels);
         let zeros: Vec<_> = ups.iter().map(|_| self.ctx.zero()).collect();
         let zeros = self.ctx.levels(&zeros);
         let at_zero = self.ctx.subst_level(result_level, ups, zeros);
         let positive = !self.is_zero(at_zero)?;
-        let large = match kernel::Recursor::forced_elimination(positive, members, shapes.len()) {
-            Some(large) => large,
-            None => {
+        let large = match (
+            flags,
+            kernel::Recursor::forced_elimination(positive, members, shapes.len()),
+        ) {
+            (Some(f), _) => {
+                let large = f.has(Flags::LARGE_ELIM);
+                let n = spec.types[0].ctors.len();
+                let small = positive
+                    || spec.types.len() == 1
+                        && (n == 0 || n == 1 && f.bits() & (Flags::K | Flags::ETA) != 0);
+                ensure!(
+                    self,
+                    !large || !f.has(Flags::IMPREDICATIVE) && small,
+                    "{FLAG_REJECT}: hasLargeElim"
+                );
+                large
+            }
+            (None, Some(large)) => large,
+            (None, None) => {
                 let s = &shapes[0];
                 let mut ok = true;
                 for &x in &s.fields {
@@ -33,7 +50,11 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 ok
             }
         };
-        let k = kernel::Recursor::k_like(zero, members, shapes.iter().map(|s| s.fields.len()));
+        let k = match flags {
+            Some(f) => f.has(Flags::K),
+            None => kernel::Recursor::k_like(zero, members, shapes.iter().map(|s| s.fields.len())),
+        };
+        let rules = large || flags.is_none();
         ensure!(self, recs.len() == members, "incorrect recursor count");
         let uparams = recs[0].info.uparams;
         let level = if large {
@@ -52,7 +73,12 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             );
             self.ctx.zero()
         };
-        Ok(Elim { level, uparams, k })
+        Ok(Elim {
+            level,
+            uparams,
+            k,
+            rules,
+        })
     }
 
     pub(super) fn premises(&mut self, spec: &Spec<'t>, elim: LevelPtr<'t>) -> R<Premises<'t>> {
@@ -159,7 +185,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                 .collect();
             ensure!(
                 self,
-                r.rules.len() == mine.len(),
+                r.rules.len() == if elim.rules { mine.len() } else { 0 },
                 "incorrect recursor rule count"
             );
             let saved = self.limit;

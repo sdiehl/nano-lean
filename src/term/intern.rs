@@ -356,4 +356,6 @@ pub struct Store<'a> {
     pub names: Names<'a>,
     pub stats: Stats,
     pub deps: Option<Deps<'a>>,
+    /// Inductives carry format 3.2.0 flags, which the reference kernel cannot honour.
+    pub flagged: bool,
 }

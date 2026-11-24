@@ -1,4 +1,5 @@
 use super::Tc;
+use super::native_inductive::FLAG_REJECT;
 use crate::kernel;
 use crate::kernel::export_validation::{
     ExportDependency, ExportSession, TargetKind, validate_export_dependencies,
@@ -10,7 +11,7 @@ use crate::term::expr::Expr;
 use crate::term::intern::{Block, Store};
 use crate::term::level::Level;
 use crate::term::name::Name;
-use crate::term::outcome::{Decline, Failure, R};
+use crate::term::outcome::{Decline, Failure, R, Stop};
 use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use crate::term::{FxHashMap, FxHashSet};
 use crate::{ensure, reject};
@@ -77,14 +78,21 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let result = self.check_block(block);
         if result.is_ok()
             || !self.nested_block(block)
-            || !matches!(self.fail, Some(Failure::Rejected(_)))
+            || !matches!(&self.fail, Some(Failure::Rejected(m)) if !m.starts_with(FLAG_REJECT))
         {
             return result;
         }
         // A nested block the native expansion turns down is re-decided by the reference path,
-        // which carries Lean's own reasons.
+        // which carries Lean's own reasons but not the flags.
         self.fail = None;
-        self.check_existing(idx)
+        let reference = self.check_existing(idx);
+        if reference.is_ok() && self.ctx.store.flagged {
+            self.fail = Some(Failure::Declined(Decline::Unsupported(
+                "nested block accepted only without its flags".into(),
+            )));
+            return Err(Stop);
+        }
+        reference
     }
 
     pub(super) fn check_existing(&mut self, idx: u32) -> R<()> {

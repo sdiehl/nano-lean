@@ -2,6 +2,8 @@ use crate::error::{Result, invalid};
 use serde_json::Value;
 
 pub const FORMAT_VERSION: &str = "3.1.0";
+/// Adds the per-inductive feature flags.
+pub const FLAGS_VERSION: &str = "3.2.0";
 pub const META: &str = "meta";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

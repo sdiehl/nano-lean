@@ -1,9 +1,9 @@
 use super::importer::Importer;
 use crate::error::{Result, invalid, unsupported};
 use crate::hash64;
-use crate::schema::{ExprKind, FORMAT_VERSION, META, Ref, array, boolean, string};
+use crate::schema::{ExprKind, FLAGS_VERSION, FORMAT_VERSION, META, Ref, array, boolean, string};
 use crate::term::FxHashSet;
-use crate::term::decl::{Constructor, Declar, Hint, Inductive, Info, RecRule, Recursor};
+use crate::term::decl::{Constructor, Declar, Flags, Hint, Inductive, Info, RecRule, Recursor};
 use crate::term::intern::Block;
 use crate::term::level::{Level, PARAM_HASH};
 use crate::term::names::{QUOT, QUOT_IND, QUOT_LIFT, QUOT_MK};
@@ -340,6 +340,7 @@ impl<'a> Importer<'a> {
             num_indices: small(&t["numIndices"])?,
             all: self.names_of(&t["all"])?,
             ctors: self.names_of(&t["ctors"])?,
+            flags: flags(t)?,
         })
     }
 
@@ -384,7 +385,8 @@ fn metadata(v: &Value, o: &Map<String, Value>) -> Result<()> {
     if o.len() != 1 || v.get(META).is_none() {
         return Err(invalid("missing export metadata"));
     }
-    if v[META]["format"]["version"] != FORMAT_VERSION {
+    let version = &v[META]["format"]["version"];
+    if version != FORMAT_VERSION && version != FLAGS_VERSION {
         return Err(unsupported("export format version"));
     }
     Ok(())
@@ -403,6 +405,26 @@ fn hint(h: &Value) -> Result<Hint> {
             None => return Err(invalid("invalid reducibility hint")),
         },
     })
+}
+
+fn flags(t: &Value) -> Result<Option<Flags>> {
+    const KEYS: [(&str, u8); 5] = [
+        ("isImpredicative", Flags::IMPREDICATIVE),
+        ("isK", Flags::K),
+        ("hasProjections", Flags::PROJECTIONS),
+        ("hasEta", Flags::ETA),
+        ("hasLargeElim", Flags::LARGE_ELIM),
+    ];
+    if KEYS.iter().all(|(k, _)| t.get(k).is_none()) {
+        return Ok(None);
+    }
+    let mut bits = 0;
+    for (k, f) in KEYS {
+        if boolean(&t[k])? {
+            bits |= f;
+        }
+    }
+    Ok(Some(Flags::new(bits)))
 }
 
 fn safe_member(v: &Value) -> Result<()> {

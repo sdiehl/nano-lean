@@ -958,7 +958,12 @@ impl<'a> Importer<'a> {
             && self.deps.out.ends.len() == self.declars.len()
             && self.exprs.sparse.is_empty())
         .then_some(self.deps.out);
+        let flagged = self
+            .declars
+            .iter()
+            .any(|d| matches!(d, Declar::Ind(t) if t.flags.is_some()));
         let store = Store {
+            flagged,
             dag: self.dag,
             anon: self.anon,
             zero: self.zero,

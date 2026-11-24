@@ -1,7 +1,7 @@
 use super::Tc;
 use super::env::Decls;
 use crate::term::FxHashSet;
-use crate::term::decl::{Constructor, Declar, Inductive, Recursor};
+use crate::term::decl::{Constructor, Declar, Flags, Inductive, Recursor};
 use crate::term::expr::Expr;
 use crate::term::intern::Block;
 use crate::term::outcome::R;
@@ -101,6 +101,8 @@ impl<'t> Family<'t> {
     }
 }
 
+pub(crate) const FLAG_REJECT: &str = "invalid inductive flags";
+
 struct Nested<'t> {
     ind: Inductive<'t>,
     levels: LevelsPtr<'t>,
@@ -140,6 +142,7 @@ struct Elim<'t> {
     level: LevelPtr<'t>,
     uparams: LevelsPtr<'t>,
     k: bool,
+    rules: bool,
 }
 
 struct Premises<'t> {
@@ -407,7 +410,13 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let (mut fam, result_level, mut indices) = self.check_types(&types)?;
         self.limit = b.types_end;
         let zero = self.is_zero(result_level)?;
-        let (shapes, nested) = self.check_ctors(&mut fam, &types, &ctors, result_level, zero)?;
+        let flags = self.block_flags(&types, zero)?;
+        let unbounded = zero && flags.is_none_or(|f| f.has(Flags::IMPREDICATIVE));
+        let (shapes, nested) =
+            self.check_ctors(&mut fam, &types, &ctors, result_level, unbounded)?;
+        if let Some(f) = flags {
+            self.member_flags(&types, &shapes, &nested, zero, f)?;
+        }
         indices.extend(nested.into_iter().map(|n| n.indices));
         let spec = Spec {
             fam,
@@ -415,11 +424,71 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             indices,
             shapes,
         };
-        let elim = self.elim(&spec, &recs, result_level, zero)?;
+        let elim = self.elim(&spec, &recs, result_level, zero, flags)?;
         self.uparams = elim.uparams;
         self.limit = b.ctors_end;
         let premises = self.premises(&spec, elim.level)?;
         self.check_recursors(b, &spec, &recs, &elim, &premises)
+    }
+
+    fn block_flags(&mut self, types: &[Inductive<'t>], zero: bool) -> R<Option<Flags>> {
+        const UNIFORM: u8 = Flags::IMPREDICATIVE | Flags::LARGE_ELIM;
+        let flags = types[0].flags;
+        let bits = |f: Option<Flags>| f.map(|f| f.bits() & UNIFORM);
+        ensure!(
+            self,
+            types
+                .iter()
+                .all(|t| t.flags.is_some() == flags.is_some() && bits(t.flags) == bits(flags)),
+            "{FLAG_REJECT}: members disagree"
+        );
+        ensure!(
+            self,
+            flags.is_none_or(|f| zero || !f.has(Flags::IMPREDICATIVE)),
+            "{FLAG_REJECT}: isImpredicative"
+        );
+        Ok(flags)
+    }
+
+    fn member_flags(
+        &mut self,
+        types: &[Inductive<'t>],
+        shapes: &[Shape<'t>],
+        nested: &[Nested<'t>],
+        zero: bool,
+        block: Flags,
+    ) -> R<()> {
+        let fieldless = |owner: usize| {
+            let mut it = shapes.iter().filter(|s| s.owner == owner);
+            matches!((it.next(), it.next()), (Some(s), None) if s.fields.is_empty())
+        };
+        for (i, t) in types.iter().enumerate() {
+            let f = t.flags.unwrap_or_default();
+            let one = t.ctors.len() == 1;
+            let k = i == 0 && types.len() == 1 && zero && fieldless(0);
+            let proj = one && t.num_indices == 0 && !f.has(Flags::IMPREDICATIVE);
+            let eta = f.has(Flags::PROJECTIONS) && !t.is_rec;
+            ensure!(self, !f.has(Flags::K) || k, "{FLAG_REJECT}: isK");
+            ensure!(
+                self,
+                !f.has(Flags::PROJECTIONS) || proj,
+                "{FLAG_REJECT}: hasProjections"
+            );
+            ensure!(self, !f.has(Flags::ETA) || eta, "{FLAG_REJECT}: hasEta");
+        }
+        for (j, n) in nested.iter().enumerate() {
+            ensure!(
+                self,
+                !(zero && fieldless(types.len() + j)),
+                "{FLAG_REJECT}: nested isK"
+            );
+            ensure!(
+                self,
+                !(block.has(Flags::IMPREDICATIVE) && self.projectable(n.ind.info.name).is_some()),
+                "{FLAG_REJECT}: nested hasProjections"
+            );
+        }
+        Ok(())
     }
 
     fn block_members(&mut self, b: Block) -> R<Members<'t>> {

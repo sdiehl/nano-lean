@@ -102,7 +102,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             reject!(self, "projection of a non-structure")
         };
         ensure!(self, iname == name, "projection type mismatch");
-        let Some((ind, ctor)) = self.single_ctor(name) else {
+        let Some((ind, ctor)) = self.projectable(name) else {
             reject!(self, "projection of a non-structure")
         };
         ensure!(
