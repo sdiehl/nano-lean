@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 (2026-11-24)
 
 - Narrow crate-internal visibility.
 - Share export errors via `error.rs`.
