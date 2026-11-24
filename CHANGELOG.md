@@ -2,6 +2,9 @@
 
 ## 0.4.3 (2026-11-24)
 
+- Reduce Nat ops on open terms.
+- Shift zero left by huge counts.
+- Eta-expand structure majors before reducing.
 - Narrow crate-internal visibility.
 - Share export errors via `error.rs`.
 - Merge big-stack thread helpers.

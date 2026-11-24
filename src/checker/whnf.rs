@@ -280,16 +280,20 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         if rec.is_k {
             major = self.expose_ctor_when_k(&rec, major)?;
         }
-        major = self.whnf(major)?;
-        match *major {
-            Expr::NatLit { n, .. } => major = self.nat_to_ctor(n)?,
-            Expr::StrLit { s, .. } => {
-                let x = self.str_to_ctor(s)?;
-                major = self.whnf(x)?;
-            }
-            _ => {
-                if let Some(ind) = self.rec_induct(&rec) {
-                    major = self.expose_ctor_when_structure(ind, major)?;
+        if let Some(m) = self.eta_major(&rec, levels, args, major) {
+            major = m;
+        } else {
+            major = self.whnf(major)?;
+            match *major {
+                Expr::NatLit { n, .. } => major = self.nat_to_ctor(n)?,
+                Expr::StrLit { s, .. } => {
+                    let x = self.str_to_ctor(s)?;
+                    major = self.whnf(x)?;
+                }
+                _ => {
+                    if let Some(ind) = self.rec_induct(&rec) {
+                        major = self.expose_ctor_when_structure(ind, major)?;
+                    }
                 }
             }
         }
@@ -321,6 +325,37 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let result = self.ctx.apps(rhs, &args[mi + 1..]);
         self.rec_cache.insert(key, result);
         Ok(Some(result))
+    }
+
+    // Structure eta before reduction, so a major without a weak head normal form still reduces.
+    fn eta_major(
+        &mut self,
+        rec: &Recursor<'t>,
+        levels: LevelsPtr<'t>,
+        args: &[ExprPtr<'t>],
+        major: ExprPtr<'t>,
+    ) -> Option<ExprPtr<'t>> {
+        if matches!(*major, Expr::NatLit { .. } | Expr::StrLit { .. }) {
+            return None;
+        }
+        if let Expr::Const { name, .. } = *major.head()
+            && self.ctor(name).is_some()
+        {
+            return None;
+        }
+        let ind = self.rec_induct(rec)?;
+        let (i, c) = self.structure_like(ind)?;
+        if levels.len() != i.info.uparams.len() + 1 {
+            return None;
+        }
+        let ls = self.ctx.levels(&levels[1..]);
+        let k = self.ctx.konst(c.info.name, ls);
+        let mut r = self.ctx.apps(k, &args[..usize::from(i.num_params)]);
+        for f in 0..c.num_fields {
+            let p = self.ctx.proj(ind, f, major);
+            r = self.ctx.app(r, p);
+        }
+        Some(r)
     }
 
     fn expose_ctor_when_k(&mut self, rec: &Recursor<'t>, e: ExprPtr<'t>) -> R<ExprPtr<'t>> {
@@ -423,9 +458,6 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     pub(crate) fn reduce_nat(&mut self, e: ExprPtr<'t>) -> R<Option<ExprPtr<'t>>> {
-        if e.has_local() {
-            return Ok(None);
-        }
         let Expr::App { fun, arg, .. } = *e else {
             return Ok(None);
         };

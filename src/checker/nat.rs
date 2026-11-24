@@ -60,6 +60,7 @@ pub(crate) fn binary(op: NatRed, x: &BigUint, y: &BigUint) -> Option<NatValue> {
         NatRed::Land => x & y,
         NatRed::Lor => x | y,
         NatRed::Xor => x ^ y,
+        NatRed::Shl if x.is_zero() => BigUint::zero(),
         NatRed::Shl => x << y.to_u64().filter(|&k| k <= BIG_EXP)?,
         NatRed::Shr => match y.to_u64() {
             Some(k) => x >> k,

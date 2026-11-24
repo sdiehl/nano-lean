@@ -167,6 +167,7 @@ impl NatOp {
                 }
                 a.pow(exp as u32)
             }
+            Self::ShiftLeft if a.is_zero() => BigUint::ZERO,
             Self::ShiftLeft => a << b.to_u64().filter(|&s| s <= BIG_EXP)?,
             Self::ShiftRight => match b.to_u64() {
                 Some(s) => a >> s,

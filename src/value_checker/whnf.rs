@@ -276,16 +276,20 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if rec.is_k {
             major = self.expose_ctor_when_k(&rec, major)?;
         }
-        major = self.whnf(major)?;
-        match major.k {
-            K::Nat(x) => major = self.nat_to_ctor(x)?,
-            K::Str(x) => {
-                let e = self.str_to_ctor(x)?;
-                major = self.whnf(e)?;
-            }
-            _ => {
-                if let Some(ind) = self.rec_induct(&rec) {
-                    major = self.expose_ctor_when_structure(ind, major)?;
+        if let Some(m) = self.eta_major(&rec, ls, args, major)? {
+            major = m;
+        } else {
+            major = self.whnf(major)?;
+            match major.k {
+                K::Nat(x) => major = self.nat_to_ctor(x)?,
+                K::Str(x) => {
+                    let e = self.str_to_ctor(x)?;
+                    major = self.whnf(e)?;
+                }
+                _ => {
+                    if let Some(ind) = self.rec_induct(&rec) {
+                        major = self.expose_ctor_when_structure(ind, major)?;
+                    }
                 }
             }
         }
@@ -315,6 +319,39 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         all.extend_from_slice(&margs[margs.len() - nf..]);
         all.extend_from_slice(&args[mi + 1..]);
         Ok(Some(self.apply(rhs, &all)?))
+    }
+
+    // Structure eta before reduction, so a major without a weak head normal form still reduces.
+    fn eta_major(
+        &mut self,
+        rec: &Recursor<'t>,
+        ls: LevelsPtr<'t>,
+        args: &[V<'t>],
+        major: V<'t>,
+    ) -> R<Option<V<'t>>> {
+        match major.k {
+            K::Nat(_) | K::Str(_) => return Ok(None),
+            K::Neu(Head::Const(n, _), _) if matches!(self.declar(n), Some(Declar::Ctor(_))) => {
+                return Ok(None);
+            }
+            _ => {}
+        }
+        if self.deriving && major.open {
+            return Ok(None);
+        }
+        let Some((i, c)) = self.rec_induct(rec).and_then(|n| self.structure_like(n)) else {
+            return Ok(None);
+        };
+        if ls.len() != i.info.uparams.len() + 1 {
+            return Ok(None);
+        }
+        let mut all = SmallVec::<[V<'t>; 16]>::from_slice(&args[..usize::from(i.num_params)]);
+        for f in 0..c.num_fields {
+            all.push(self.proj(i.info.name, f, major));
+        }
+        let cls = self.ctx.levels(&ls[1..]);
+        let k = self.mk(K::Neu(Head::Const(c.info.name, cls), &[]), false);
+        Ok(Some(self.apply(k, &all)?))
     }
 
     fn expose_ctor_when_k(&mut self, rec: &Recursor<'t>, e: V<'t>) -> R<V<'t>> {
@@ -429,9 +466,6 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
     }
 
     pub(crate) fn reduce_nat(&mut self, v: V<'t>) -> R<Option<V<'t>>> {
-        if v.open {
-            return Ok(None);
-        }
         let K::Neu(Head::Const(n, _), args) = v.k else {
             return Ok(None);
         };
