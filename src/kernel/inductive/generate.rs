@@ -394,7 +394,7 @@ impl Environment {
         let mut types = block.types.clone();
         for t in &mut types {
             t.recursive = shapes.recursive;
-            t.reflexive = shapes.reflexive;
+            t.reflexive = Some(shapes.reflexive);
         }
         Ok(InductiveBlock {
             types,

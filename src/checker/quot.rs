@@ -91,6 +91,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let want = if n == nm.quot && ps.len() == 1 {
             let s = self.ctx.sort(ps[0]);
             let r = self.rel(0);
+            let one = self.ctx.zero();
+            let one = self.ctx.succ(one);
+            let m = self.ctx.max(one, ps[0]);
+            let lifted = self.ctx.sort(m);
+            let lifted = self.pis(&[s, r], lifted);
+            if self.def_eq(lifted, i.ty)? {
+                return Ok(());
+            }
             self.pis(&[s, r], s)
         } else if n == nm.quot_mk && ps.len() == 1 {
             let s = self.ctx.sort(ps[0]);

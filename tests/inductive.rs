@@ -31,7 +31,7 @@ fn switch() -> InductiveBlock {
             num_indices: 0,
             num_nested: 0,
             recursive: false,
-            reflexive: false,
+            reflexive: Some(false),
         }],
         constructors: ["left", "right"]
             .into_iter()
@@ -229,7 +229,7 @@ fn pack(prop: bool, proof_field: bool) -> Environment {
             num_indices: 0,
             num_nested: 0,
             recursive: false,
-            reflexive: false,
+            reflexive: Some(false),
         }],
         constructors: vec![Constructor {
             name: "mk".into(),
@@ -336,7 +336,7 @@ fn indexed(prop: bool) -> Environment {
             num_indices: 1,
             num_nested: 0,
             recursive: false,
-            reflexive: false,
+            reflexive: Some(false),
         }],
         constructors: vec![Constructor {
             name: "tag".into(),
@@ -416,7 +416,7 @@ fn higher_order_recursive_field_reduction() {
     block.types[0].all = vec!["Tree".into()];
     block.types[0].constructors = vec!["leaf".into(), "branch".into()];
     block.types[0].recursive = true;
-    block.types[0].reflexive = true;
+    block.types[0].reflexive = Some(true);
     block.constructors[0].name = "leaf".into();
     block.constructors[0].inductive = "Tree".into();
     block.constructors[0].ty = expr("Tree");

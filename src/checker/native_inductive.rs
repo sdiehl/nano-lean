@@ -677,7 +677,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         for t in types {
             ensure!(
                 self,
-                t.is_rec == cs.recursive && t.is_reflexive == cs.reflexive,
+                t.is_rec == cs.recursive && t.is_reflexive.is_none_or(|r| r == cs.reflexive),
                 "incorrect inductive recursion metadata"
             );
         }

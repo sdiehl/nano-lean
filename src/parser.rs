@@ -195,7 +195,7 @@ fn inductive(
             num_params,
             num_nested: 0,
             recursive: false,
-            reflexive: false,
+            reflexive: Some(false),
         }],
         constructors,
         recursors: Vec::new(),

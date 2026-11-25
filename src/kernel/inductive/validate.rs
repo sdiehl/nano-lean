@@ -28,7 +28,7 @@ impl Environment {
                 "incorrect inductive metadata",
             )?;
             demand(
-                a.recursive == e.recursive && a.reflexive == e.reflexive,
+                a.recursive == e.recursive && e.reflexive.is_none_or(|r| a.reflexive == Some(r)),
                 "incorrect inductive recursion metadata",
             )?;
         }

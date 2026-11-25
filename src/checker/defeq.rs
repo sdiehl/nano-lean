@@ -1,7 +1,7 @@
 use super::Tc;
 use super::env::{Decls, positive, strip_pis, unfold_order};
 use crate::resource::Budget;
-use crate::term::decl::Hint;
+use crate::term::decl::{Declar, Hint};
 use crate::term::expr::Expr;
 use crate::term::outcome::{R, Stop};
 use crate::term::ptr::ExprPtr;
@@ -281,6 +281,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             || self.eta(sn, tn)?
             || self.eta_struct(tn, sn)?
             || self.eta_struct(sn, tn)?
+            || self.eta_partial(tn, sn)?
         {
             return Ok(true);
         }
@@ -541,15 +542,84 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         Ok(None)
     }
 
-    fn unit_like(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
-        let tt = self.infer(t, true)?;
-        let tt = self.whnf(tt)?;
-        let Expr::Const { name, .. } = *tt.head() else {
-            return Ok(false);
+    /// A constructor of an eta structure, or a recursor with eta or K, that lacks arguments.
+    fn partial(&self, e: ExprPtr<'t>) -> bool {
+        let Expr::Const { name, .. } = *e.head() else {
+            return false;
         };
-        if !self.unit_struct(name) {
+        let n = e.num_args();
+        match self.declar(name) {
+            Some(Declar::Ctor(c)) => {
+                n < usize::from(c.num_params) + usize::from(c.num_fields)
+                    && self.structure_like(c.induct).is_some()
+            }
+            Some(Declar::Rec(r)) => {
+                n <= r.major_idx()
+                    && (r.is_k
+                        || self
+                            .rec_induct(&r)
+                            .and_then(|i| self.structure_like(i))
+                            .is_some())
+            }
+            _ => false,
+        }
+    }
+
+    fn eta_partial(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
+        if !self.partial(t) && !self.partial(s) || self.eta_open.contains(&(t, s)) {
             return Ok(false);
         }
+        let tt = self.infer(t, true)?;
+        let Expr::Pi { ty: d, .. } = *self.whnf(tt)? else {
+            return Ok(false);
+        };
+        let st = self.infer(s, true)?;
+        let Expr::Pi { ty: e, .. } = *self.whnf(st)? else {
+            return Ok(false);
+        };
+        if d != e && !self.def_eq(d, e)? {
+            return Ok(false);
+        }
+        let x = self.fresh_local(d);
+        let a = self.ctx.app(t, x);
+        let b = self.ctx.app(s, x);
+        self.eta_open.push((t, s));
+        let r = self.def_eq(a, b);
+        self.eta_open.pop();
+        r
+    }
+
+    /// Values of a Pi into a unit-like type, or of an eta structure whose fields are all proofs
+    /// or unit-like, are all equal.
+    fn unit_valued(&mut self, v: ExprPtr<'t>) -> R<bool> {
+        let ty = self.infer(v, true)?;
+        let ty = self.whnf(ty)?;
+        if let Expr::Pi { ty: d, .. } = *ty {
+            let x = self.fresh_local(d);
+            let b = self.ctx.app(v, x);
+            return self.unit_valued(b);
+        }
+        let Expr::Const { name, .. } = *ty.head() else {
+            return Ok(false);
+        };
+        let Some((_, c)) = self.structure_like(name) else {
+            return Ok(false);
+        };
+        for i in 0..c.num_fields {
+            let p = self.ctx.proj(name, i, v);
+            let pt = self.infer(p, true)?;
+            if !self.is_prop(pt)? && !self.unit_valued(p)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn unit_like(&mut self, t: ExprPtr<'t>, s: ExprPtr<'t>) -> R<bool> {
+        if !self.unit_valued(t)? {
+            return Ok(false);
+        }
+        let tt = self.infer(t, true)?;
         let st = self.infer(s, true)?;
         self.def_eq_core(tt, st)
     }

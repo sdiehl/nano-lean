@@ -163,6 +163,8 @@ pub(crate) struct Tc<'t, 'a: 't> {
     pub(crate) let_vals: FxHashMap<u32, ExprPtr<'t>>,
     conversion_depth: Rc<Cell<usize>>,
     conversion_locals: FxHashMap<(usize, ExprPtr<'t>), ExprPtr<'t>>,
+    /// Pairs being eta-expanded, so their own application spine cannot expand them again.
+    eta_open: Vec<(ExprPtr<'t>, ExprPtr<'t>)>,
     probe_remaining: Option<u32>,
     limits: Limits,
     steps_left: u64,
@@ -203,6 +205,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             let_vals: FxHashMap::default(),
             conversion_depth: Default::default(),
             conversion_locals: Default::default(),
+            eta_open: Vec::new(),
             probe_remaining: None,
             limits: Limits::default(),
             steps_left: Limits::default().steps,
@@ -278,6 +281,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             let_vals,
             conversion_depth,
             conversion_locals,
+            eta_open,
             probe_remaining,
             limits,
             steps_left,
@@ -313,6 +317,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         *probe_remaining = None;
         conversion_depth.set(0);
         conversion_locals.clear();
+        eta_open.clear();
         *steps_left = limits.steps;
     }
 

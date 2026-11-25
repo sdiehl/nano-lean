@@ -302,6 +302,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             || self.eta(sn, tn)?
             || self.eta_struct(tn, sn)?
             || self.eta_struct(sn, tn)?
+            || self.eta_partial(tn, sn)?
         {
             return Ok(true);
         }
@@ -670,18 +671,85 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         Ok(None)
     }
 
-    fn unit_like(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+    /// A constructor of an eta structure, or a recursor with eta or K, that lacks arguments.
+    fn partial(&self, v: V<'t>) -> bool {
+        let K::Neu(Head::Const(n, _), args) = v.k else {
+            return false;
+        };
+        match self.declar(n) {
+            Some(Declar::Ctor(c)) => {
+                args.len() < usize::from(c.num_params) + usize::from(c.num_fields)
+                    && self.structure_like(c.induct).is_some()
+            }
+            Some(Declar::Rec(r)) => {
+                args.len() <= r.major_idx()
+                    && (r.is_k
+                        || self
+                            .rec_induct(&r)
+                            .and_then(|i| self.structure_like(i))
+                            .is_some())
+            }
+            _ => false,
+        }
+    }
+
+    fn eta_partial(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+        if !self.partial(t) && !self.partial(s) {
+            return Ok(false);
+        }
         let tt = self.type_of(t)?;
-        let tt = self.whnf(tt)?;
-        let K::Neu(Head::Const(n, _), _) = tt.k else {
+        let K::Pi(d, _) = self.whnf(tt)?.k else {
             return Ok(false);
         };
-        match self.structure_like(n) {
-            Some((_, c)) if c.num_fields == 0 => {
-                let st = self.type_of(s)?;
-                self.def_eq_core(tt, st)
+        let st = self.type_of(s)?;
+        let K::Pi(e, _) = self.whnf(st)?.k else {
+            return Ok(false);
+        };
+        if !ptr::eq(d, e) && !self.def_eq(d, e)? {
+            return Ok(false);
+        }
+        self.restoring_depth(|vc| {
+            let x = vc.binder_local(d);
+            let a = vc.apply(t, &[x])?;
+            let b = vc.apply(s, &[x])?;
+            vc.def_eq(a, b)
+        })
+    }
+
+    /// Values of a Pi into a unit-like type, or of an eta structure whose fields are all proofs
+    /// or unit-like, are all equal.
+    fn unit_valued(&mut self, v: V<'t>) -> R<bool> {
+        let ty = self.type_of(v)?;
+        let ty = self.whnf(ty)?;
+        match ty.k {
+            K::Pi(d, _) => self.restoring_depth(|vc| {
+                let x = vc.binder_local(d);
+                let b = vc.apply(v, &[x])?;
+                vc.unit_valued(b)
+            }),
+            K::Neu(Head::Const(n, _), _) => {
+                let Some((_, c)) = self.structure_like(n) else {
+                    return Ok(false);
+                };
+                for i in 0..c.num_fields {
+                    let p = self.proj(n, i, v);
+                    let pt = self.type_of(p)?;
+                    if !self.is_prop(pt)? && !self.unit_valued(p)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
             _ => Ok(false),
         }
+    }
+
+    fn unit_like(&mut self, t: V<'t>, s: V<'t>) -> R<bool> {
+        if !self.unit_valued(t)? {
+            return Ok(false);
+        }
+        let tt = self.type_of(t)?;
+        let st = self.type_of(s)?;
+        self.def_eq_core(tt, st)
     }
 }

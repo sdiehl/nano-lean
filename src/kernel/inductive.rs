@@ -19,7 +19,7 @@ pub struct InductiveType {
     pub num_indices: usize,
     pub num_nested: usize,
     pub recursive: bool,
-    pub reflexive: bool,
+    pub reflexive: Option<bool>,
 }
 
 #[derive(Clone, Debug)]

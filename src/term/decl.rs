@@ -52,7 +52,7 @@ pub struct Inductive<'a> {
     pub info: Info<'a>,
     pub is_rec: bool,
     pub num_nested: usize,
-    pub is_reflexive: bool,
+    pub is_reflexive: Option<bool>,
     pub num_params: u16,
     pub num_indices: u16,
     pub all: &'a [NamePtr<'a>],

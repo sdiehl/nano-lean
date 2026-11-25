@@ -67,12 +67,6 @@ pub(crate) trait Decls<'t> {
     }
 
     #[inline]
-    fn unit_struct(&self, n: NamePtr<'t>) -> bool {
-        self.structure_like(n)
-            .is_some_and(|(_, c)| c.num_fields == 0)
-    }
-
-    #[inline]
     fn rec_induct(&self, rec: &Recursor<'t>) -> Option<NamePtr<'t>> {
         match self.declar(rec.rules.first()?.ctor)? {
             Declar::Ctor(c) => Some(c.induct),

@@ -296,7 +296,7 @@ impl Loader<'_> {
                     num_indices: index(&v["numIndices"])?,
                     num_nested: index(&v["numNested"])?,
                     recursive: boolean(&v["isRec"])?,
-                    reflexive: boolean(&v["isReflexive"])?,
+                    reflexive: v.get("isReflexive").map(boolean).transpose()?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

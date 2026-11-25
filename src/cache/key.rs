@@ -355,7 +355,7 @@ impl<'a> Enc<'a> {
                     &[
                         u32::from(x.is_rec),
                         x.num_nested as u32,
-                        u32::from(x.is_reflexive),
+                        x.is_reflexive.map_or(2, u32::from),
                         u32::from(x.num_params),
                         u32::from(x.num_indices),
                     ],

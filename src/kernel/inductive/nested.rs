@@ -365,7 +365,7 @@ impl NestedExpansion {
             num_indices: source.num_indices,
             num_nested: 0,
             recursive: false,
-            reflexive: false,
+            reflexive: Some(false),
         });
         self.auxiliaries.push(Auxiliary {
             name: aux_name.clone(),
@@ -534,7 +534,7 @@ mod tests {
                 num_indices: 0,
                 num_nested: 0,
                 recursive: false,
-                reflexive: false,
+                reflexive: Some(false),
             }],
             constructors: ctors
                 .iter()

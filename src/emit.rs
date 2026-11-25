@@ -162,7 +162,7 @@ impl Writer {
                     "all": self.names(&t.all),
                     "ctors": self.names(&t.constructors),
                     "isRec": t.recursive,
-                    "isReflexive": t.reflexive,
+                    "isReflexive": t.reflexive.unwrap_or(false),
                     "isUnsafe": false,
                     "levelParams": self.names(&t.params),
                     "name": self.name(&t.name),

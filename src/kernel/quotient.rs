@@ -73,7 +73,7 @@ fn telescope(locals: &[(Name<Expr>, Expr)], result: Expr) -> Expr {
     })
 }
 
-fn signature(kind: Kind, params: &[String], encoded: bool) -> Expr {
+fn signature(kind: Kind, params: &[String], encoded: bool, lifted: bool) -> Expr {
     let c = |s: &str, levels| Expr::Const(symbol(s, encoded), levels);
     let u = Level::Param(params[0].clone());
     let v = params
@@ -89,6 +89,9 @@ fn signature(kind: Kind, params: &[String], encoded: bool) -> Expr {
     let a = Name::new("a");
     let a_expr = Expr::Var(a.clone());
     let result = match kind {
+        Kind::Type if lifted => {
+            Expr::Sort(Level::Max(Box::new(Level::Nat(1)), Box::new(u.clone())))
+        }
         Kind::Type => Expr::Sort(u.clone()),
         Kind::Ctor => arrow(av.clone(), quot.clone()),
         Kind::Lift => {
@@ -138,7 +141,7 @@ pub fn primitives() -> Vec<(&'static str, &'static str, Vec<String>, Expr)> {
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect();
-            let ty = signature(p.kind, &params, false);
+            let ty = signature(p.kind, &params, false, false);
             (p.name, p.kind.label(), params, ty)
         })
         .collect()
@@ -178,11 +181,13 @@ impl Environment {
             }
         }
         self.validate_quotient_equality(encoded)?;
-        let expected = signature(primitive.kind, &params, encoded);
         let mut tc = Checker::new(self);
         tc.uparams = params.iter().cloned().collect();
         tc.sort(&ty)?;
-        if !tc.conv(&ty, &expected)? {
+        let lifted = matches!(primitive.kind, Kind::Type);
+        if !tc.conv(&ty, &signature(primitive.kind, &params, encoded, false))?
+            && !(lifted && tc.conv(&ty, &signature(primitive.kind, &params, encoded, true))?)
+        {
             return Err(Error::Rejected(
                 "incorrect quotient primitive signature".into(),
             ));

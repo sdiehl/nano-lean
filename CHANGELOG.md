@@ -1,14 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 (2026-11-26)
 
 - Decide equality with one table probe.
 - Merge sorted supports instead of sorting.
 - Return cheap exits before the frame.
 - Train `scripts/pgo.sh` on `NL_PGO_TRAIN` exports.
-
-## 0.4.3 (2026-11-24)
-
+- Allow exports without `isReflexive`.
+- Accept `Quot` in `Sort (max 1 u)`.
+- Add unit-like eta for structures, functions.
+- Eta-expand partial constructors and recursors.
 - Reduce Nat ops on open terms.
 - Shift zero left by huge counts.
 - Eta-expand structure majors before reducing.

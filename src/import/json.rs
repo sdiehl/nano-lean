@@ -335,7 +335,7 @@ impl<'a> Importer<'a> {
             info: self.info_of(t)?,
             is_rec: boolean(&t["isRec"])?,
             num_nested: idx(&t["numNested"])? as usize,
-            is_reflexive: boolean(&t["isReflexive"])?,
+            is_reflexive: t.get("isReflexive").map(boolean).transpose()?,
             num_params: small(&t["numParams"])?,
             num_indices: small(&t["numIndices"])?,
             all: self.names_of(&t["all"])?,
