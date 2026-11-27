@@ -1,6 +1,7 @@
 use super::*;
 use crate::import::import_bytes;
 use crate::mutate::render;
+use crate::resource::on_stack;
 use std::io::Cursor;
 
 const FOUNDATIONS: &[u8] = include_bytes!("../../tests/fixtures/foundations.ndjson");
@@ -711,4 +712,198 @@ fn repeated_conversion_does_not_copy_bodies_under_fresh_local_names() {
         tc.ctx.dag.exprs.len() <= nodes + 8,
         "conversion reopened shared bodies with fresh locals"
     );
+}
+
+#[test]
+fn inference_through_a_rejected_self_projecting_type_declines_instead_of_overflowing() {
+    // The theorem's type projects out of the theorem itself; it is rejected, but the
+    // quotient's type still infers through it, so inference cycles until the stack guard.
+    let input = br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"num":{"i":2,"pre":0}}
+{"const":{"name":0,"us":[0,0]},"ie":0}
+{"ie":1,"proj":{"idx":32768,"struct":0,"typeName":0}}
+{"ie":2,"proj":{"idx":15,"struct":1,"typeName":0}}
+{"thm":{"all":[0],"levelParams":[0,1],"name":0,"type":2,"value":0}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"quot":{"kind":"type","levelParams":[],"name":2,"type":1}}
+"#;
+    on_stack(TEST_STACK, || {
+        let arena = Arena::new();
+        let store = import_bytes(&arena, input).unwrap();
+        let local = Arena::new();
+        let failure = Tc::new(&store, &local)
+            .check(1)
+            .expect_err("a cyclic type must not check");
+        assert_eq!(failure.status(), "unsupported");
+        assert!(failure.reason().contains("stack"), "{}", failure.reason());
+    });
+}
+
+/// A fixed stack, so the tests below do not depend on the test harness's thread size.
+const TEST_STACK: usize = 16 << 20;
+
+/// Checks every declaration through the value core, as `nl-fast` checks an export, and
+/// expects one of them to decline at the stack floor instead of overflowing.
+fn value_core_declines_at_the_stack_floor(input: &[u8]) {
+    on_stack(TEST_STACK, || {
+        let arena = Arena::new();
+        let store = import_bytes(&arena, input).unwrap();
+        let mut session = crate::value_checker::Session::new(&store);
+        let mut adapter = Adapter::new(&store);
+        let mut reasons = Vec::new();
+        for idx in 0..store.declars.len() as u32 {
+            let result = Core::Value.check(
+                &store,
+                &mut session,
+                idx,
+                Limits::default(),
+                &mut adapter,
+                false,
+            );
+            if let Err(failure) = result {
+                reasons.push(format!("{}: {}", failure.status(), failure.reason()));
+            }
+            session.reset();
+        }
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.starts_with("unsupported") && r.contains("stack budget")),
+            "{reasons:?}"
+        );
+    });
+}
+
+#[test]
+fn value_inference_through_a_self_projecting_axiom_type_declines_instead_of_overflowing() {
+    // The axiom's type projects out of the axiom itself.
+    value_core_declines_at_the_stack_floor(
+        br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"num":{"i":1,"pre":0}}
+{"const":{"name":0,"us":[]},"ie":0}
+{"ie":1,"proj":{"idx":1,"struct":0,"typeName":1}}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":0,"type":1}}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":1,"type":1}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"quot":{"kind":"type","levelParams":[],"name":2,"type":0}}
+"#,
+    );
+}
+
+#[test]
+fn value_nat_reduction_through_a_self_referential_operand_declines_instead_of_overflowing() {
+    // The theorem's value is `Nat.log2` of the theorem itself.
+    value_core_declines_at_the_stack_floor(
+        br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"Nat"}}
+{"in":2,"str":{"pre":1,"str":"log2"}}
+{"const":{"name":2,"us":[]},"ie":0}
+{"const":{"name":0,"us":[]},"ie":1}
+{"app":{"arg":1,"fn":0},"ie":2}
+{"thm":{"all":[0],"levelParams":[],"name":0,"type":2,"value":2}}
+{"in":3,"num":{"i":1,"pre":0}}
+{"thm":{"all":[3],"levelParams":[],"name":3,"type":1,"value":2}}
+"#,
+    );
+}
+
+#[test]
+fn value_conversion_through_a_self_referential_bool_abbrev_declines_instead_of_overflowing() {
+    // `Bool.true` abbreviates the anonymous theorem, whose value reduces through `Nat.ble`.
+    value_core_declines_at_the_stack_floor(
+        br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"ie":0,"sort":0}
+{"in":1,"str":{"pre":0,"str":"Nat"}}
+{"in":2,"str":{"pre":1,"str":"ble"}}
+{"const":{"name":2,"us":[0]},"ie":1}
+{"ie":2,"natVal":"0"}
+{"app":{"arg":2,"fn":1},"ie":3}
+{"ie":4,"mdata":{"expr":3}}
+{"ie":5,"natVal":"5"}
+{"app":{"arg":5,"fn":4},"ie":6}
+{"ie":7,"mdata":{"expr":6}}
+{"thm":{"all":[0],"levelParams":[],"name":0,"type":0,"value":7}}
+{"in":3,"str":{"pre":0,"str":"Bool"}}
+{"in":4,"str":{"pre":3,"str":"true"}}
+{"const":{"name":3,"us":[]},"ie":8}
+{"const":{"name":0,"us":[]},"ie":9}
+{"def":{"all":[4],"hints":"abbrev","levelParams":[],"name":4,"safety":"safe","type":8,"value":9}}
+{"in":5,"num":{"i":281474976710657,"pre":0}}
+{"in":6,"str":{"pre":0,"str":"e"}}
+{"in":7,"num":{"i":2,"pre":6}}
+{"thm":{"all":[5],"levelParams":[7],"name":5,"type":9,"value":9}}
+"#,
+    );
+}
+
+#[test]
+fn term_reduction_through_a_rejected_theorem_declines_instead_of_overflowing() {
+    // The theorem's value applies a projection out of itself; Quot.ind's type reduces through it.
+    value_core_declines_at_the_stack_floor(
+        br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"qrrqblm"}}
+{"const":{"name":1,"us":[0]},"ie":0}
+{"bvar":4095,"ie":1}
+{"bvar":256,"ie":2}
+{"app":{"arg":2,"fn":1},"ie":3}
+{"app":{"arg":3,"fn":0},"ie":4}
+{"ie":5,"proj":{"idx":1,"struct":0,"typeName":1}}
+{"app":{"arg":2,"fn":5},"ie":6}
+{"thm":{"all":[1],"levelParams":[1],"name":1,"type":4,"value":6}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"in":3,"str":{"pre":2,"str":"ind"}}
+{"in":4,"num":{"i":15,"pre":0}}
+{"in":5,"num":{"i":15,"pre":4}}
+{"quot":{"kind":"ind","levelParams":[5],"name":3,"type":0}}
+"#,
+    );
+}
+
+#[test]
+fn positivity_through_a_self_unfolding_field_type_declines_instead_of_overflowing() {
+    // `T` unfolds to `Prop -> (fun _ => T) I`, so the positivity check of `I.mk : T -> I`
+    // meets the same Pi again after every binder, each time through a cached whnf.
+    value_core_declines_at_the_stack_floor(br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"T"}}
+{"in":2,"str":{"pre":0,"str":"I"}}
+{"in":3,"str":{"pre":2,"str":"mk"}}
+{"in":4,"str":{"pre":0,"str":"x"}}
+{"ie":0,"sort":0}
+{"const":{"name":2,"us":[]},"ie":1}
+{"const":{"name":1,"us":[]},"ie":2}
+{"ie":3,"lam":{"binderInfo":"default","body":2,"name":4,"type":0}}
+{"app":{"arg":1,"fn":3},"ie":4}
+{"forallE":{"binderInfo":"default","body":4,"name":4,"type":0},"ie":5}
+{"thm":{"all":[1],"levelParams":[],"name":1,"type":0,"value":5}}
+{"forallE":{"binderInfo":"default","body":1,"name":4,"type":2},"ie":6}
+{"il":1,"succ":0}
+{"ie":7,"sort":1}
+{"inductive":{"ctors":[{"cidx":0,"induct":2,"isUnsafe":false,"levelParams":[],"name":3,"numFields":1,"numParams":0,"type":6}],"recs":[],"types":[{"all":[2],"ctors":[3],"isRec":true,"isReflexive":false,"isUnsafe":false,"levelParams":[],"name":2,"numIndices":0,"numNested":0,"numParams":0,"type":7}]}}
+"#);
+}
+
+#[test]
+fn kernel_positivity_through_a_self_unfolding_field_type_declines_instead_of_overflowing() {
+    // The nested block goes to the reference kernel, whose positivity check meets the
+    // same cycle through the theorem `yng`.
+    value_core_declines_at_the_stack_floor(br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"yng"}}
+{"ie":0,"sort":0}
+{"in":2,"num":{"i":31,"pre":0}}
+{"bvar":0,"ie":1}
+{"in":3,"str":{"pre":0,"str":"h"}}
+{"const":{"name":0,"us":[]},"ie":2}
+{"const":{"name":1,"us":[]},"ie":3}
+{"ie":4,"lam":{"binderInfo":"strictImplicit","body":3,"name":3,"type":2}}
+{"app":{"arg":2,"fn":4},"ie":5}
+{"forallE":{"binderInfo":"implicit","body":5,"name":2,"type":1},"ie":6}
+{"thm":{"all":[1],"levelParams":[],"name":1,"type":0,"value":6}}
+{"in":4,"str":{"pre":0,"str":"gzotfy"}}
+{"il":1,"param":4}
+{"il":2,"imax":[1,0]}
+{"ie":7,"sort":2}
+{"forallE":{"binderInfo":"default","body":0,"name":3,"type":3},"ie":8}
+{"in":5,"str":{"pre":0,"str":"rec"}}
+{"inductive":{"ctors":[{"cidx":0,"induct":0,"isUnsafe":false,"levelParams":[],"name":2,"numFields":1,"numParams":0,"type":8}],"recs":[{"all":[0],"isUnsafe":false,"k":false,"levelParams":[],"name":5,"numIndices":0,"numMinors":1,"numMotives":1,"numParams":9,"rules":[],"type":2}],"types":[{"all":[0],"ctors":[2],"isRec":false,"isReflexive":false,"isUnsafe":false,"levelParams":[],"name":0,"numIndices":0,"numNested":1,"numParams":0,"type":7}]}}
+"#);
 }

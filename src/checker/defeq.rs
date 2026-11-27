@@ -45,6 +45,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             return Err(self.decline(Budget::Work));
         }
         self.steps_left -= 1;
+        // Inference and reduction recurse through the unchecked types and values of rejected
+        // declarations, so every step checks the stack too.
+        self.guard()?;
         if self.steps_left & ARENA_CHECK_MASK == 0
             && self.ctx.arena.used_bytes() > self.limits.arena_bytes
         {

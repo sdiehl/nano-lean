@@ -359,6 +359,9 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     }
 
     fn check_positivity(&mut self, f: &Family<'t>, ty: ExprPtr<'t>) -> R<()> {
+        // A field type that unfolds to a Pi over itself recurses here through cached whnfs,
+        // which take no step.
+        self.guard()?;
         let ty = self.whnf(ty)?;
         if !f.occurs(ty) {
             return Ok(());
