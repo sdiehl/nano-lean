@@ -593,6 +593,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             args.len() == usize::from(ind.num_params),
             "projection of a non-structure"
         );
+        // The structure type may come from unfolding a rejected declaration, whose constants
+        // were never checked against their universe parameters.
+        ensure!(
+            self,
+            levels.len() == ctor.info.uparams.len(),
+            "wrong number of universe levels for {}",
+            iname.as_ref()
+        );
         let ct = self.ctx.declar_type(&Declar::Ctor(ctor), levels);
         let Some(ct) = strip_pis(ct, args.len()) else {
             reject!(self, "expected a Pi binder")
