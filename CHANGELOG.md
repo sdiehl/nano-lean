@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 (2026-11-28)
 
 - Reject Eq.refl without universe parameters.
 - Check level counts before instantiating.
