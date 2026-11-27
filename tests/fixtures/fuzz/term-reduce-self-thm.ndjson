@@ -1,0 +1,15 @@
+{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"qrrqblm"}}
+{"const":{"name":1,"us":[0]},"ie":0}
+{"bvar":4095,"ie":1}
+{"bvar":256,"ie":2}
+{"app":{"arg":2,"fn":1},"ie":3}
+{"app":{"arg":3,"fn":0},"ie":4}
+{"ie":5,"proj":{"idx":1,"struct":0,"typeName":1}}
+{"app":{"arg":2,"fn":5},"ie":6}
+{"thm":{"all":[1],"levelParams":[1],"name":1,"type":4,"value":6}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"in":3,"str":{"pre":2,"str":"ind"}}
+{"in":4,"num":{"i":15,"pre":0}}
+{"in":5,"num":{"i":15,"pre":4}}
+{"quot":{"kind":"ind","levelParams":[5],"name":3,"type":0}}

@@ -245,3 +245,21 @@ fn config_permits_axioms_and_flags_override_it() {
     std::fs::write(&config, "table_bits = 9\n").unwrap();
     assert_eq!(run(&[]).status.code(), Some(2));
 }
+
+#[test]
+fn fuzzed_exports_reject_without_crashing() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fuzz");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let output = Command::new(env!("CARGO_BIN_EXE_nl-fast"))
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}: {output:?}",
+            path.display()
+        );
+    }
+}

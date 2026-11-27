@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Reject Eq.refl without universe parameters.
+- Check level counts before instantiating.
+- Guard remaining recursions against stack.
+- Keep fuzz repros as fixtures.
+
 ## 0.4.3 (2026-11-26)
 
 - Decide equality with one table probe.

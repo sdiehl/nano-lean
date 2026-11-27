@@ -1,0 +1,9 @@
+{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"Nat"}}
+{"in":2,"str":{"pre":1,"str":"log2"}}
+{"const":{"name":2,"us":[]},"ie":0}
+{"const":{"name":0,"us":[]},"ie":1}
+{"app":{"arg":1,"fn":0},"ie":2}
+{"thm":{"all":[0],"levelParams":[],"name":0,"type":2,"value":2}}
+{"in":3,"num":{"i":1,"pre":0}}
+{"thm":{"all":[3],"levelParams":[],"name":3,"type":1,"value":2}}

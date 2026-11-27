@@ -1,0 +1,8 @@
+{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"num":{"i":1,"pre":0}}
+{"const":{"name":0,"us":[]},"ie":0}
+{"ie":1,"proj":{"idx":1,"struct":0,"typeName":1}}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":0,"type":1}}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":1,"type":1}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"quot":{"kind":"type","levelParams":[],"name":2,"type":0}}

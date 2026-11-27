@@ -1,0 +1,8 @@
+{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"num":{"i":2,"pre":0}}
+{"const":{"name":0,"us":[0,0]},"ie":0}
+{"ie":1,"proj":{"idx":32768,"struct":0,"typeName":0}}
+{"ie":2,"proj":{"idx":15,"struct":1,"typeName":0}}
+{"thm":{"all":[0],"levelParams":[0,1],"name":0,"type":2,"value":0}}
+{"in":2,"str":{"pre":0,"str":"Quot"}}
+{"quot":{"kind":"type","levelParams":[],"name":2,"type":1}}
