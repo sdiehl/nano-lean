@@ -246,6 +246,8 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         if let Some(r) = self.quick(t, s)? {
             return Ok(r);
         }
+        // Reduction and lazy delta re-enter here directly, past `def_eq`'s guard.
+        self.guard()?;
         if let Some(bt) = self.names.bool_true
             && !t.open
             && matches!(s.k, K::Neu(Head::Const(n, _), []) if n == bt)

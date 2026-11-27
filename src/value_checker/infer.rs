@@ -48,6 +48,7 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             return Ok(t);
         }
         self.tick()?;
+        self.guard()?;
         let t = match v.k {
             K::Sort(l) => {
                 let l = self.ctx.succ(l);

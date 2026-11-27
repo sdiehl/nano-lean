@@ -94,6 +94,9 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
             });
             return Ok(r);
         }
+        // `reduce_nat` takes the whnf of its operands, so an operand that unfolds to the same
+        // application re-enters here without reaching `whnf_core`'s guard.
+        self.guard()?;
         stat!(self, whnfs);
         let mut t = v;
         let mut path = SmallVec::<[V<'t>; 8]>::new();

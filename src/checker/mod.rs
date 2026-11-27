@@ -14,7 +14,7 @@ mod quot;
 mod tests;
 mod whnf;
 
-use crate::resource::Budget;
+use crate::resource::{Budget, stack_exhausted, stack_floor};
 use crate::term::arena::Arena;
 use crate::term::ctx::Ctx;
 use crate::term::decl::Declar;
@@ -185,6 +185,7 @@ pub(crate) struct Tc<'t, 'a: 't> {
     pub(crate) eq_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     pub(crate) fail_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     pub(crate) rec: RecChecker<'t, 'a>,
+    floor: usize,
 }
 
 impl<'t, 'a: 't> Tc<'t, 'a> {
@@ -225,6 +226,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             eq_cache: FxHashSet::default(),
             fail_cache: FxHashSet::default(),
             rec: RecChecker::default(),
+            floor: stack_floor(),
         }
     }
 
@@ -244,6 +246,15 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
     pub(crate) fn reject(&mut self, msg: fmt::Arguments<'_>) -> Stop {
         self.fail = Some(Failure::Rejected(msg.to_string()));
         Stop
+    }
+
+    /// Declines once recursion reaches the stack floor.
+    #[inline(always)]
+    pub(crate) fn guard(&mut self) -> R<()> {
+        if stack_exhausted(self.floor) {
+            return Err(self.decline(Budget::Stack));
+        }
+        Ok(())
     }
 
     #[cold]
@@ -301,6 +312,7 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
             eq_cache,
             fail_cache,
             rec,
+            floor: _,
         } = self;
         infer_cache.iter_mut().for_each(FxHashMap::clear);
         open_infer_cache.iter_mut().for_each(FxHashMap::clear);

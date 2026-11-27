@@ -39,6 +39,9 @@ impl Family<'_> {
     }
 
     fn positive(&self, tc: &mut Checker<'_>, ty: &Expr) -> Result<()> {
+        // `whnf` guards only when it misses its cache, and a field type that unfolds to a Pi
+        // over itself hits it on every turn.
+        tc.guard()?;
         let ty = tc.whnf(ty)?;
         if !occurs(&ty, &self.names) {
             return Ok(());
