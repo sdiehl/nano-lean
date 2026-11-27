@@ -699,6 +699,14 @@ impl<'t, 'a: 't> Vc<'t, 'a> {
         let Some(d) = self.declar(n) else {
             reject!(self, "unknown constant {}", n.as_ref())
         };
+        // Values evaluated from a rejected declaration may name a constant at the wrong number
+        // of levels, which inference would have refused.
+        ensure!(
+            self,
+            ls.len() == d.uparams().len(),
+            "wrong number of universe levels for {}",
+            n.as_ref()
+        );
         let v = self.eval_at(d.uparams(), ls, d.ty())?;
         self.t.const_ty.insert((n, ls), v);
         Ok(v)

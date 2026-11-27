@@ -287,6 +287,43 @@ fn projections_cannot_extract_data_from_transported_propositions() {
 }
 
 #[test]
+fn projection_out_of_a_structure_named_without_its_level_is_rejected() {
+    // `D` abbreviates `S` without its level; `D` is rejected, but `a : D` still unfolds to
+    // it, and projecting out of `a` instantiates `S.mk.{u}` at no levels.
+    let input = br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"S"}}
+{"in":2,"str":{"pre":1,"str":"mk"}}
+{"in":3,"str":{"pre":0,"str":"u"}}
+{"in":4,"str":{"pre":0,"str":"D"}}
+{"in":5,"str":{"pre":0,"str":"a"}}
+{"in":6,"str":{"pre":0,"str":"X"}}
+{"il":1,"succ":0}
+{"ie":0,"sort":1}
+{"il":2,"param":3}
+{"const":{"name":1,"us":[2]},"ie":1}
+{"inductive":{"ctors":[{"cidx":0,"induct":1,"isUnsafe":false,"levelParams":[3],"name":2,"numFields":0,"numParams":0,"type":1}],"recs":[],"types":[{"all":[1],"ctors":[2],"isRec":false,"isReflexive":false,"isUnsafe":false,"levelParams":[3],"name":1,"numIndices":0,"numNested":0,"numParams":0,"type":0}]}}
+{"const":{"name":1,"us":[]},"ie":2}
+{"def":{"all":[4],"hints":"abbrev","levelParams":[],"name":4,"safety":"safe","type":0,"value":2}}
+{"const":{"name":4,"us":[]},"ie":3}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":5,"type":3}}
+{"const":{"name":5,"us":[]},"ie":4}
+{"ie":5,"proj":{"idx":0,"struct":4,"typeName":1}}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":6,"type":5}}
+"#;
+    let arena = Arena::new();
+    let store = import_bytes(&arena, input).unwrap();
+    let local = Arena::new();
+    let failure = Tc::new(&store, &local)
+        .check(store.declars.len() as u32 - 1)
+        .expect_err("a projection at the wrong number of levels must not check");
+    assert!(
+        failure.reason().contains("universe levels"),
+        "{}",
+        failure.reason()
+    );
+}
+
+#[test]
 fn nested_and_primitive_fixtures_pass_complete_validation() {
     for input in [
         include_bytes!("../../tests/fixtures/nested.ndjson").as_slice(),
@@ -336,6 +373,48 @@ fn forged_inductive_metadata_and_computation_rules_are_rejected() {
         );
         assert!(crate::export::check_export(Cursor::new(bytes.as_bytes())).is_err());
     }
+}
+
+#[test]
+fn nested_occurrence_of_a_constructor_with_extra_levels_is_rejected() {
+    // `L.{u}` is rejected because `L.mk` declares `[u, v]`; `I` nests `L.{0}`, so expanding
+    // the occurrence instantiates `L.mk.{u, v}` at one level.
+    let input = br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"L"}}
+{"in":2,"str":{"pre":1,"str":"mk"}}
+{"in":3,"str":{"pre":0,"str":"u"}}
+{"in":4,"str":{"pre":0,"str":"I"}}
+{"in":5,"str":{"pre":4,"str":"mk"}}
+{"in":6,"str":{"pre":0,"str":"v"}}
+{"in":7,"str":{"pre":0,"str":"x"}}
+{"il":1,"param":3}
+{"il":2,"succ":0}
+{"il":3,"param":6}
+{"ie":0,"sort":2}
+{"forallE":{"binderInfo":"default","body":0,"name":7,"type":0},"ie":1}
+{"const":{"name":1,"us":[1]},"ie":2}
+{"bvar":1,"ie":3}
+{"app":{"arg":3,"fn":2},"ie":4}
+{"ie":5,"sort":3}
+{"forallE":{"binderInfo":"default","body":4,"name":7,"type":5},"ie":6}
+{"forallE":{"binderInfo":"default","body":6,"name":7,"type":0},"ie":7}
+{"inductive":{"ctors":[{"cidx":0,"induct":1,"isUnsafe":false,"levelParams":[3,6],"name":2,"numFields":1,"numParams":1,"type":7}],"recs":[],"types":[{"all":[1],"ctors":[2],"isRec":false,"isReflexive":false,"isUnsafe":false,"levelParams":[3],"name":1,"numIndices":0,"numNested":0,"numParams":1,"type":1}]}}
+{"const":{"name":1,"us":[0]},"ie":8}
+{"const":{"name":4,"us":[]},"ie":9}
+{"app":{"arg":9,"fn":8},"ie":10}
+{"forallE":{"binderInfo":"default","body":9,"name":7,"type":10},"ie":11}
+{"inductive":{"ctors":[{"cidx":0,"induct":4,"isUnsafe":false,"levelParams":[],"name":5,"numFields":1,"numParams":0,"type":11}],"recs":[],"types":[{"all":[4],"ctors":[5],"isRec":true,"isReflexive":false,"isUnsafe":false,"levelParams":[],"name":4,"numIndices":0,"numNested":1,"numParams":0,"type":0}]}}
+"#;
+    let arena = Arena::new();
+    let store = import_bytes(&arena, input).unwrap();
+    let i = (0..store.declars.len() as u32)
+        .find(|&i| store.declars[i as usize].name().to_string() == "I")
+        .unwrap();
+    let mut local = Arena::new();
+    let failure = check_with_adapter(&store, &mut local, i, Limits::default(), None, true)
+        .expect_err("a nested occurrence at the wrong number of levels must not check");
+    // The reference path re-decides a nested block the native expansion rejects.
+    assert_eq!(failure.status(), "rejected", "{}", failure.reason());
 }
 
 #[test]

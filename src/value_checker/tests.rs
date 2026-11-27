@@ -197,3 +197,29 @@ fn fx_at_matches_fx() {
         assert_eq!(fx_at(FX_K, &(k.0, k.1)), fx(&(k.0, k.1)));
     }
 }
+
+#[test]
+fn constant_with_wrong_level_count_in_a_rejected_type_is_rejected() {
+    // `B : A` names `A.{u}` without its level; `B` is rejected, but `C`'s value still infers
+    // to that type, and comparing it with `Prop` asks for `A`'s type at no levels.
+    let bytes = br#"{"meta":{"format":{"version":"3.1.0"}}}
+{"in":1,"str":{"pre":0,"str":"A"}}
+{"in":2,"str":{"pre":0,"str":"u"}}
+{"in":3,"str":{"pre":0,"str":"B"}}
+{"in":4,"str":{"pre":0,"str":"C"}}
+{"il":1,"param":2}
+{"ie":0,"sort":1}
+{"axiom":{"isUnsafe":false,"levelParams":[2],"name":1,"type":0}}
+{"const":{"name":1,"us":[]},"ie":1}
+{"axiom":{"isUnsafe":false,"levelParams":[],"name":3,"type":1}}
+{"const":{"name":3,"us":[]},"ie":2}
+{"ie":3,"sort":0}
+{"def":{"all":[4],"hints":"abbrev","levelParams":[],"name":4,"safety":"safe","type":3,"value":2}}
+"#;
+    let arena = Arena::new();
+    let store = import_bytes(&arena, bytes).unwrap();
+    let mut local = Arena::new();
+    let r = check(&store, &mut local, 2, Limits::default(), None, true);
+    let reason = r.as_ref().err().map_or("accepted", Failure::reason);
+    assert!(reason.contains("universe levels"), "{reason}");
+}

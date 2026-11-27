@@ -650,6 +650,14 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
                     let Some(Declar::Ctor(c)) = self.declar(name) else {
                         reject!(self, "missing nested constructor")
                     };
+                    // `add_nested` checked the levels against the inductive, whose
+                    // constructors may disagree with it if it was rejected.
+                    ensure!(
+                        self,
+                        levels.len() == c.info.uparams.len(),
+                        "wrong number of universe levels for {}",
+                        name.as_ref()
+                    );
                     let ty = self.ctx.declar_type(&Declar::Ctor(c), levels);
                     let rest = self.instantiate_params(ty, ind.num_params, &ds)?;
                     let rest = self.expand(fam, &mut cs, rest)?;
