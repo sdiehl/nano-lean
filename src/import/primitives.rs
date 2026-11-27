@@ -83,7 +83,6 @@ pub(super) fn check(store: &Store<'_>) -> Result<()> {
         (n.nat, 0, Sort(Zero)),
         (n.nat_zero, 0, Nat),
         (n.nat_succ, 0, arrow(Nat, Nat)),
-        (n.nat_log2, 0, arrow(Nat, Nat)),
         (n.nat_add, 0, binary()),
         (n.nat_sub, 0, binary()),
         (n.nat_mul, 0, binary()),

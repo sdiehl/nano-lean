@@ -16,7 +16,6 @@ fn naturals() -> Environment {
     env.axiom("Nat", expr("Type")).unwrap();
     env.axiom("Nat.zero", expr("Nat")).unwrap();
     env.axiom("Nat.succ", expr("Nat -> Nat")).unwrap();
-    env.axiom("Nat.log2", expr("Nat -> Nat")).unwrap();
     env.axiom("Bool", expr("Type")).unwrap();
     env.axiom("Bool.true", expr("Bool")).unwrap();
     env.axiom("Bool.false", expr("Bool")).unwrap();
@@ -78,13 +77,6 @@ fn primitive_natural_operations_and_zero_divisors() {
                 .unwrap()
                 .aeq(&Expr::nat(expected as u32)),
             "{op} {a} {b}"
-        );
-    }
-    for (a, expected) in [(0u32, 0u32), (1, 0), (1023, 9), (1024, 10)] {
-        let term = Expr::constant("Nat.log2").app(Expr::nat(a));
-        assert!(
-            env.normalize(&term).unwrap().aeq(&Expr::nat(expected)),
-            "log2 {a}"
         );
     }
     for (op, a, b, expected) in [

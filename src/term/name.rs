@@ -54,10 +54,9 @@ pub enum NatRed {
     Xor,
     Shl,
     Shr,
-    Log2,
 }
 
-const NAT_REDS: [NatRed; 16] = [
+const NAT_REDS: [NatRed; 15] = [
     NatRed::Succ,
     NatRed::Add,
     NatRed::Sub,
@@ -73,7 +72,6 @@ const NAT_REDS: [NatRed; 16] = [
     NatRed::Xor,
     NatRed::Shl,
     NatRed::Shr,
-    NatRed::Log2,
 ];
 
 /// Carries its declaration index and Nat primitive tag so the checker never hashes a name.

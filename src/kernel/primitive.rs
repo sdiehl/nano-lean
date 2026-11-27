@@ -3,8 +3,8 @@ use super::prelude::*;
 use super::{Expr, Level};
 use crate::term::names::{
     BOOL, BOOL_FALSE, BOOL_TRUE, CHAR, CHAR_OF_NAT, LIST, LIST_CONS, LIST_NIL, NAT, NAT_ADD,
-    NAT_BEQ, NAT_BLE, NAT_DIV, NAT_GCD, NAT_LAND, NAT_LOG2, NAT_LOR, NAT_MOD, NAT_MUL, NAT_POW,
-    NAT_SHL, NAT_SHR, NAT_SUB, NAT_SUCC, NAT_XOR, NAT_ZERO, STRING, STRING_OF_LIST,
+    NAT_BEQ, NAT_BLE, NAT_DIV, NAT_GCD, NAT_LAND, NAT_LOR, NAT_MOD, NAT_MUL, NAT_POW, NAT_SHL,
+    NAT_SHR, NAT_SUB, NAT_SUCC, NAT_XOR, NAT_ZERO, STRING, STRING_OF_LIST,
 };
 use num_bigint::BigUint;
 use num_integer::Integer;
@@ -23,11 +23,10 @@ pub(super) fn symbol(path: &str, encoded: bool) -> String {
     }
 }
 
-const RESERVED: [(&str, usize); 28] = [
+const RESERVED: [(&str, usize); 27] = [
     (NAT, 0),
     (NAT_ZERO, 0),
     (NAT_SUCC, 0),
-    (NAT_LOG2, 0),
     (NAT_ADD, 0),
     (NAT_SUB, 0),
     (NAT_MUL, 0),
@@ -66,7 +65,7 @@ fn signature(name: &str, params: &[String], encoded: bool) -> Expr {
     match name {
         NAT | BOOL | CHAR | STRING => ty(),
         NAT_ZERO => c(NAT),
-        NAT_SUCC | NAT_LOG2 => arrow(c(NAT), c(NAT)),
+        NAT_SUCC => arrow(c(NAT), c(NAT)),
         NAT_BEQ | NAT_BLE => arrow(c(NAT), arrow(c(NAT), c(BOOL))),
         BOOL_TRUE | BOOL_FALSE => c(BOOL),
         CHAR_OF_NAT => arrow(c(NAT), c(CHAR)),
@@ -98,7 +97,6 @@ pub(super) fn validate(name: &str, params: &[String], ty: &Expr) -> Result<()> {
 #[derive(Clone, Copy)]
 pub(super) enum NatOp {
     Succ,
-    Log2,
     Add,
     Sub,
     Mul,
@@ -115,9 +113,8 @@ pub(super) enum NatOp {
     ShiftRight,
 }
 
-const NAT_OPS: [(&str, NatOp, usize); 16] = [
+const NAT_OPS: [(&str, NatOp, usize); 15] = [
     ("succ", NatOp::Succ, 1),
-    ("log2", NatOp::Log2, 1),
     ("add", NatOp::Add, 2),
     ("sub", NatOp::Sub, 2),
     ("mul", NatOp::Mul, 2),
@@ -173,7 +170,7 @@ impl NatOp {
                 Some(s) => a >> s,
                 None => BigUint::ZERO,
             },
-            Self::Succ | Self::Log2 | Self::Beq | Self::Ble => unreachable!(),
+            Self::Succ | Self::Beq | Self::Ble => unreachable!(),
         })
     }
 }
@@ -258,14 +255,8 @@ impl Checker<'_> {
         else {
             return Ok(None);
         };
-        match op {
-            NatOp::Succ => return Ok(self.natural_value(&args[0])?.map(|n| Expr::nat(n + 1u32))),
-            NatOp::Log2 => {
-                return Ok(self
-                    .natural_value(&args[0])?
-                    .map(|n| Expr::nat(BigUint::from(n.bits().saturating_sub(1)))));
-            }
-            _ => {}
+        if let NatOp::Succ = op {
+            return Ok(self.natural_value(&args[0])?.map(|n| Expr::nat(n + 1u32)));
         }
         let Some(a) = self.natural_value(&args[0])? else {
             return Ok(None);

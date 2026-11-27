@@ -32,7 +32,6 @@ pub const NAT_LOR: &str = "Nat.lor";
 pub const NAT_XOR: &str = "Nat.xor";
 pub const NAT_SHL: &str = "Nat.shiftLeft";
 pub const NAT_SHR: &str = "Nat.shiftRight";
-pub const NAT_LOG2: &str = "Nat.log2";
 pub const OUT_PARAM: &str = "outParam";
 pub const SEMI_OUT_PARAM: &str = "semiOutParam";
 pub const OPT_PARAM: &str = "optParam";

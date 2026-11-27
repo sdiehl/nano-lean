@@ -6,6 +6,7 @@
 - Check level counts before instantiating.
 - Guard remaining recursions against stack.
 - Keep fuzz repros as fixtures.
+- Unfold `Nat.log2` like Lean's kernel.
 
 ## 0.4.3 (2026-11-26)
 

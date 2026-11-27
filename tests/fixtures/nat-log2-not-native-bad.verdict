@@ -1,0 +1,5 @@
+reference: rejected: line 794: type mismatch:
+  expected: (((@["Eq"].{1} @["Nat"]) (@["Nat","log2"] (((@["OfNat","ofNat"].{0} @["Nat"]) 8) (@["instOfNatNat"] 8)))) (((@["OfNat","ofNat"].{0} @["Nat"]) 3) (@["instOfNatNat"] 3)))
+  inferred: (((@["Eq"].{1} @["Nat"]) 3) 3)
+fast: rejected: T.final: application type mismatch
+value: rejected: T.final: application type mismatch

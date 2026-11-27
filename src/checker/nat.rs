@@ -16,14 +16,13 @@ pub(crate) enum NatValue {
 
 #[inline]
 pub(crate) fn is_unary(op: NatRed) -> bool {
-    matches!(op, NatRed::Succ | NatRed::Log2)
+    matches!(op, NatRed::Succ)
 }
 
 #[inline]
 pub(crate) fn unary(op: NatRed, x: &BigUint) -> Option<BigUint> {
     match op {
         NatRed::Succ => Some(x + 1u32),
-        NatRed::Log2 => Some(BigUint::from(x.bits().saturating_sub(1))),
         _ => None,
     }
 }
@@ -73,7 +72,7 @@ pub(crate) fn binary(op: NatRed, x: &BigUint, y: &BigUint) -> Option<NatValue> {
             }
             x.pow(k as u32)
         }
-        NatRed::Succ | NatRed::Log2 => return None,
+        NatRed::Succ => return None,
     };
     Some(NatValue::Nat(r))
 }
