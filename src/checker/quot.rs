@@ -56,10 +56,13 @@ impl<'t, 'a: 't> Tc<'t, 'a> {
         let Some(k) = self.ctor(i.ctors[0]) else {
             reject!(self, "Eq has an unexpected shape")
         };
-        let e = self.c(Some(eq), &[k.info.uparams.as_ref()[0]])?;
+        let &[u] = k.info.uparams.as_ref() else {
+            reject!(self, "Eq.refl has an unexpected shape")
+        };
+        let e = self.c(Some(eq), &[u])?;
         let (v0, v1) = (self.v(0), self.v(1));
         let b = self.ctx.apps(e, &[v1, v0, v0]);
-        let s = self.ctx.sort(k.info.uparams.as_ref()[0]);
+        let s = self.ctx.sort(u);
         let want = self.pis(&[s, v0], b);
         ensure!(
             self,
