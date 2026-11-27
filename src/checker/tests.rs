@@ -357,6 +357,33 @@ fn quotient_kind_must_match_its_name() {
 }
 
 #[test]
+fn quotient_rejects_an_eq_refl_without_its_universe_parameter() {
+    // `Eq.{u}`'s constructor declares no universe parameters.
+    let input = br#"{"meta":{"format":{"version":"3.1.0"},"view":{"imported":1}}}
+{"in":1,"str":{"pre":0,"str":"Eq"}}
+{"in":2,"num":{"i":255,"pre":0}}
+{"il":1,"param":2}
+{"ie":0,"sort":1}
+{"bvar":0,"ie":1}
+{"bvar":1,"ie":2}
+{"ie":3,"sort":0}
+{"forallE":{"binderInfo":"default","body":3,"name":2,"type":2},"ie":4}
+{"forallE":{"binderInfo":"implicit","body":4,"name":2,"type":1},"ie":5}
+{"forallE":{"binderInfo":"implicit","body":5,"name":2,"type":0},"ie":6}
+{"inductive":{"ctors":[{"cidx":0,"induct":1,"isUnsafe":false,"levelParams":[],"name":2,"numFields":0,"numParams":1,"type":5}],"recs":[],"types":[{"all":[],"ctors":[2],"isRec":false,"isReflexive":false,"isUnsafe":false,"levelParams":[2],"name":1,"numIndices":0,"numNested":0,"numParams":15,"type":6}]}}
+{"in":3,"str":{"pre":0,"str":"Quot"}}
+{"quot":{"kind":"type","levelParams":[],"name":3,"type":3}}
+"#;
+    let arena = Arena::new();
+    let store = import_bytes(&arena, input).unwrap();
+    let quot = store.declars.len() as u32 - 1;
+    let mut local = Arena::new();
+    let failure = check_with_adapter(&store, &mut local, quot, Limits::default(), None, false)
+        .expect_err("a malformed Eq.refl must not support the quotient");
+    assert!(failure.reason().contains("Eq.refl"), "{}", failure.reason());
+}
+
+#[test]
 fn universe_equivalence_agrees_with_existing_kernel() {
     let arena = Arena::new();
     let store = import_bytes(&arena, FOUNDATIONS).unwrap();
